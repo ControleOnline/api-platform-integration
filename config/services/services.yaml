@@ -17,3 +17,7 @@ services:
         tags: ['console.command']
     ControleOnline\Filter\:
         resource: '../../src/Filter'            
+    ControleOnline\Message\iFood\OrderMessage:
+        autowire: false
+        autoconfigure: false
+        public: false
