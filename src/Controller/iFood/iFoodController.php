@@ -23,7 +23,7 @@ class iFoodController extends AbstractController
         $signature = $request->headers->get('X-IFood-Signature');
 
         // Validar a assinatura
-        $secretKey = $_ENV['IFOOD_SECRET']; 
+        $secretKey = $_ENV['IFOOD_SECRET'];
         $expectedSignature = hash_hmac('sha256', $rawInput, $secretKey);
 
         if ($signature !== $expectedSignature) {
@@ -36,6 +36,12 @@ class iFoodController extends AbstractController
         if (json_last_error() !== JSON_ERROR_NONE) {
             $logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
+        }
+
+        // Ignorar eventos de keepalive
+        if (isset($event['code']) && $event['code'] === 'KEEPALIVE') {
+            $logger->info('Evento keepalive ignorado', ['event' => $event]);
+            return new Response('[accepted]', Response::HTTP_ACCEPTED);
         }
 
         // Enviar para a fila
