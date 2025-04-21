@@ -2,4 +2,8 @@ imports:
     - { resource: "./services/services.yaml" }
     - { resource: "./packages/api_platform.yaml" }
     - { resource: "./packages/doctrine.yaml" }
-    
+    - { resource: "./packages/messenger.yaml" }
+parameters:
+    ifood.secret: '%env(IFOOD_SECRET)%'
+    ifood.id: '%env(IFOOD_ID)%'
+    ifood.access_token: '%env(IFOOD_ACCESS_TOKEN)%'

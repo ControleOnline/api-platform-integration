@@ -1,0 +1,10 @@
+framework:
+    messenger:
+        transports:
+            async:
+                dsn: 'doctrine://default'
+                options:
+                    table_name: messenger_messages
+                    queue_name: default
+        routing:
+            'ControleOnline\Message\OrderMessage': async
