@@ -141,7 +141,7 @@ class OrderMessageHandler
         try {
             $response = $this->httpClient->request('GET', 'https://merchant-api.ifood.com.br/order/v1.0/orders/' . $orderId, [
                 'headers' => [
-                    'Authorization' => 'Bearer ' . $this->params->get('ifood.access_token'),
+                    'Authorization' => 'Bearer ' . $_ENV['IFOOD_TOKEN'],
                 ],
             ]);
 
@@ -186,7 +186,7 @@ class OrderMessageHandler
             $provider = new People();
             $provider->setName('iFood Merchant ' . $merchantId);
             $provider->setExternalId($merchantId);
-            $provider->setType('Company'); 
+            $provider->setType('Company');
             $this->entityManager->persist($provider);
         }
 
