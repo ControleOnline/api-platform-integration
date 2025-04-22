@@ -10,17 +10,25 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Message\Asaas\WebhookMessage;
+use Doctrine\ORM\EntityManagerInterface;
 
 class AsaasWebhookController extends AbstractController
 {
+    public function __construct(private EntityManagerInterface $manager) {}
+
     #[Route('/webhook/asaas/return/{id}', name: 'asaas_webhook', methods: ['POST'])]
     public function __invoke(
+        int $id,
         Request $request,
-        People $people,
         LoggerInterface $logger,
-        MessageBusInterface $bus
+        MessageBusInterface $bus,
     ): JsonResponse {
         try {
+            $data = $this->manager->getRepository(People::class)->find($id);
+            if (!$data) {
+                return new JsonResponse(['error' => 'People not found'], 404);
+            }
+
             $json = json_decode($request->getContent(), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 $logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
@@ -33,7 +41,7 @@ class AsaasWebhookController extends AbstractController
                 return new JsonResponse(['error' => 'Token not provided'], 401);
             }
 
-            $bus->dispatch(new WebhookMessage($json, $token, $people->getId()));
+            $bus->dispatch(new WebhookMessage($json, $token, $data->getId()));
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
             return new JsonResponse(['status' => 'accepted'], 202);
