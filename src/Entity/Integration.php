@@ -12,7 +12,6 @@ use ApiPlatform\Metadata\Put;
 use ApiPlatform\Metadata\Delete;
 use ControleOnline\Repository\IntegrationRepository;
 
-#[ORM\Entity]
 #[ORM\Table(name: 'integration')]
 #[ApiResource(
     operations: [
