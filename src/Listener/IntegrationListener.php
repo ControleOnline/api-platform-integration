@@ -19,7 +19,7 @@ class IntegrationListener
 
         if ($id) {
             $this->connection->executeStatement(
-                'UPDATE integration SET status = :status WHERE id = :id',
+                'UPDATE integration SET queue_status = :status WHERE id = :id',
                 ['status' => 'error', 'id' => $id]
             );
         }
@@ -33,7 +33,7 @@ class IntegrationListener
 
         if ($id) {
             $this->connection->executeStatement(
-                'UPDATE integration SET status = :status WHERE id = :id',
+                'UPDATE integration SET queue_status = :status WHERE id = :id',
                 ['status' => 'success', 'id' => $id]
             );
         }
