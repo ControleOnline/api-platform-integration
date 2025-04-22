@@ -25,3 +25,7 @@ services:
         autowire: false
         autoconfigure: false
         public: false
+    ControleOnline\Listener\IntegrationListener:
+        tags:
+            - { name: kernel.event_listener, event: messenger.worker_message_failed }
+            - { name: kernel.event_listener, event: messenger.worker_message_handled }
