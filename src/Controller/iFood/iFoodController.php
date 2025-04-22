@@ -12,7 +12,7 @@ use ControleOnline\Message\iFood\OrderMessage;
 
 class iFoodController extends AbstractController
 {
-    #[Route('/ifood/webhook', name: 'ifood_webhook', methods: ['POST'])]
+    #[Route('/webhook/ifood', name: 'ifood_webhook', methods: ['POST'])]
     public function handleIFoodWebhook(
         Request $request,
         LoggerInterface $logger,
