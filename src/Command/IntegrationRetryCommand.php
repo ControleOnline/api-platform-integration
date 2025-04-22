@@ -27,7 +27,7 @@ class IntegrationRetryCommand extends Command
     {
         // Atualiza status para 'pending' (se necessário)
         $this->connection->executeStatement(
-            'UPDATE integration SET queue_status = :status WHERE status = :pendingStatus',
+            'UPDATE integration SET queue_status = :status WHERE queue_status = :pendingStatus',
             ['status' => 'pending', 'pendingStatus' => 'error']
         );
 
