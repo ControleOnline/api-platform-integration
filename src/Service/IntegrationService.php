@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Service\Asaas;
+namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Integration;
