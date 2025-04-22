@@ -1,5 +1,5 @@
 {
-    "name": "controleonline/food",
+    "name": "controleonline/integration",
     "license": "MIT",
     "autoload": {
         "psr-4": {
