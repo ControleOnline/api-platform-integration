@@ -3,7 +3,7 @@
 # food
 
 
-`composer require controleonline/food:dev-master`
+`composer require controleonline/integration:dev-master`
 
 
 Add Service import:
@@ -11,5 +11,5 @@ config\services.yaml
 
 ```yaml
 imports:
-    - { resource: "../modules/controleonline/food/financial/services/food.yaml" }    
+    - { resource: "../modules/controleonline/integration/financial/services/food.yaml" }    
 ```
