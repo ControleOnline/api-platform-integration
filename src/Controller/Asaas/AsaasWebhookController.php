@@ -13,7 +13,7 @@ use ControleOnline\Message\Asaas\WebhookMessage;
 
 class AsaasWebhookController extends AbstractController
 {
-    #[Route('/webhook/asaas/return/{data}', name: 'asaas_webhook', methods: ['POST'], options: ['expose' => false])]
+    #[Route('/webhook/asaas/return/{data}', name: 'asaas_webhook', methods: ['POST'])]
     public function __invoke(
         Request $request,
         People $data,
