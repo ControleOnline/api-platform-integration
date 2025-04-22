@@ -13,7 +13,7 @@ use ControleOnline\Message\Asaas\WebhookMessage;
 
 class AsaasWebhookController extends AbstractController
 {
-    #[Route('/webhook/asaas/return/{data}', name: 'asaas_webhook', methods: ['POST'])]
+    #[Route('/webhook/asaas/return/{data}', name: 'asaas_webhook', methods: ['POST'], options: ['expose' => false])]
     public function __invoke(
         Request $request,
         People $data,
@@ -21,25 +21,21 @@ class AsaasWebhookController extends AbstractController
         MessageBusInterface $bus
     ): JsonResponse {
         try {
-            // Receber o payload
             $json = json_decode($request->getContent(), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 $logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
                 return new JsonResponse(['error' => 'Invalid JSON'], 400);
             }
 
-            // Obter o token
             $token = $request->headers->get('asaas-access-token');
             if (!$token) {
                 $logger->error('Token não fornecido');
                 return new JsonResponse(['error' => 'Token not provided'], 401);
             }
 
-            // Enviar para a fila
             $bus->dispatch(new WebhookMessage($json, $token, $data->getId()));
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
-            // Retornar resposta imediata
             return new JsonResponse(['status' => 'accepted'], 202);
         } catch (\Exception $e) {
             $logger->error('Erro no webhook Asaas', ['error' => $e->getMessage()]);
