@@ -13,10 +13,10 @@ use ControleOnline\Message\Asaas\WebhookMessage;
 
 class AsaasWebhookController extends AbstractController
 {
-    #[Route('/webhook/asaas/return/{data}', name: 'asaas_webhook', methods: ['POST'])]
+    #[Route('/webhook/asaas/return/{id}', name: 'asaas_webhook', methods: ['POST'])]
     public function __invoke(
         Request $request,
-        People $data,
+        People $people,
         LoggerInterface $logger,
         MessageBusInterface $bus
     ): JsonResponse {
@@ -33,7 +33,7 @@ class AsaasWebhookController extends AbstractController
                 return new JsonResponse(['error' => 'Token not provided'], 401);
             }
 
-            $bus->dispatch(new WebhookMessage($json, $token, $data->getId()));
+            $bus->dispatch(new WebhookMessage($json, $token, $people->getId()));
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
             return new JsonResponse(['status' => 'accepted'], 202);
