@@ -27,6 +27,17 @@ class IntegrationService
         return $this->manager->getRepository(Integration::class)->findBy($search);
     }
 
+    public function setDelivered(Integration $integration)
+    {
+        $status = $this->statusService->discoveryStatus('closed', 'closed', 'integration');
+
+        $integration->setStatus($status);
+        $this->manager->persist($integration);
+        $this->manager->flush();
+
+        return $integration;
+    }
+
     public function addIntegration(string $message, string $queueNane, ?Device $device): Integration
     {
         $status = $this->statusService->discoveryStatus('open', 'open', 'integration');
