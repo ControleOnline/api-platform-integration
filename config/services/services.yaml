@@ -21,7 +21,7 @@ services:
         autowire: false
         autoconfigure: false
         public: false
-    ControleOnline\Message\Asaas\OrderMessage:
+    ControleOnline\Message\Asaas\WebhookMessage:
         autowire: false
         autoconfigure: false
         public: false
