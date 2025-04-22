@@ -29,5 +29,5 @@ services:
         arguments:
             - '@doctrine.dbal.default_connection' 
         tags:
-            - { name: kernel.event_listener, event: messenger.worker_message_failed }
-            - { name: kernel.event_listener, event: messenger.worker_message_handled }
+            - { name: kernel.event_listener, event: messenger.worker_message_failed, method: 'onMessageFailed'}
+            - { name: kernel.event_listener, event: messenger.worker_message_handled,method: 'onMessageHandled' }
