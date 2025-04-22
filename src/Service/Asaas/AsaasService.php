@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Service\Gateways;
+namespace ControleOnline\Service\Asaas;
 
 use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Invoice;

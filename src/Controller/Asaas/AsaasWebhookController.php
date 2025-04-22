@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Controller;
+namespace ControleOnline\Controller\Asaas;
 
 use ControleOnline\Entity\People;
 use Psr\Log\LoggerInterface;

@@ -4,7 +4,7 @@ namespace ControleOnline\MessageHandler\Asaas;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Message\Asaas\WebhookMessage;
-use ControleOnline\Service\Gateways\AsaasService;
+use ControleOnline\Service\Asaas\AsaasService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
