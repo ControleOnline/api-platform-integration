@@ -5,8 +5,7 @@ namespace ControleOnline\Service;
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Integration;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface
-as Security;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
 
 class IntegrationService
