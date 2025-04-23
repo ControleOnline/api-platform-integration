@@ -37,7 +37,7 @@ class Integration
     #[ORM\ManyToOne(targetEntity: Status::class)]
     #[ORM\JoinColumn(name: 'queue_status_id', referencedColumnName: 'id', nullable: false)]
     #[Groups(['integration:read', 'integration:write'])]
-    private ?Status $Status = null;
+    private Status $status;
 
     #[ORM\Column(type: 'text', nullable: false)]
     #[Groups(['integration:read', 'integration:write'])]
@@ -65,12 +65,12 @@ class Integration
 
     public function getStatus(): ?Status
     {
-        return $this->Status;
+        return $this->status;
     }
 
     public function setStatus(?Status $Status): self
     {
-        $this->Status = $Status;
+        $this->status = $Status;
         return $this;
     }
 
