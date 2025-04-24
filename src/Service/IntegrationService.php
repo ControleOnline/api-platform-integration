@@ -17,7 +17,7 @@ class IntegrationService
     ) {}
 
 
-    public function getOpenMessages(string $queueNane, ?Device $device = null): array
+    public function getOpenMessages(string $queueNane, array $device = []): array
     {
         $search = [
             'queueName' => $queueNane,
@@ -33,6 +33,17 @@ class IntegrationService
     public function setDelivered(Integration $integration)
     {
         $status = $this->statusService->discoveryStatus('closed', 'closed', 'integration');
+
+        $integration->setStatus($status);
+        $this->manager->persist($integration);
+        $this->manager->flush();
+
+        return $integration;
+    }
+
+    public function setError(Integration $integration)
+    {
+        $status = $this->statusService->discoveryStatus('pending', 'error', 'integration');
 
         $integration->setStatus($status);
         $this->manager->persist($integration);
