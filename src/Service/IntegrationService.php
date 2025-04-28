@@ -52,7 +52,7 @@ class IntegrationService
         return $integration;
     }
 
-    public function addIntegration(string $message, string $queueNane, ?Device $device): Integration
+    public function addIntegration(string $message, string $queueNane, ?Device $device = null): Integration
     {
         $status = $this->statusService->discoveryStatus('open', 'open', 'integration');
 

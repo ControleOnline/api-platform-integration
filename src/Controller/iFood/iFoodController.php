@@ -9,6 +9,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Message\iFood\OrderMessage;
+use ControleOnline\Service\IntegrationService;
 
 class iFoodController extends AbstractController
 {
@@ -16,7 +17,7 @@ class iFoodController extends AbstractController
     public function handleIFoodWebhook(
         Request $request,
         LoggerInterface $logger,
-        MessageBusInterface $bus
+        IntegrationService $integrationService
     ): Response {
         $rawInput = $request->getContent();
         $signature = $request->headers->get('X-IFood-Signature');
@@ -39,7 +40,7 @@ class iFoodController extends AbstractController
             return new Response('[accepted]', Response::HTTP_ACCEPTED);
         }
 
-        $bus->dispatch(new OrderMessage($event, $rawInput));
+        $integrationService->addIntegration($rawInput,'iFood');
         $logger->info('Evento enviado para a fila', ['event' => $event]);
 
         return new Response('[accepted]', Response::HTTP_ACCEPTED);
