@@ -16,16 +16,4 @@ services:
         resource: '../../src/Command'
         tags: ['console.command']
     ControleOnline\Filter\:
-        resource: '../../src/Filter'            
-    ControleOnline\Message\iFood\OrderMessage:
-        autowire: false
-        autoconfigure: false
-        public: false
-    ControleOnline\Message\Asaas\WebhookMessage:
-        autowire: false
-        autoconfigure: false
-        public: false
-    ControleOnline\Listener\IntegrationListener:
-        tags:
-            - { name: kernel.event_listener, event: messenger.worker_message_failed, method: 'onMessageFailed'}
-            - { name: kernel.event_listener, event: messenger.worker_message_handled,method: 'onMessageHandled' }
+        resource: '../../src/Filter'
