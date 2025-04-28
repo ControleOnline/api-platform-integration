@@ -30,7 +30,9 @@ class AsaasService
         private PeopleService $peopleService,
         private InvoiceService $invoiceService,
         private OrderService $orderService,
-        private WalletService $walletService
+        private WalletService $walletService,
+        private StatusService $statusService,
+
     ) {}
 
     private function getApiKey(People $people)
@@ -157,7 +159,7 @@ class AsaasService
                     $client['name']
                 );
 
-                $invoice   = $this->invoiceService->createInvoice(
+                return $this->invoiceService->createInvoice(
                     $this->orderService->createOrder($receiver, $payer, 'Asaas'),
                     $json['payment']['value'],
                     $json['payment']['dueDate'],
@@ -168,10 +170,9 @@ class AsaasService
                 break;
 
             default:
-                # code...
+                return null;
                 break;
         }
-        return  $invoice;
     }
 
     public function getPix(Invoice $invoice)

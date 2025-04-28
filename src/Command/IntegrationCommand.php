@@ -46,11 +46,13 @@ class IntegrationCommand extends Command
         if ($this->container->has($serviceName)) {
             $service = $this->container->get($serviceName);
             if (method_exists($service, $method)) {
-                $service->$method($integration);
-                $statusClosed = $this->statusService->discoveryStatus('closed', 'closed', 'integration');
-                $integration->setStatus($statusClosed);
+                $retun = $service->$method($integration);
+                if ($retun)
+                    $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
             }
         }
+        $integration->getStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+        $this->entityManager->flush();
     }
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -65,7 +67,6 @@ class IntegrationCommand extends Command
                 try {
                     $output->writeln(sprintf('Iniciando o processamento do ID: %d', $integration->getId()));
                     $this->executeIntegration($integration);
-                    $this->entityManager->flush();
                 } catch (\Exception $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $output->writeln(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
