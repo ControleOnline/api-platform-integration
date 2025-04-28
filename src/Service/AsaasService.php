@@ -140,23 +140,17 @@ class AsaasService
         return md5($this->getApiKey($people));
     }
 
-    private function checkWebhookApiKey(People $people, $token)
-    {
-        if ($this->getWebhookApiKey($people) != $token)
-            throw new \Exception('Invalid token');
-    }
+
 
     public function integrate(Integration $integration)
     {
-
-        $this->checkWebhookApiKey($receiver, $token);
-
+        $receiver =  $integration->getPeople();
+        $json = json_decode($integration->getBody(), true);
         $this->init($receiver);
+
         switch ($json["event"]) {
             case 'PAYMENT_CREATED':
                 $client = $this->getClient($json['payment']['customer']);
-
-
                 $payer = $this->peopleService->discoveryPeopleByDocument(
                     $client['cpfCnpj'],
                     $client['personType'] == 'FISICA' ? 'cpf' : 'cnpj',

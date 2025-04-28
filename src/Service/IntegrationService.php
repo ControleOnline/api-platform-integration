@@ -9,7 +9,6 @@ use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class IntegrationService
 {
@@ -17,19 +16,18 @@ class IntegrationService
         private EntityManagerInterface $manager,
         private Security $security,
         private StatusService $statusService,
-        private ContainerInterface $container
     ) {}
 
 
-    public function getOpenMessages(string $queueNane, array $devices = []): array
+    public function getOpen(array $queueNane, array $devices = [], $limit = 100): array
     {
         $search = [
             'queueName' => $queueNane,
             'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
         ];
 
-        if ($devices)
-            $search['device'] = $this->manager->getRepository(Device::class)->findBy(['device' => $devices]);
+        if (!empty($devices))
+            $search['device'] = $this->manager->getRepository(Device::class)->findBy(['device' => $devices], null, $limit);
 
         return $this->manager->getRepository(Integration::class)->findBy($search);
     }
@@ -45,16 +43,7 @@ class IntegrationService
         return $integration;
     }
 
-    public  function execute(Integration $integration)
-    {
-        $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
-        $method = 'integrate';
-        if ($this->container->has($serviceName)) {
-            $service = $this->container->get($serviceName);
-            if (method_exists($service, $method))
-                $service->$method($integration);
-        }
-    }
+
 
 
     public function setError(Integration $integration)
