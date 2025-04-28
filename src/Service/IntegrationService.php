@@ -19,10 +19,25 @@ class IntegrationService
     ) {}
 
 
-    public function getOpen(array $queueNane, array $devices = [], $limit = 100): array
+    public function getAllOpenIntegrations($limit = 100): array
     {
         $search = [
-            'queueName' => $queueNane,
+            'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
+        ];
+
+        $queryBuilder = $this->manager->getRepository(Integration::class)->createQueryBuilder('i')
+            ->where('i.queueName NOT IN (:queueNames)')
+            ->andWhere('i.status = :status')
+            ->setParameter('queueNames', ['Websocket'])
+            ->setParameter('status', $search['status'])
+            ->setMaxResults($limit);
+        return $queryBuilder->getQuery()->getResult();
+    }
+
+    public function getWebsocketOpen(array $devices = [], $limit = 100): array
+    {
+        $search = [
+            'queueName' => ['Websocket'],
             'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
         ];
 

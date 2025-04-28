@@ -13,35 +13,38 @@ use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\DomainService;
 use Exception;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Throwable;
 
-class IntegrationCommand extends Command
+class IntegrationCommand extends DefaultCommand
 {
-    protected static $defaultName = 'app:process-integration-queue';
+    protected $input;
+    protected $output;
+    protected $lock;
 
     public function __construct(
+        LockFactory $lockFactory,
+        DatabaseSwitchService $databaseSwitchService,
         private IntegrationService $integrationService,
         private EntityManagerInterface $entityManager,
         private StatusService $statusService,
-        private LockFactory $lockFactory,
-        private DatabaseSwitchService $databaseSwitchService,
         private DomainService $domainService,
-        private ContainerInterface $container
-
+        private ContainerInterface $container,
     ) {
-        $databaseSwitchService->switchDatabaseByDomain('api.controleonline.com');
-        parent::__construct();
+        $this->lockFactory = $lockFactory;
+        $this->databaseSwitchService = $databaseSwitchService;
+        parent::__construct('integration:start');
     }
 
 
-    protected function configure()
+    protected function configure(): void
     {
         $this
-            ->setName('integration:start')
-            ->setDescription('Consulta a tabela de integração e processa registros com status pendente.');
+            ->setDescription('Query the integration table and process records with pending status');
     }
-    protected  function executeIntegration(Integration $integration)
+
+    protected function executeIntegration(Integration $integration)
     {
         $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
         $method = 'integrate';
@@ -58,33 +61,31 @@ class IntegrationCommand extends Command
         $this->entityManager->persist($integration);
         $this->entityManager->flush();
     }
-    protected function execute(InputInterface $input, OutputInterface $output): int
+
+    protected function runCommand(): int
     {
-        $lock = $this->lockFactory->createLock('integration:start');
+        if ($this->lock->acquire()) {
+            $this->output->writeln('Iniciando a verificação da fila de integração...');
+            $integrations = $this->integrationService->getAllOpenIntegrations(1000);
 
-        if ($lock->acquire()) {
-            $output->writeln('Iniciando a verificação da fila de integração...');
-
-            $integrations = $this->integrationService->getOpen(['iFood', 'Asaas'], [], 1000);
-
-            foreach ($integrations as $integration) {
+            foreach ($integrations as $integration)
                 try {
-                    $output->writeln(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
+                    $this->output->writeln(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
                     $this->executeIntegration($integration);
                 } catch (Throwable $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
-                    $output->writeln(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
+                    $this->output->writeln(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
                     $integration->setStatus($statusError);
                     $this->entityManager->persist($integration);
                     $this->entityManager->flush();
                 }
-            }
 
-            $output->writeln('Verificação da fila de integração concluída.');
-            $lock->release();
+
+            $this->output->writeln('Verificação da fila de integração concluída.');
+
             return Command::SUCCESS;
         } else {
-            $output->writeln('Outro processo ainda está em execução. Ignorando...');
+            $this->output->writeln('Outro processo ainda está em execução. Ignorando...');
             return Command::SUCCESS;
         }
     }
