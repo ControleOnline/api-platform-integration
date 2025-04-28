@@ -12,6 +12,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\DomainService;
+use Exception;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class IntegrationCommand extends Command
@@ -54,7 +55,6 @@ class IntegrationCommand extends Command
         else $integration->getStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
 
         $this->entityManager->persist($integration);
-        $this->entityManager->flush();
     }
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -69,11 +69,12 @@ class IntegrationCommand extends Command
                 try {
                     $output->writeln(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
                     $this->executeIntegration($integration);
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $output->writeln(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
                     $integration->setStatus($statusError);
                     $this->entityManager->persist($integration);
+                } finally {
                     $this->entityManager->flush();
                 }
             }
