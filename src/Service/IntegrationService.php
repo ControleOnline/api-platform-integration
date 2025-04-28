@@ -4,6 +4,7 @@ namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
@@ -67,7 +68,7 @@ class IntegrationService
         return $integration;
     }
 
-    public function addIntegration(string $message, string $queueNane, ?Device $device = null, ?User $user = null): Integration
+    public function addIntegration(string $message, string $queueNane, ?Device $device = null, ?User $user = null, ?People $people = null): Integration
     {
         $status = $this->statusService->discoveryStatus('open', 'open', 'integration');
 
@@ -77,6 +78,7 @@ class IntegrationService
         $integration->setQueueName($queueNane);
         $integration->setBody($message);
         $integration->setUser($user);
+        $integration->setPeople($people);
 
         $this->manager->persist($integration);
         $this->manager->flush();

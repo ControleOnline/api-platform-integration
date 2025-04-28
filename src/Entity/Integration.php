@@ -57,6 +57,10 @@ class Integration
     #[Groups(['integration:read', 'integration:write'])]
     private ?User $user = null;
 
+    #[ORM\ManyToOne(targetEntity: People::class)]
+    #[ORM\JoinColumn(name: 'people_id', referencedColumnName: 'id', nullable: true)]
+    #[Groups(['integration:read', 'integration:write'])]
+    private ?People $people = null;
 
     public function getId(): ?int
     {
@@ -115,6 +119,18 @@ class Integration
     public function setUser(?User $user): self
     {
         $this->user = $user;
+        return $this;
+    }
+
+
+    public function getPeople(): ?People
+    {
+        return $this->people;
+    }
+
+    public function setPeople(?People $people): self
+    {
+        $this->people = $people;
         return $this;
     }
 }

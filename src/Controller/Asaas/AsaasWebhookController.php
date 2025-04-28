@@ -36,8 +36,8 @@ class AsaasWebhookController extends AbstractController
             if (!$user)
                 return new JsonResponse(['error' => 'You should not pass!!!'], 301);
 
-            $data = $this->manager->getRepository(People::class)->find($id);
-            if (!$data)
+            $people = $this->manager->getRepository(People::class)->find($id);
+            if (!$people)
                 return new JsonResponse(['error' => 'People not found'], 404);
 
 
@@ -49,7 +49,7 @@ class AsaasWebhookController extends AbstractController
 
 
 
-            $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user);
+            $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user, $people);
 
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
