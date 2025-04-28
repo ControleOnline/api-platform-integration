@@ -3,6 +3,7 @@
 namespace ControleOnline\Controller\Asaas;
 
 use ControleOnline\Entity\People;
+use ControleOnline\Entity\User;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
@@ -10,6 +11,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Message\Asaas\WebhookMessage;
+use ControleOnline\Service\IntegrationService;
 use Doctrine\ORM\EntityManagerInterface;
 
 class AsaasWebhookController extends AbstractController
@@ -21,13 +23,23 @@ class AsaasWebhookController extends AbstractController
         int $id,
         Request $request,
         LoggerInterface $logger,
-        MessageBusInterface $bus,
+        EntityManagerInterface $manager,
+        IntegrationService $integrationService
     ): JsonResponse {
         try {
+
+            $token = $request->headers->get('asaas-access-token');
+            if (!$token)
+                return new JsonResponse(['error' => 'You should not pass!!!'], 401);
+            $user = $manager->getRepository(User::class)->findOneBy(['apiKey' =>  $token]);
+
+            if (!$user)
+                return new JsonResponse(['error' => 'You should not pass!!!'], 301);
+
             $data = $this->manager->getRepository(People::class)->find($id);
-            if (!$data) {
+            if (!$data)
                 return new JsonResponse(['error' => 'People not found'], 404);
-            }
+
 
             $json = json_decode($request->getContent(), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
@@ -35,13 +47,10 @@ class AsaasWebhookController extends AbstractController
                 return new JsonResponse(['error' => 'Invalid JSON'], 400);
             }
 
-            $token = $request->headers->get('asaas-access-token');
-            if (!$token) {
-                $logger->error('Token não fornecido');
-                return new JsonResponse(['error' => 'Token not provided'], 401);
-            }
 
-            $bus->dispatch(new WebhookMessage($json, $token, $data->getId()));
+
+            $integrationService->addIntegration($json, 'Asaas', null, $user);
+
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
             return new JsonResponse(['status' => 'accepted'], 202);
