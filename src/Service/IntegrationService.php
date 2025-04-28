@@ -17,15 +17,15 @@ class IntegrationService
     ) {}
 
 
-    public function getOpenMessages(string $queueNane, array $device = []): array
+    public function getOpenMessages(string $queueNane, array $devices = []): array
     {
         $search = [
             'queueName' => $queueNane,
             'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
         ];
 
-        if ($device)
-            $search['device'] = $device;
+        if ($devices)
+            $search['device'] = $this->manager->getRepository(Device::class)->findBy(['device' => $devices]);
 
         return $this->manager->getRepository(Integration::class)->findBy($search);
     }
