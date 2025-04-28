@@ -8,7 +8,6 @@ use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\Status;
-use ControleOnline\Message\iFood\OrderMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -18,36 +17,12 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 #[AsMessageHandler]
 class iFoodService
 {
-    private EntityManagerInterface $entityManager;
-    private LoggerInterface $logger;
-    private ParameterBagInterface $params;
-    private HttpClientInterface $httpClient;
-
     public function __construct(
-        EntityManagerInterface $entityManager,
-        LoggerInterface $logger,
-        ParameterBagInterface $params,
-        HttpClientInterface $httpClient
-    ) {
-        $this->entityManager = $entityManager;
-        $this->logger = $logger;
-        $this->params = $params;
-        $this->httpClient = $httpClient;
-    }
+        private EntityManagerInterface $manager
 
-    public function __invoke(OrderMessage $message)
-    {
-        $event = $message->getEvent();
+    ) {}
 
-        // Verificar se é um evento de novo pedido (PLACED)
-        if (isset($event['code']) && $event['code'] === 'PLC') {
-            $this->processNewOrder($event);
-        } else {
-            $this->logger->info('Evento ignorado', ['code' => $event['code'] ?? 'unknown']);
-        }
-    }
-
-    private function processNewOrder(array $event): void
+    public  function integrate(array $event): void
     {
         $orderId = $event['orderId'] ?? null;
         $merchantId = $event['merchantId'] ?? null;

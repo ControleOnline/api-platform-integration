@@ -8,7 +8,6 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
-use ControleOnline\Message\iFood\OrderMessage;
 use ControleOnline\Service\IntegrationService;
 
 class iFoodController extends AbstractController
