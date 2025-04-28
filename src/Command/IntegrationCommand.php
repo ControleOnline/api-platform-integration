@@ -66,7 +66,7 @@ class IntegrationCommand extends Command
 
             foreach ($integrations as $integration) {
                 try {
-                    $output->writeln(sprintf('Iniciando o processamento do ID: %d - %d', $integration->getId(), $integration->getQueueName()));
+                    $output->writeln(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
                     $this->executeIntegration($integration);
                 } catch (\Exception $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
