@@ -49,7 +49,7 @@ class AsaasWebhookController extends AbstractController
 
 
 
-            $integrationService->addIntegration($json, 'Asaas', null, $user);
+            $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user);
 
             $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
