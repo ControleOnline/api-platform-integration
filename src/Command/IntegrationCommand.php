@@ -52,7 +52,7 @@ class IntegrationCommand extends Command
             }
         }
         $integration->getStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
-        $this->entityManager->flush();
+        $this->entityManager->persist($integration);
     }
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -71,10 +71,11 @@ class IntegrationCommand extends Command
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $output->writeln(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
                     $integration->setStatus($statusError);
-                    $this->entityManager->flush();
+                    $this->entityManager->persist($integration);
                 }
             }
 
+            $this->entityManager->flush();
             $output->writeln('Verificação da fila de integração concluída.');
             $lock->release();
             return Command::SUCCESS;
