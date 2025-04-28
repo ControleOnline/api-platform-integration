@@ -53,7 +53,7 @@ class IntegrationCommand extends Command
         }
 
         if ($return) $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
-        else $integration->getStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+        else $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
 
         $this->entityManager->persist($integration);
         $this->entityManager->flush();
