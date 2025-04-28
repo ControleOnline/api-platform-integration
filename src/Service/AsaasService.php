@@ -1,8 +1,9 @@
 <?php
 
-namespace ControleOnline\Service\Asaas;
+namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Config;
+use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Wallet;
@@ -14,6 +15,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface
 as Security;
 use ControleOnline\Service\PeopleRoleService;
+use ControleOnline\Service\WalletService;
 use GuzzleHttp\Client;
 
 class AsaasService
@@ -27,7 +29,8 @@ class AsaasService
         private DomainService $domainService,
         private PeopleService $peopleService,
         private InvoiceService $invoiceService,
-        private OrderService $orderService
+        private OrderService $orderService,
+        private WalletService $walletService
     ) {}
 
     private function getApiKey(People $people)
@@ -143,7 +146,7 @@ class AsaasService
             throw new \Exception('Invalid token');
     }
 
-    public function returnWebhook(People $receiver, array $json, $token)
+    public function integrate(Integration $integration)
     {
 
         $this->checkWebhookApiKey($receiver, $token);
@@ -164,7 +167,7 @@ class AsaasService
                     $this->orderService->createOrder($receiver, $payer, 'Asaas'),
                     $json['payment']['value'],
                     $json['payment']['dueDate'],
-                    $this->discoveryWallet($receiver),
+                    $this->walletService->discoverWallet($receiver, 'Asaas'),
 
                 );
 
@@ -175,26 +178,6 @@ class AsaasService
                 break;
         }
         return  $invoice;
-    }
-
-
-    public function discoveryWallet(People $people)
-    {
-
-        $wallet = $this->manager->getRepository(Wallet::class)->findOneBy([
-            'people' => $people,
-            'wallet' => 'ASAAS'
-        ]);
-        if (!$wallet) {
-            $wallet = new Wallet();
-            $wallet->setPeople($people);
-            $wallet->setWallet('ASAAS');
-            $wallet->setBalance(0);
-            $this->manager->persist($wallet);
-            $this->manager->flush();
-        }
-
-        return $wallet;
     }
 
     public function getPix(Invoice $invoice)

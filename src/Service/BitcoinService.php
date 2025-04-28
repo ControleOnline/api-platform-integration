@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Service\Bitcoin;
+namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Invoice;
 use \Endroid\QrCode\Builder\Builder;

@@ -6,7 +6,7 @@ use ControleOnline\Entity\Document;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Status;
 use ControleOnline\Service\HydratorService;
-use ControleOnline\Service\Asaas\PixService;
+use ControleOnline\Service\PixService;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
 use Symfony\Component\Routing\Annotation\Route;

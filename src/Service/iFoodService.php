@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\MessageHandler\iFood;
+namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Order;
@@ -16,7 +16,7 @@ use Symfony\Component\DependencyInjection\ParameterBag\ParameterBagInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 #[AsMessageHandler]
-class OrderMessageHandler
+class iFoodService
 {
     private EntityManagerInterface $entityManager;
     private LoggerInterface $logger;

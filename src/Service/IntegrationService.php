@@ -8,13 +8,15 @@ use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class IntegrationService
 {
     public function __construct(
         private EntityManagerInterface $manager,
         private Security $security,
-        private StatusService $statusService
+        private StatusService $statusService,
+        private ContainerInterface $container
     ) {}
 
 
@@ -42,6 +44,18 @@ class IntegrationService
         return $integration;
     }
 
+    public  function execute(Integration $integration)
+    {
+        $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+        $method = 'integrate';
+        if ($this->container->has($serviceName)) {
+            $service = $this->container->get($serviceName);
+            if (method_exists($service, $method))
+                $service->$method($integration);
+        }
+    }
+
+
     public function setError(Integration $integration)
     {
         $status = $this->statusService->discoveryStatus('pending', 'error', 'integration');
@@ -63,7 +77,7 @@ class IntegrationService
         $integration->setQueueName($queueNane);
         $integration->setBody($message);
         $integration->setUser($user);
-        
+
         $this->manager->persist($integration);
         $this->manager->flush();
 

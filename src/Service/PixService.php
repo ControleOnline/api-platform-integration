@@ -1,10 +1,10 @@
 <?php
 
-namespace ControleOnline\Service\Asaas;
+namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Invoice;
-use ControleOnline\Service\Asaas\AsaasService;
+use ControleOnline\Service\AsaasService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface
  AS Security;
