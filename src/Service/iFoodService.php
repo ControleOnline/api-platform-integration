@@ -2,13 +2,13 @@
 
 namespace ControleOnline\Service;
 
+use App\Service\AddressService;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
-use ControleOnline\Entity\Status;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
@@ -26,6 +26,8 @@ class iFoodService
         private PeopleService $peopleService,
         private OrderService $orderService,
         private StatusService $statusService,
+        private AddressService $addressService,
+        private ProductService $productService,
 
     ) {
         self::$logger = $loggerService->getLogger('iFood');
@@ -118,7 +120,7 @@ class iFoodService
 
         self::$logger->info('Pedido processado com sucesso', ['orderId' => $orderId]);
 
-        return $order;
+        return $this->addiFoodCode($order, $orderId);
     }
 
     private function addPayments(Order $order, array $payments, array $total)
@@ -188,17 +190,32 @@ class iFoodService
         }
 
         $phone = $customerData['phone']['number'] ?? $customerData['phone'];
-        $client = $this->entityManager->getRepository(People::class)->findOneBy(['phone' => $phone]);
+        $codClienteiFood = 'Deve ter';
+
+        $client = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codClienteiFood, People::class);
+
+        //Tentar descobrir por email
+        if (!$client)
+            $client = $this->peopleService->discoveryPeopleByPhone();
+
+
+        // Talvez o ifood passe por e-mail também. Se passar, pode tentar descobrir por email
+        if (!$client)
+            $client = $this->peopleService->discoveryPeopleByEmail();
 
         if (!$client) {
-            $client = new People();
             // @todo Criar CLiente
         }
 
-        return $client;
+
+
+        return $this->addiFoodCode($client, $codClienteiFood);
     }
 
-
+    private function addiFoodCode(object $entity, string $code)
+    {
+        return $this->extraDataService->discoveryExtraData($entity->getId(), $this->extraFields, $code,  $entity);
+    }
 
     private function discoveryAddress(array $deliveryData): ?Address
     {
@@ -222,6 +239,6 @@ class iFoodService
             // @todo Criar Produto
         }
 
-        return $product;
+        return $this->addiFoodCode($product, $codProductiFood);
     }
 }
