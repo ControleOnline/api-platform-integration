@@ -4,7 +4,6 @@ namespace ControleOnline\Controller\Asaas;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
-use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -12,17 +11,24 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Message\Asaas\WebhookMessage;
 use ControleOnline\Service\IntegrationService;
+use ControleOnline\Service\LoggerService;
 use Doctrine\ORM\EntityManagerInterface;
 
 class AsaasWebhookController extends AbstractController
 {
-    public function __construct(private EntityManagerInterface $manager) {}
+    protected static $logger;
+
+    public function __construct(
+        private EntityManagerInterface $manager,
+        private LoggerService $loggerService,
+    ) {
+        self::$logger = $loggerService->getLogger('asaas');
+    }
 
     #[Route('/webhook/asaas/return/{id}', name: 'asaas_webhook', methods: ['POST'])]
     public function __invoke(
         int $id,
         Request $request,
-        LoggerInterface $logger,
         EntityManagerInterface $manager,
         IntegrationService $integrationService
     ): JsonResponse {
@@ -43,7 +49,7 @@ class AsaasWebhookController extends AbstractController
 
             $json = json_decode($request->getContent(), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
-                $logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
+                self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
                 return new JsonResponse(['error' => 'Invalid JSON'], 400);
             }
 
@@ -51,11 +57,11 @@ class AsaasWebhookController extends AbstractController
 
             $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user, $people);
 
-            $logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
+            self::$logger->info('Evento Asaas enviado para a fila', ['event' => $json]);
 
             return new JsonResponse(['status' => 'accepted'], 202);
         } catch (\Exception $e) {
-            $logger->error('Erro no webhook Asaas', ['error' => $e->getMessage()]);
+            self::$logger->error('Erro no webhook Asaas', ['error' => $e->getMessage()]);
             return new JsonResponse(['error' => $e->getMessage()], 500);
         }
     }

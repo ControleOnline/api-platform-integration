@@ -6,7 +6,6 @@ use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\People;
-use ControleOnline\Entity\Wallet;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\InvoiceService;
 use ControleOnline\Service\OrderService;
