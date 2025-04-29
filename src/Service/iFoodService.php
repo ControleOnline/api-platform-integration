@@ -55,6 +55,19 @@ class iFoodService
 
     private function cancelOrder(array $json): ?Order
     {
+        $orderId =  $json['orderId'] ?? null;
+
+        $order = $this->extraDataService->getEntityByExtraData(self::$extraFields, $orderId, Order::class);
+        if ($order) {
+            $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
+
+            $order->setStatus($status);
+            $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+            //@todo cancelar faturas
+            return $order;
+        }
         return null;
     }
 
@@ -81,7 +94,6 @@ class iFoodService
             return null;
         }
 
-        // Criar ou buscar entidades relacionadas
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $deliveryAddress = $this->discoveryAddress($orderDetails['delivery'] ?? []);
         $client = $this->discoveryClient($orderDetails['customer'] ?? []);
@@ -94,6 +106,7 @@ class iFoodService
         $order->setApp('iFood');
         $order->setOrderType('sale');
         $order->setAddressDestination($deliveryAddress);
+        $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
@@ -110,7 +123,7 @@ class iFoodService
 
     private function addPayments(Order $order, array $payments, array $total)
     {
-        // Armazenar informações adicionais (ex.: método de pagamento, taxa de entrega)
+        // @todo Armazenar informações adicionais (ex.: método de pagamento, taxa de entrega)
         $order->setOtherInformations([
             'payment' => $orderDetails['payments'] ?? [],
             'deliveryFee' => $orderDetails['total']['deliveryFee'] ?? 0,
@@ -179,7 +192,7 @@ class iFoodService
 
         if (!$client) {
             $client = new People();
-            //Criar CLiente
+            // @todo Criar CLiente
         }
 
         return $client;
@@ -195,7 +208,7 @@ class iFoodService
         }
 
         $address = new Address();
-        //Criar Endereço
+        // @todo Criar Endereço
 
         return $address;
     }
@@ -206,7 +219,7 @@ class iFoodService
 
         if (!$product) {
             $product = new Product();
-            //Criar Produto
+            // @todo Criar Produto
         }
 
         return $product;
