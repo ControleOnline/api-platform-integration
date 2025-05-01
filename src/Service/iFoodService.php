@@ -204,7 +204,7 @@ class iFoodService
             $client = $this->peopleService->discoveryPeopleByEmail();
 
         if (!$client) {
-            // @todo Criar CLiente
+            // @todo Criar Cliente
         }
 
 
