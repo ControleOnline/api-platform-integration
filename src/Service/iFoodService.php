@@ -39,9 +39,8 @@ class iFoodService
 
         $json = json_decode($integration->getBody(), true);
 
-        echo $json['fullCode'];
         $fullCode = $json['fullCode'];
-        self::$logger->info('Código recebido', ['code' =>  $json['fullCode']]);
+        $this->addLog('info', 'Código recebido', ['code' =>  $json['fullCode']]);
 
         switch ($fullCode) {
             case 'PLACED':
@@ -82,7 +81,7 @@ class iFoodService
         $merchantId = $json['merchantId'] ?? null;
 
         if (!$orderId || !$merchantId) {
-            self::$logger->error('Dados do pedido incompletos', ['json' =>  $json]);
+            $this->addLog('error', 'Dados do pedido incompletos', ['json' =>  $json]);
             return null;
         }
 
@@ -94,7 +93,7 @@ class iFoodService
         // Buscar detalhes do pedido via API
         $orderDetails = $this->fetchOrderDetails($orderId);
         if (!$orderDetails) {
-            self::$logger->error('Não foi possível obter detalhes do pedido', ['orderId' => $orderId]);
+            $this->addLog('error', 'Não foi possível obter detalhes do pedido', ['orderId' => $orderId]);
             return null;
         }
 
@@ -120,7 +119,7 @@ class iFoodService
         $this->entityManager->persist($order);
         $this->entityManager->flush();
 
-        self::$logger->info('Pedido processado com sucesso', ['orderId' => $orderId]);
+        $this->addLog('info', 'Pedido processado com sucesso', ['orderId' => $orderId]);
 
         return $this->addiFoodCode($order, $orderId);
     }
@@ -178,14 +177,14 @@ class iFoodService
             ]);
 
             if ($response->getStatusCode() !== 200) {
-                self::$logger->error('Erro ao obter token de acesso do iFood', ['status' => $response->getStatusCode()]);
+                $this->addLog('error', 'Erro ao obter token de acesso do iFood', ['status' => $response->getStatusCode()]);
                 return null;
             }
 
             $data = $response->toArray();
             return $data['access_token'] ?? null;
         } catch (\Exception $e) {
-            self::$logger->error('Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
+            $this->addLog('error', 'Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
             return null;
         }
     }
@@ -197,7 +196,7 @@ class iFoodService
 
             $token = $this->getAccessToken();
             if (!$token) {
-                self::$logger->error('Token de acesso não obtido');
+                $this->addLog('error', 'Token de acesso não obtido');
                 return null;
             }
 
@@ -208,13 +207,13 @@ class iFoodService
             ]);
 
             if ($response->getStatusCode() !== 200) {
-                self::$logger->error('Erro na API do iFood', ['status' => $response->getStatusCode()]);
+                $this->addLog('error', 'Erro na API do iFood', ['status' => $response->getStatusCode()]);
                 return null;
             }
 
             return $response->toArray();
         } catch (\Exception $e) {
-            self::$logger->error('Erro ao buscar detalhes do pedido', ['error' => $e->getMessage()]);
+            $this->addLog('error', 'Erro ao buscar detalhes do pedido', ['error' => $e->getMessage()]);
             return null;
         }
     }
@@ -277,5 +276,12 @@ class iFoodService
         }
 
         return $this->addiFoodCode($product, $codProductiFood);
+    }
+
+
+    private function addLog(string $type, $log)
+    {
+        echo $log;
+        self::$logger->$type($log);
     }
 }

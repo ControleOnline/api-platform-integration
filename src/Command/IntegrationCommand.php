@@ -52,10 +52,7 @@ class IntegrationCommand extends DefaultCommand
         $method = 'integrate';
         $return = null;
         if ($this->container->has($serviceName)) {
-
             $this->addLog('Service: ' . $serviceName);
-            $this->addLog('Method: ' . $method);
-
             $service = $this->container->get($serviceName);
             if (method_exists($service, $method))
                 $return = $service->$method($integration);
