@@ -165,6 +165,8 @@ class iFoodService
     private function getAccessToken(): ?string
     {
         try {
+
+            var_dump($_ENV['OAUTH_IFOOD_CLIENT_ID'], $_ENV['OAUTH_IFOOD_CLIENT_SECRET']);
             $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
                 'headers' => [
                     'Content-Type' => 'application/x-www-form-urlencoded',
