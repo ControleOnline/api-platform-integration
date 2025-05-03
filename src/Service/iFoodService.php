@@ -67,8 +67,10 @@ class iFoodService
         if ($order) {
             $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
 
+            $other = (array) $order->getOtherInformations(true);
+            $other[$json['fullCode']] = $json;
+            $order->addOtherInformations('iFood', $other);
             $order->setStatus($status);
-            $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
             $this->entityManager->persist($order);
             $this->entityManager->flush();
             //@todo cancelar faturas
