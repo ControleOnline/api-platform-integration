@@ -165,12 +165,8 @@ class iFoodService
     private function getAccessToken(): ?string
     {
         try {
-
-            var_dump($_ENV['OAUTH_IFOOD_CLIENT_ID'], $_ENV['OAUTH_IFOOD_CLIENT_SECRET']);
             $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
-                'headers' => [
-                    'Content-Type' => 'application/x-www-form-urlencoded',
-                ],
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
                 'body' => [
                     'grant_type' => 'client_credentials',
                     'client_id' => $_ENV['OAUTH_IFOOD_CLIENT_ID'],
@@ -178,8 +174,14 @@ class iFoodService
                 ],
             ]);
 
-            if ($response->getStatusCode() !== 200) {
-                $this->addLog('error', 'Erro ao obter token de acesso do iFood', ['status' => $response->getStatusCode()]);
+            $statusCode = $response->getStatusCode();
+            $responseBody = $response->getContent(false);
+
+            if ($statusCode !== 200) {
+                $this->addLog('error', 'Erro ao obter token de acesso do iFood', [
+                    'status' => $statusCode,
+                    'response' => $responseBody
+                ]);
                 return null;
             }
 
