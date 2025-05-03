@@ -166,7 +166,7 @@ class iFoodService
     {
         try {
             $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
-                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'headers' => ['content-type' => 'application/x-www-form-urlencoded'],
                 'body' => http_build_query([
                     'grant_type' => 'client_credentials',
                     'client_id' => $_ENV['OAUTH_IFOOD_CLIENT_ID'],
