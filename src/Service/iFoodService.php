@@ -163,42 +163,41 @@ class iFoodService
     }
 
     private function getAccessToken(): ?string
-{
-    try {
-        $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
-            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
-            'body' => [
-                'grant_type' => 'client_credentials',
-                'client_id' => $_ENV['OAUTH_IFOOD_CLIENT_ID'],
-                'client_secret' => $_ENV['OAUTH_IFOOD_CLIENT_SECRET'],
-            ],
-        ]);
-
-        $statusCode = $response->getStatusCode();
-        $responseBody = $response->getContent(false);
-
-        //if ($statusCode !== 200) {
-            $this->addLog('error', 'Erro ao obter token de acesso do iFood', [
-                'status' => $statusCode,
-                'response' => $responseBody
+    {
+        try {
+            $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'body' => [
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $_ENV['OAUTH_IFOOD_CLIENT_ID'],
+                    'client_secret' => $_ENV['OAUTH_IFOOD_CLIENT_SECRET'],
+                ],
             ]);
+
+            $statusCode = $response->getStatusCode();
+            $responseBody = $response->getContent(false);
+
+            //if ($statusCode !== 200) {
+            $this->addLog('error', 'Erro ao obter token de acesso do iFood');
+            $this->addLog('error', 'Status: ' . $statusCode);
+            $this->addLog('error', 'Response: ' . $responseBody);
             return null;
-        //}
+            //}
 
-        $data = $response->toArray();
-        if (!isset($data['access_token'])) {
-            $this->addLog('error', 'Token de acesso não encontrado na resposta', [
-                'response' => $responseBody
-            ]);
+            $data = $response->toArray();
+            if (!isset($data['access_token'])) {
+                $this->addLog('error', 'Token de acesso não encontrado na resposta', [
+                    'response' => $responseBody
+                ]);
+                return null;
+            }
+
+            return $data['access_token'];
+        } catch (\Exception $e) {
+            $this->addLog('error', 'Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
             return null;
         }
-
-        return $data['access_token'];
-    } catch (\Exception $e) {
-        $this->addLog('error', 'Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
-        return null;
     }
-}
 
 
     private function fetchOrderDetails(string $orderId): ?array
