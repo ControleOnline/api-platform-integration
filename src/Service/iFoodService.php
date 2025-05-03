@@ -39,6 +39,7 @@ class iFoodService
 
         $json = json_decode($integration->getBody(), true);
 
+        echo $json['fullCode'];
         $fullCode = $json['fullCode'];
         self::$logger->info('Código recebido', ['code' =>  $json['fullCode']]);
 
