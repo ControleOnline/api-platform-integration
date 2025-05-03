@@ -103,11 +103,11 @@ class iFoodService
         // Buscar detalhes do pedido via API
         $orderDetails = $this->fetchOrderDetails($orderId);
         if (!$orderDetails) {
-            $json['order']  = $orderDetails;
             $this->addLog('error', 'Não foi possível obter detalhes do pedido', ['orderId' => $orderId]);
             return null;
         }
-
+        
+        $json['order']  = $orderDetails;
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
         $deliveryAddress = $this->discoveryAddress($client, $orderDetails['delivery'] ?? []);
