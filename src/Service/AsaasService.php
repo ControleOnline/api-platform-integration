@@ -152,10 +152,12 @@ class AsaasService
         switch ($json["event"]) {
             case 'PAYMENT_CREATED':
                 $client = $this->getClient($json['payment']['customer']);
-                $payer = $this->peopleService->discoveryPeopleByDocument(
+                $payer = $this->peopleService->discoveryPeople(
                     $client['cpfCnpj'],
-                    $client['personType'] == 'FISICA' ? 'cpf' : 'cnpj',
-                    $client['name']
+                    null,
+                    null,
+                    $client['name'],
+                    $client['personType'] == 'FISICA' ? 'F' : 'J',
                 );
 
                 return $this->invoiceService->createInvoice(

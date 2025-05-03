@@ -98,8 +98,9 @@ class iFoodService
         }
 
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
-        $deliveryAddress = $this->discoveryAddress($orderDetails['delivery'] ?? []);
-        $client = $this->discoveryClient($orderDetails['customer'] ?? []);
+        $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
+        $deliveryAddress = $this->discoveryAddress($client, $orderDetails['delivery'] ?? []);
+
 
         $order = new Order();
         $order->setClient($client);
@@ -121,7 +122,7 @@ class iFoodService
 
         $this->addLog('info', 'Pedido processado com sucesso', ['orderId' => $orderId]);
 
-        return $this->addiFoodCode($order, $orderId);
+        return $this->discoveryiFoodCode($order, $orderId);
     }
 
     private function addPayments(Order $order, array $payments, array $total)
@@ -228,42 +229,38 @@ class iFoodService
         }
     }
 
-    private function discoveryClient(array $customerData): ?People
+    private function discoveryClient(People $provider, array $customerData): ?People
     {
         if (empty($customerData['name']) || empty($customerData['phone'])) {
             self::$logger->warning('Dados do cliente incompletos', ['customer' => $customerData]);
             return null;
         }
 
-        $phone = $customerData['phone']['number'] ?? $customerData['phone'];
-        $codClienteiFood = 'Deve ter';
+        $codClienteiFood = $customerData['id'];
 
         $client = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codClienteiFood, People::class);
-dd($customerData);
-        //Tentar descobrir por email
+
+        $phone = [
+            'ddd' => '11',
+            'phone' => $customerData['phone']['number']
+        ];
+
+        $document = $customerData['documentNumber'];
+
         if (!$client)
-            $client = $this->peopleService->discoveryPeople();
+            $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerData["name"]);
 
+        $this->peopleService->discoveryClient($provider, $client);
 
-        // Talvez o ifood passe por e-mail também. Se passar, pode tentar descobrir por email
-        if (!$client)
-            $client = $this->peopleService->discoveryPeopleByEmail();
-
-        if (!$client) {
-            // @todo Criar Cliente
-        }
-
-
-
-        return $this->addiFoodCode($client, $codClienteiFood);
+        return $this->discoveryiFoodCode($client, $codClienteiFood);
     }
 
-    private function addiFoodCode(object $entity, string $code)
+    private function discoveryiFoodCode(object $entity, string $code)
     {
         return $this->extraDataService->discoveryExtraData($entity->getId(), $this->extraFields, $code,  $entity);
     }
 
-    private function discoveryAddress(array $deliveryData): ?Address
+    private function discoveryAddress(People $client, array $deliveryData): ?Address
     {
         if (empty($deliveryData['address']['streetName']) || empty($deliveryData['address']['city'])) {
             self::$logger->warning('Dados de endereço incompletos', ['delivery' => $deliveryData]);
@@ -285,7 +282,7 @@ dd($customerData);
             // @todo Criar Produto
         }
 
-        return $this->addiFoodCode($product, $codProductiFood);
+        return $this->discoveryiFoodCode($product, $codProductiFood);
     }
 
 
