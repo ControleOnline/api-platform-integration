@@ -29,7 +29,7 @@ class IntegrationService
             ->where('i.queueName NOT IN (:queueNames)')
             ->andWhere('i.status = :status')
             ->setParameter('queueNames', ['Websocket'])
-            ->setParameter('status', $search['status'])
+            //->setParameter('status', $search['status'])
             ->setMaxResults($limit);
         return $queryBuilder->getQuery()->getResult();
     }
