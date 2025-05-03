@@ -9,10 +9,12 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
+use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
+use Exception;
 
 class iFoodService
 {
@@ -75,6 +77,11 @@ class iFoodService
         return null;
     }
 
+    private function getApiUser(): User
+    {
+        return $this->entityManager->getRepository(User::class)->find(7);
+    }
+
     private function addOrder(array $json): ?Order
     {
 
@@ -112,6 +119,7 @@ class iFoodService
         $order->setOrderType('sale');
         $order->setAddressDestination($deliveryAddress);
         $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
+        $order->setUser($this->getApiUser());
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
@@ -195,7 +203,7 @@ class iFoodService
             }
 
             return $data['accessToken'];
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->addLog('error', 'Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
             return null;
         }
