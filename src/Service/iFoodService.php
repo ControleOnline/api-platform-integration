@@ -257,7 +257,7 @@ class iFoodService
 
     private function discoveryiFoodCode(object $entity, string $code)
     {
-        return $this->extraDataService->discoveryExtraData($entity->getId(), $this->extraFields, $code,  $entity);
+        return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
     }
 
     private function discoveryAddress(People $client, array $deliveryData): ?Address
