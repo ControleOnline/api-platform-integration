@@ -185,14 +185,14 @@ class iFoodService
             }
 
             $data = $response->toArray();
-            if (!isset($data['access_token'])) {
+            if (!isset($data['accessToken'])) {
                 $this->addLog('error', 'Token de acesso não encontrado na resposta', [
                     'response' => $responseBody
                 ]);
                 return null;
             }
 
-            return $data['access_token'];
+            return $data['accessToken'];
         } catch (\Exception $e) {
             $this->addLog('error', 'Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
             return null;
