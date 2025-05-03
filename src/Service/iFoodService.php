@@ -239,10 +239,10 @@ class iFoodService
         $codClienteiFood = 'Deve ter';
 
         $client = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codClienteiFood, People::class);
-
+dd($customerData);
         //Tentar descobrir por email
         if (!$client)
-            $client = $this->peopleService->discoveryPeopleByPhone();
+            $client = $this->peopleService->discoveryPeople();
 
 
         // Talvez o ifood passe por e-mail também. Se passar, pode tentar descobrir por email
