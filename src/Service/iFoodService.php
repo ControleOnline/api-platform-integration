@@ -161,12 +161,47 @@ class iFoodService
         }
     }
 
+    private function getAccessToken(): ?string
+    {
+        try {
+            $response = $this->httpClient->request('POST', 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', [
+                'headers' => [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                ],
+                'body' => [
+                    'grant_type' => 'client_credentials',
+                    'client_id' => $_ENV['OAUTH_IFOOD_CLIENT_ID'],
+                    'client_secret' => $_ENV['OAUTH_IFOOD_CLIENT_SECRET'],
+                ],
+            ]);
+
+            if ($response->getStatusCode() !== 200) {
+                self::$logger->error('Erro ao obter token de acesso do iFood', ['status' => $response->getStatusCode()]);
+                return null;
+            }
+
+            $data = $response->toArray();
+            return $data['access_token'] ?? null;
+        } catch (\Exception $e) {
+            self::$logger->error('Erro ao buscar token de acesso', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+
     private function fetchOrderDetails(string $orderId): ?array
     {
         try {
+
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->error('Token de acesso não obtido');
+                return null;
+            }
+
             $response = $this->httpClient->request('GET', 'https://merchant-api.ifood.com.br/order/v1.0/orders/' . $orderId, [
                 'headers' => [
-                    'Authorization' => 'Bearer ' . $_ENV['IFOOD_TOKEN'],
+                    'Authorization' => 'Bearer ' .   $token,
                 ],
             ]);
 
