@@ -77,6 +77,8 @@ class IntegrationCommand extends DefaultCommand
                 } catch (Throwable $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
+                    $this->addLog($e->getLine());
+                    $this->addLog($e->getFile());
                     $integration->setStatus($statusError);
                     $this->entityManager->persist($integration);
                     $this->entityManager->flush();
