@@ -28,7 +28,7 @@ class iFoodController extends AbstractController
         $rawInput = $request->getContent();
         $signature = $request->headers->get('X-IFood-Signature');
 
-        $secretKey = $_ENV['IFOOD_SECRET'];
+        $secretKey = $_ENV['OAUTH_IFOOD_CLIENT_SECRET'];
         $expectedSignature = hash_hmac('sha256', $rawInput, $secretKey);
 
         if ($signature !== $expectedSignature) {
