@@ -40,6 +40,7 @@ class iFoodService
         $json = json_decode($integration->getBody(), true);
 
         $fullCode = $json['fullCode'];
+        self::$logger->info('Código recebido', ['code' =>  $json['fullCode']]);
 
         switch ($fullCode) {
             case 'PLACED':
