@@ -114,8 +114,8 @@ class iFoodService
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
-        $this->addProducts($order, $orderDetails['items']);
-        $this->addPayments($order, $orderDetails['payments'], $orderDetails['total']);
+        //$this->addProducts($order, $orderDetails['items']);
+        //$this->addPayments($order, $orderDetails['payments'], $orderDetails['total']);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
@@ -275,12 +275,20 @@ class iFoodService
 
     private function discoveryProduct(array $itemData): Product
     {
-        $product = $this->entityManager->getRepository(Product::class)->findOneBy(['name' => $itemData['name']]);
+        $codProductiFood = '';
+        $product = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codProductiFood, Product::class);
+
+
+        if (!$product)
+            $product = $this->entityManager->getRepository(Product::class)->findOneBy(['product' => $itemData['name']]);
 
         if (!$product) {
+
+            $this->productService->addProduct($itemData['name']);
             $product = new Product();
             // @todo Criar Produto
         }
+
 
         return $this->discoveryiFoodCode($product, $codProductiFood);
     }
