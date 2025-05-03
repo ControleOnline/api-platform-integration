@@ -103,6 +103,7 @@ class iFoodService
         // Buscar detalhes do pedido via API
         $orderDetails = $this->fetchOrderDetails($orderId);
         if (!$orderDetails) {
+            $json['order']  = $orderDetails;
             $this->addLog('error', 'Não foi possível obter detalhes do pedido', ['orderId' => $orderId]);
             return null;
         }
@@ -148,6 +149,9 @@ class iFoodService
 
     private function addProducts(Order $order, array $items)
     {
+
+
+
         foreach ($items as $item) {
             $product = $this->discoveryProduct($item);
             $orderProduct = new OrderProduct();
