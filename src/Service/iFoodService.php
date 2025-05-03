@@ -12,6 +12,7 @@ use ControleOnline\Entity\Product;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
+use DateTime;
 
 class iFoodService
 {
@@ -106,7 +107,7 @@ class iFoodService
         $order->setClient($client);
         $order->setProvider($provider);
         $order->setStatus($status);
-        $order->setAlterDate(new \DateTimeImmutable());
+        $order->setAlterDate(new DateTime());
         $order->setApp('iFood');
         $order->setOrderType('sale');
         $order->setAddressDestination($deliveryAddress);
