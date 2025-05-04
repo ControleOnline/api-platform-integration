@@ -172,6 +172,7 @@ class iFoodService
             $this->addDeliveryFee($order, $orderDetails['total']);
         var_dump($deliveryAddress);
         var_dump($delivery);
+        var_dump($orderDetails);
         $deliveryAddress = $this->addressService->discoveryAddress(
             $order->getClient(),
             (int) $deliveryAddress['postalCode'],
