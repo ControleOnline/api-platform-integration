@@ -133,7 +133,7 @@ class iFoodService
 
         //$this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
-        $this->addPayments($order, $json);
+        $this->addPayments($order, $orderDetails);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
@@ -225,7 +225,7 @@ class iFoodService
     private function addPayments(Order $order, array $orderDetails)
     {
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
-        $this->addFees($order, $orderDetails['payments']['total']);
+        $this->addFees($order, $orderDetails['total']);
     }
 
     private function addProducts(Order $order, array $items)
