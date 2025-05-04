@@ -133,7 +133,7 @@ class iFoodService
 
         //$this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
-        $this->addPayments($order, $orderDetails);
+        $this->addPayments($order, $json);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
