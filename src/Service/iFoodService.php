@@ -166,13 +166,11 @@ class iFoodService
 
     private function addDelivery(Order &$order, array $orderDetails)
     {
-        $delivery = $orderDetails['order']['delivery'];
+        $delivery = $orderDetails['delivery'];
         $deliveryAddress = $delivery['deliveryAddress'];
         if ($delivery['deliveredBy'] != 'MERCHANT')
             $this->addDeliveryFee($order, $orderDetails['total']);
-        var_dump($deliveryAddress);
-        var_dump($delivery);
-        var_dump($orderDetails);
+
         $deliveryAddress = $this->addressService->discoveryAddress(
             $order->getClient(),
             (int) $deliveryAddress['postalCode'],
