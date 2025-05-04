@@ -244,7 +244,7 @@ class iFoodService
             $productGroup = null;
             if (isset($item['groupName']))
                 $productGroup = $this->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
-            $orderProduct =  $this->orderProductService->addProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderProductParent);
+            $orderProduct =  $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderProductParent);
             if (isset($item['options']) && $item['options'])
                 $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
             if (isset($item['customizations']) && $item['customizations'])
@@ -398,7 +398,7 @@ class iFoodService
 
             $product = new Product();
             $product->setProduct($item['name']);
-            $product->setSku($item['ean']);
+            $product->setSku(empty($item['ean']) ? null : $item['ean']);
             $product->setPrice($item['unitPrice']);
             $product->setProductUnit($productUnity);
             $product->setType($productType);
