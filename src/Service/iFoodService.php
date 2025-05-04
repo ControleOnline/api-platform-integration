@@ -183,7 +183,6 @@ class iFoodService
             $deliveryAddress['complement'],
             (int) $deliveryAddress['coordinates']['latitude'],
             (int) $deliveryAddress['coordinates']['longitude'],
-            null,
         );
 
         $order->setAddressDestination($deliveryAddress);
