@@ -29,17 +29,17 @@ class IntegrationCommand extends DefaultCommand
         LockFactory $lockFactory,
         DatabaseSwitchService $databaseSwitchService,
         LoggerService $loggerService,
+        SkyNetService $skyNetService,
         private IntegrationService $integrationService,
         private EntityManagerInterface $entityManager,
         private StatusService $statusService,
         private DomainService $domainService,
         private ContainerInterface $container,
-        private SkyNetService $skyNetService,
     ) {
+        $this->skyNetService = $skyNetService;
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
         $this->loggerService = $loggerService;
-        $this->skyNetService->discoveryBotUser();
         parent::__construct('integration:start');
     }
 
