@@ -8,6 +8,9 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
+use ControleOnline\Entity\ProductGroup;
+use ControleOnline\Entity\ProductGroupProduct;
+use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\User;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
@@ -39,6 +42,7 @@ class iFoodService
         private OrderPrintService $orderPrintService,
         private InvoiceService $invoiceService,
         private WalletService $walletService,
+        private OrderProductService $orderProductService
     ) {
         self::$logger = $loggerService->getLogger('iFood');
         self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', 'iFood', '{}', 'code');
@@ -131,7 +135,7 @@ class iFoodService
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
-        //$this->addProducts($order, $orderDetails['items']);
+        $this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
         $this->addPayments($order, $orderDetails);
 
@@ -229,32 +233,22 @@ class iFoodService
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
         $this->addFees($order, $orderDetails['total']);
     }
-
-    private function addProducts(Order $order, array $items)
+    private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderProductParent = null, string $productType = 'product')
     {
         foreach ($items as $item) {
-            $product = $this->discoveryProduct($item);
-            $orderProduct = new OrderProduct();
-            $orderProduct->setOrder($order);
-            $orderProduct->setProduct($product);
-            $orderProduct->setQuantity($item['quantity'] ?? 1);
-            $orderProduct->setPrice($item['unitPrice'] ?? 0.0);
-            $orderProduct->setTotal($item['totalPrice'] ?? 0.0);
-            $this->entityManager->persist($orderProduct);
 
-            if (isset($item['options'])) {
-                foreach ($item['options'] as $option) {
-                    $optionProduct = $this->discoveryProduct($option);
-                    $additionalProduct = new OrderProduct();
-                    $additionalProduct->setOrder($order);
-                    $additionalProduct->setProduct($optionProduct);
-                    $additionalProduct->setQuantity($option['quantity'] ?? 1);
-                    $additionalProduct->setPrice($option['unitPrice'] ?? 0.0);
-                    $additionalProduct->setTotal($option['totalPrice'] ?? 0.0);
-                    $additionalProduct->setOrderProduct($orderProduct); // Relacionar como componente
-                    $this->entityManager->persist($additionalProduct);
-                }
-            }
+            if ((isset($item['options']) && $item['options']) || (isset($item['customizations']) && $item['customizations']))
+                $productType = 'custom';
+
+            $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
+            $productGroup = null;
+            if (isset($item['groupName']))
+                $productGroup = $this->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
+            $orderProduct =  $this->orderProductService->addProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderProductParent);
+            if (isset($item['options']) && $item['options'])
+                $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
+            if (isset($item['customizations']) && $item['customizations'])
+                $this->addProducts($order, $item['customizations'], $product, $orderProduct, 'component');
         }
     }
 
@@ -355,20 +349,76 @@ class iFoodService
         return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
     }
 
-    private function discoveryProduct(array $itemData): Product
+    private function discoveryProductGroup(Product $parentProduct, string $groupName): ProductGroup
     {
-        $codProductiFood = '';
+        $productGroup = $this->entityManager->getRepository(ProductGroup::class)->findOneBy([
+            'productGroup' => $groupName,
+            'productParent' => $parentProduct
+        ]);
+
+        if (!$productGroup) {
+            $productGroup = new ProductGroup();
+            $productGroup->setProductParent($parentProduct);
+            $productGroup->setProductGroup($groupName);
+            $productGroup->setPriceCalculation('sum');
+            $productGroup->setRequired(false);
+            $productGroup->setMinimum(null);
+            $productGroup->setMaximum(null);
+            $productGroup->setActive(true);
+            $productGroup->setGroupOrder(0);
+            $this->entityManager->persist($productGroup);
+            $this->entityManager->flush();
+        }
+
+        return $productGroup;
+    }
+
+    private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
+    {
+        $codProductiFood = $item['id'];
         $product = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codProductiFood, Product::class);
 
+        if (!$product && !empty($item['externalCode']))
+            $product = $this->entityManager->getRepository(Product::class)->findOneBy([
+                'company' => $order->getProvider(),
+                'id' => $item['externalCode']
+            ]);
+
+        if (!$product && !empty($item['ean']))
+            $product = $this->entityManager->getRepository(Product::class)->findOneBy([
+                'company' => $order->getProvider(),
+                'sku' => $item['ean']
+            ]);
 
         if (!$product)
-            $product = $this->entityManager->getRepository(Product::class)->findOneBy(['product' => $itemData['name']]);
+            $product = $this->entityManager->getRepository(Product::class)->findOneBy(['company' => $order->getProvider(), 'product' => $item['name']]);
 
         if (!$product) {
+            $productUnity = $this->entityManager->getRepository(ProductUnity::class)->findOneBy(['productUnit' => 'UN']);
 
-            $this->productService->addProduct($itemData['name']);
             $product = new Product();
-            // @todo Criar Produto
+            $product->setProduct($item['name']);
+            $product->setSku($item['ean']);
+            $product->setPrice($item['unitPrice']);
+            $product->setProductUnit($productUnity);
+            $product->setType($productType);
+            $product->setProductCondition('new');
+            $product->setCompany($order->getProvider());
+
+            $this->entityManager->persist($product);
+            $this->entityManager->flush();
+            if ($parentProduct && isset($item['groupName'])) {
+                $productGroup = $this->discoveryProductGroup($parentProduct, $item['groupName']);
+                $productGroupProduct = new ProductGroupProduct();
+                $productGroupProduct->setProduct($parentProduct);
+                $productGroupProduct->setProductChild($product);
+                $productGroupProduct->setProductType($productType);
+                $productGroupProduct->setProductGroup($productGroup);
+                $productGroupProduct->setQuantity($item['quantity']);
+                $productGroupProduct->setPrice($item['unitPrice']);
+                $this->entityManager->persist($productGroupProduct);
+                $this->entityManager->flush();
+            }
         }
 
 
