@@ -2,14 +2,14 @@
 
 namespace ControleOnline\Service;
 
-use App\Service\AddressService;
-use ControleOnline\Entity\Address;
+use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\User;
+use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
@@ -19,7 +19,9 @@ use Exception;
 class iFoodService
 {
     private static $extraFields;
+    private static $iFoodPeople;
     protected static $logger;
+
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -31,10 +33,16 @@ class iFoodService
         private StatusService $statusService,
         private AddressService $addressService,
         private ProductService $productService,
-
+        private WebsocketClient $websocketClient,
+        private ConfigService $configService,
+        private DeviceService $deviceService,
+        private OrderPrintService $orderPrintService,
+        private InvoiceService $invoiceService,
+        private WalletService $walletService,
     ) {
         self::$logger = $loggerService->getLogger('iFood');
         self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', 'iFood', '{}', 'code');
+        self::$iFoodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
     }
 
     public  function integrate(Integration $integration)
@@ -100,58 +108,129 @@ class iFoodService
         if ($order)
             return $order;
 
-        // Buscar detalhes do pedido via API
         $orderDetails = $this->fetchOrderDetails($orderId);
         if (!$orderDetails) {
             $this->addLog('error', 'Não foi possível obter detalhes do pedido', ['orderId' => $orderId]);
             return null;
         }
-        
+
         $json['order']  = $orderDetails;
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
-        $deliveryAddress = $this->discoveryAddress($client, $orderDetails['delivery'] ?? []);
-
 
         $order = new Order();
         $order->setClient($client);
         $order->setProvider($provider);
+        $order->setPayer($client);
         $order->setStatus($status);
         $order->setAlterDate(new DateTime());
         $order->setApp('iFood');
         $order->setOrderType('sale');
-        $order->setAddressDestination($deliveryAddress);
         $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
         $order->setUser($this->getApiUser());
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
         //$this->addProducts($order, $orderDetails['items']);
-        //$this->addPayments($order, $orderDetails['payments'], $orderDetails['total']);
+        $this->addDelivery($order, $orderDetails);
+        $this->addPayments($order, $orderDetails);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
 
         $this->addLog('info', 'Pedido processado com sucesso', ['orderId' => $orderId]);
 
+        $this->printOrder($order);
         return $this->discoveryiFoodCode($order, $orderId);
     }
 
-    private function addPayments(Order $order, array $payments, array $total)
+
+    private function printOrder(Order $order)
     {
-        // @todo Armazenar informações adicionais (ex.: método de pagamento, taxa de entrega)
-        $order->setOtherInformations([
-            'payment' => $orderDetails['payments'] ?? [],
-            'deliveryFee' => $orderDetails['total']['deliveryFee'] ?? 0,
-            'subTotal' => $orderDetails['total']['subTotal'] ?? 0,
-        ]);
+        $devices = $this->configService->getConfig($order->getProvider(), 'ifood-devices', true);
+
+        if ($devices)
+            $devices = $this->deviceService->findDevices($devices);
+
+        foreach ($devices as $device)
+            $this->orderPrintService->generatePrintData($order, $device);
+    }
+
+    private function addReceiveInvoices(Order $order, array $payments)
+    {
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+        foreach ($payments as $payment)
+            $this->invoiceService->createInvoiceByOrder($order, $payment['value'], $payment['prepaid'] ? $status : null, new DateTime(), null,  $iFoodWallet);
+    }
+
+    private function addDelivery(Order &$order, array $orderDetails)
+    {
+        $delivery = $orderDetails['order']['delivery'];
+        $deliveryAddress = $delivery['deliveryAddress'];
+        if ($delivery['deliveredBy'] != 'MERCHANT')
+            $this->addDeliveryFee($order, $orderDetails['payments']['total']);
+
+        $deliveryAddress = $this->addressService->discoveryAddress(
+            $order->getClient(),
+            (int) $deliveryAddress['postalCode'],
+            (int) $deliveryAddress['streetNumber'],
+            $deliveryAddress['streetName'],
+            $deliveryAddress['neighborhood'],
+            $deliveryAddress['city'],
+            $deliveryAddress['state'],
+            $deliveryAddress['country'],
+            $deliveryAddress['complement'],
+            (int) $deliveryAddress['coordinates']['latitude'],
+            (int) $deliveryAddress['coordinates']['longitude'],
+            null,
+        );
+
+        $order->setAddressDestination($deliveryAddress);
+    }
+
+    private function addDeliveryFee(Order &$order, array $payments)
+    {
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+        $order->setRetrieveContact(self::$iFoodPeople);
+
+        $this->invoiceService->createInvoice(
+            $order,
+            $order->getProvider(),
+            self::$iFoodPeople,
+            $payments['deliveryFee'],
+            $status,
+            new DateTime(),
+            $iFoodWallet,
+            $iFoodWallet
+        );
+    }
+
+    private function addFees(Order $order, array $payments)
+    {
+        $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $this->invoiceService->createInvoice(
+            $order,
+            $order->getProvider(),
+            self::$iFoodPeople,
+            $payments['additionalFees'],
+            $status,
+            new DateTime(),
+            $iFoodWallet,
+            $iFoodWallet
+        );
+    }
+
+    private function addPayments(Order $order, array $orderDetails)
+    {
+        $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
+        $this->addFees($order, $orderDetails['payments']['total']);
     }
 
     private function addProducts(Order $order, array $items)
     {
-
-
-
         foreach ($items as $item) {
             $product = $this->discoveryProduct($item);
             $orderProduct = new OrderProduct();
@@ -273,19 +352,6 @@ class iFoodService
     private function discoveryiFoodCode(object $entity, string $code)
     {
         return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
-    }
-
-    private function discoveryAddress(People $client, array $deliveryData): ?Address
-    {
-        if (empty($deliveryData['address']['streetName']) || empty($deliveryData['address']['city'])) {
-            self::$logger->warning('Dados de endereço incompletos', ['delivery' => $deliveryData]);
-            return null;
-        }
-
-        $address = new Address();
-        // @todo Criar Endereço
-
-        return $address;
     }
 
     private function discoveryProduct(array $itemData): Product

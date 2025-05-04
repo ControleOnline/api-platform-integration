@@ -75,7 +75,7 @@ class IntegrationService
     public function addIntegration(string $message, string $queueNane, ?Device $device = null, ?User $user = null, ?People $people = null): Integration
     {
         $status = $this->statusService->discoveryStatus('open', 'open', 'integration');
-
+        unset($message['destination']);
         $integration = new Integration();
         $integration->setDevice($device);
         $integration->setStatus($status);

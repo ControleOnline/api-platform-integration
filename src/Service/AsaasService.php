@@ -15,6 +15,7 @@ use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInt
 as Security;
 use ControleOnline\Service\PeopleRoleService;
 use ControleOnline\Service\WalletService;
+use DateTime;
 use GuzzleHttp\Client;
 
 class AsaasService
@@ -160,12 +161,12 @@ class AsaasService
                     $client['personType'] == 'FISICA' ? 'F' : 'J',
                 );
 
-                return $this->invoiceService->createInvoice(
+                return $this->invoiceService->createInvoiceByOrder(
                     $this->orderService->createOrder($receiver, $payer, 'Asaas'),
                     $json['payment']['value'],
-                    $json['payment']['dueDate'],
+                    null,
+                    new DateTime($json['payment']['dueDate']),
                     $this->walletService->discoverWallet($receiver, 'Asaas'),
-
                 );
 
                 break;
