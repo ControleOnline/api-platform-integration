@@ -13,6 +13,7 @@ use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\SkyNetService;
 use Exception;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -33,10 +34,12 @@ class IntegrationCommand extends DefaultCommand
         private StatusService $statusService,
         private DomainService $domainService,
         private ContainerInterface $container,
+        private SkyNetService $skyNetService,
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
         $this->loggerService = $loggerService;
+        $this->skyNetService->discoveryBotUser();
         parent::__construct('integration:start');
     }
 

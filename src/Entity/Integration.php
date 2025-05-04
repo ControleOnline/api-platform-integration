@@ -53,7 +53,7 @@ class Integration
     private ?Device $device = null;
 
     #[ORM\ManyToOne(targetEntity: User::class)]
-    #[ORM\JoinColumn(name: 'user_id', referencedColumnName: 'id', nullable: true)]
+    #[ORM\JoinColumn(name: 'user_id', referencedColumnName: 'id', nullable: false)]
     #[Groups(['integration:read', 'integration:write'])]
     private ?User $user = null;
 
@@ -116,7 +116,7 @@ class Integration
         return $this->user;
     }
 
-    public function setUser(?User $user): self
+    public function setUser(User $user): self
     {
         $this->user = $user;
         return $this;
