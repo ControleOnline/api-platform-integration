@@ -170,7 +170,7 @@ class iFoodService
         $deliveryAddress = $delivery['deliveryAddress'];
         if ($delivery['deliveredBy'] != 'MERCHANT')
             $this->addDeliveryFee($order, $orderDetails['total']);
-
+        print_r($deliveryAddress);
         $deliveryAddress = $this->addressService->discoveryAddress(
             $order->getClient(),
             (int) $deliveryAddress['postalCode'],
