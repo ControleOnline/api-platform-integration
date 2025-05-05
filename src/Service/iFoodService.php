@@ -230,8 +230,6 @@ class iFoodService
 
     private function addPayments(Order $order, array $orderDetails)
     {
-
-        var_dump($orderDetails);
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
         $this->addFees($order, $orderDetails['total']);
     }
