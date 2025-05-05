@@ -235,7 +235,7 @@ class iFoodService
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
         $this->addFees($order, $orderDetails['total']);
     }
-    private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderProductParent = null, string $productType = 'product')
+    private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderProductParent = null, ?string $productType = 'product')
     {
         foreach ($items as $item) {
 
