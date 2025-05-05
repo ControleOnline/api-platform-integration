@@ -135,6 +135,8 @@ class iFoodService
         $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
         $order->setPrice($totalPrice);
 
+        $this->entityManager->persist($order);
+
         $this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
         $this->addPayments($order, $orderDetails);
