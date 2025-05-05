@@ -364,8 +364,8 @@ class iFoodService
             $productGroup->setProductGroup($groupName);
             $productGroup->setPriceCalculation('sum');
             $productGroup->setRequired(false);
-            $productGroup->setMinimum(null);
-            $productGroup->setMaximum(null);
+            $productGroup->setMinimum(0);
+            $productGroup->setMaximum(0);
             $productGroup->setActive(true);
             $productGroup->setGroupOrder(0);
             $this->entityManager->persist($productGroup);
