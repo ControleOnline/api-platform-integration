@@ -159,7 +159,7 @@ class iFoodService
             $devices = $this->deviceService->findDevices($devices);
 
         foreach ($devices as $device)
-            $this->orderPrintService->generatePrintData($order, $device);
+            $this->orderPrintService->generatePrintData($order, $device, ['sound' => 'iFood']);
     }
 
     private function addReceiveInvoices(Order $order, array $payments)
