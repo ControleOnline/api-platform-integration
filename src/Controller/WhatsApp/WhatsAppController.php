@@ -9,7 +9,6 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\LoggerService;
-use ControleOnline\Service\WhatsAppService;
 
 class WhatsAppController extends AbstractController
 {
@@ -21,11 +20,10 @@ class WhatsAppController extends AbstractController
         self::$logger = $loggerService->getLogger('N8N');
     }
 
-    #[Route('/whatsapp/{method}', name: 'whats_app', methods: ['GET', 'POST', 'PUT', 'DELETE'])]
+    #[Route('/webhook/whatsapp', name: 'whatsapp_webhook', methods: ['POST'])]
     #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
-    public function handleWhatsApp(
+    public function handleWhatsappWebhook(
         Request $request,
-        WhatsAppService $whatsAppService,
         IntegrationService $integrationService
     ): Response {
         $rawInput = $request->getContent();
@@ -34,6 +32,10 @@ class WhatsAppController extends AbstractController
             self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
         }
-        return new Response($integrationService->addIntegration($event, 'N8N'), Response::HTTP_OK);
+
+        $integrationService->addIntegration($rawInput, 'WhatsApp');
+        self::$logger->info('Evento enviado para a fila', ['event' => $event]);
+
+        return new Response('[accepted]', Response::HTTP_ACCEPTED);
     }
 }
