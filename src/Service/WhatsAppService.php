@@ -65,7 +65,7 @@ class WhatsAppService
         }
     }
 
-    private function sendMessage(string $origin, array $message)
+    private function sendMessage(int $origin, array $message)
     {
         $messageContent = new WhatsAppContent();
         $messageContent->setBody($message['message']);
@@ -78,7 +78,7 @@ class WhatsAppService
         return self::$whatsAppClient->sendMessage($whatsAppMessage);
     }
 
-    private function sendMedia(string $origin, array $message)
+    private function sendMedia(int $origin, array $message)
     {
 
         $media = new WhatsAppMedia();
