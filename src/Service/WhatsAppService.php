@@ -33,7 +33,7 @@ class WhatsAppService
         private StatusService $statusService,
 
     ) {
-        if (! self::$whatsAppClient)
+        if (!self::$whatsAppClient)
             self::$whatsAppClient = new WhatsAppClient($_ENV['WHATSAPP_SERVER'], $this->getApiKey());
     }
 
