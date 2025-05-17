@@ -2,10 +2,7 @@
 
 namespace ControleOnline\Service;
 
-use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Integration;
-use ControleOnline\Entity\Invoice;
-use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\InvoiceService;
@@ -16,13 +13,14 @@ use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInt
 as Security;
 use ControleOnline\Service\PeopleRoleService;
 use ControleOnline\Service\WalletService;
-use DateTime;
-use GuzzleHttp\Client;
+use ControleOnline\WhatsApp\Messages\WhatsAppContent;
+use ControleOnline\WhatsApp\Messages\WhatsAppMedia;
+use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
+use ControleOnline\WhatsApp\WhatsAppClient;
 
 class WhatsAppService
 {
-    private static $apiKey;
-    private static $api;
+    private static $whatsAppClient;
     public function __construct(
         private EntityManagerInterface $manager,
         private Security $security,
@@ -35,10 +33,8 @@ class WhatsAppService
         private StatusService $statusService,
 
     ) {
-        if (!self::$apiKey)
-            self::$apiKey = $this->getApiKey();
-        if (!self::$api)
-            self::$api = $_ENV['WHATSAPP_SERVER'];
+        if (! self::$whatsAppClient)
+            self::$whatsAppClient = new WhatsAppClient($_ENV['WHATSAPP_SERVER'], $this->getApiKey());
     }
 
     private function getApiKey()
@@ -52,8 +48,6 @@ class WhatsAppService
         return $whatsAppKey->getApiKey();
     }
 
-
-
     public function integrate(Integration $integration)
     {
         $json = json_decode($integration->getBody(), true);
@@ -62,24 +56,43 @@ class WhatsAppService
             case 'sendMessage':
                 return $this->sendMessage($json["origin"], $json["message"]);
                 break;
-
+            case 'sendMedia':
+                return $this->sendMedia($json["origin"], $json["message"]);
+                break;
             default:
                 return null;
                 break;
         }
     }
+
     private function sendMessage(string $origin, array $message)
     {
-        $client = new Client();
+        $messageContent = new WhatsAppContent();
+        $messageContent->setBody($message['message']);
 
-        $response = $client->post(self::$api . "/messages/$origin/text", [
-            'headers' => [
-                'Authorization' => 'Bearer ' . self::$apiKey,
-                'Content-Type'  => 'application/json',
-            ],
-            'json' => $message,
-        ]);
+        $message = new WhatsAppMessage();
+        $message->setOriginNumber($origin);
+        $message->setDestinationNumber($message['number']);
+        $message->setMessageContent($messageContent);
 
-        return json_decode($response->getBody()->getContents(), true);
+        return self::$whatsAppClient->sendMessage($message);
+    }
+
+    private function sendMedia(string $origin, array $message)
+    {
+
+        $media = new WhatsAppMedia();
+        $media->setData($message['file']);
+
+        $messageContent = new WhatsAppContent();
+        $messageContent->setBody($message['message']);
+        $messageContent->setMedia($media);
+
+        $message = new WhatsAppMessage();
+        $message->setOriginNumber($origin);
+        $message->setDestinationNumber($message['number']);
+        $message->setMessageContent($messageContent);
+
+        return self::$whatsAppClient->sendMedia($message);
     }
 }
