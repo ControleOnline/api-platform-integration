@@ -17,7 +17,7 @@ class WhatsAppController extends AbstractController
     public function __construct(
         private LoggerService $loggerService,
     ) {
-        self::$logger = $loggerService->getLogger('N8N');
+        self::$logger = $loggerService->getLogger('WhatsApp');
     }
 
     #[Route('/webhook/whatsapp', name: 'whatsapp_webhook', methods: ['POST'])]
