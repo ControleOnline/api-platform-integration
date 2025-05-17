@@ -54,10 +54,10 @@ class WhatsAppService
 
         switch ($json["action"]) {
             case 'sendMessage':
-                return $this->sendMessage($json["origin"], $json["message"]);
+                return $this->sendMessage($json);
                 break;
             case 'sendMedia':
-                return $this->sendMedia($json["origin"], $json["message"]);
+                return $this->sendMedia($json);
                 break;
             default:
                 return null;
@@ -65,20 +65,20 @@ class WhatsAppService
         }
     }
 
-    private function sendMessage(int $origin, array $message)
+    private function sendMessage(array $message)
     {
         $messageContent = new WhatsAppContent();
         $messageContent->setBody($message['message']);
 
         $whatsAppMessage = new WhatsAppMessage();
-        $whatsAppMessage->setOriginNumber($origin);
-        $whatsAppMessage->setDestinationNumber($message['number']);
+        $whatsAppMessage->setOriginNumber($message['origin']);
+        $whatsAppMessage->setDestinationNumber($message['destination']);
         $whatsAppMessage->setMessageContent($messageContent);
 
         return self::$whatsAppClient->sendMessage($whatsAppMessage);
     }
 
-    private function sendMedia(int $origin, array $message)
+    private function sendMedia(array $message)
     {
 
         $media = new WhatsAppMedia();
@@ -89,8 +89,8 @@ class WhatsAppService
         $messageContent->setMedia($media);
 
         $whatsAppMessage = new WhatsAppMessage();
-        $whatsAppMessage->setOriginNumber($origin);
-        $whatsAppMessage->setDestinationNumber($message['number']);
+        $whatsAppMessage->setOriginNumber($message['origin']);
+        $whatsAppMessage->setDestinationNumber($message['destination']);
         $whatsAppMessage->setMessageContent($messageContent);
 
         return self::$whatsAppClient->sendMedia($whatsAppMessage);
