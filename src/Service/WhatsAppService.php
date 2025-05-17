@@ -70,12 +70,12 @@ class WhatsAppService
         $messageContent = new WhatsAppContent();
         $messageContent->setBody($message['message']);
 
-        $message = new WhatsAppMessage();
-        $message->setOriginNumber($origin);
-        $message->setDestinationNumber($message['number']);
-        $message->setMessageContent($messageContent);
+        $whatsAppMessage = new WhatsAppMessage();
+        $whatsAppMessage->setOriginNumber($origin);
+        $whatsAppMessage->setDestinationNumber($message['number']);
+        $whatsAppMessage->setMessageContent($messageContent);
 
-        return self::$whatsAppClient->sendMessage($message);
+        return self::$whatsAppClient->sendMessage($whatsAppMessage);
     }
 
     private function sendMedia(string $origin, array $message)
@@ -88,11 +88,11 @@ class WhatsAppService
         $messageContent->setBody($message['message']);
         $messageContent->setMedia($media);
 
-        $message = new WhatsAppMessage();
-        $message->setOriginNumber($origin);
-        $message->setDestinationNumber($message['number']);
-        $message->setMessageContent($messageContent);
+        $whatsAppMessage = new WhatsAppMessage();
+        $whatsAppMessage->setOriginNumber($origin);
+        $whatsAppMessage->setDestinationNumber($message['number']);
+        $whatsAppMessage->setMessageContent($messageContent);
 
-        return self::$whatsAppClient->sendMedia($message);
+        return self::$whatsAppClient->sendMedia($whatsAppMessage);
     }
 }
