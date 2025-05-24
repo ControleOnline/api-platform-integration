@@ -10,6 +10,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\WhatsAppService;
+use Symfony\Component\HttpFoundation\JsonResponse;
 
 class WhatsAppController extends AbstractController
 {
@@ -38,7 +39,7 @@ class WhatsAppController extends AbstractController
         $integrationService->addIntegration($rawInput, 'WhatsApp');
         self::$logger->info('Evento enviado para a fila', ['event' => $event]);
 
-        return new Response('[accepted]', Response::HTTP_ACCEPTED);
+        return new JsonResponse(['accepted'], Response::HTTP_ACCEPTED);
     }
 
 
@@ -59,6 +60,6 @@ class WhatsAppController extends AbstractController
 
         self::$logger->info('Created a session', ['phone' => $phone]);
 
-        return new Response($session, Response::HTTP_ACCEPTED);
+        return new JsonResponse($session, Response::HTTP_CREATED);
     }
 }
