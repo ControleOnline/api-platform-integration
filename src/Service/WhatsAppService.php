@@ -16,7 +16,9 @@ use ControleOnline\Service\WalletService;
 use ControleOnline\WhatsApp\Messages\WhatsAppContent;
 use ControleOnline\WhatsApp\Messages\WhatsAppMedia;
 use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
+use ControleOnline\WhatsApp\Profile\WhatsAppProfile;
 use ControleOnline\WhatsApp\WhatsAppClient;
+use Mautic\Api\Webhooks;
 
 class WhatsAppService
 {
@@ -59,11 +61,25 @@ class WhatsAppService
             case 'sendMedia':
                 return $this->sendMedia($json);
                 break;
+            case 'receiveMessage':
+                return $this->receiveMessage($json);
+                break;
             default:
                 return null;
                 break;
         }
     }
+
+    public function createSession(string $phoneNumber)
+    {
+        $whatsAppProfile = new WhatsAppProfile();
+        $whatsAppProfile->setPhoneNumber($phoneNumber);
+
+        return self::$whatsAppClient->createSession($whatsAppProfile);
+    }
+
+
+    private function receiveMessage(array $message) {}
 
     private function sendMessage(array $message)
     {

@@ -9,6 +9,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\WhatsAppService;
 
 class WhatsAppController extends AbstractController
 {
@@ -16,6 +17,7 @@ class WhatsAppController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
+        public WhatsAppService $whatsAppService
     ) {
         self::$logger = $loggerService->getLogger('WhatsApp');
     }
@@ -37,5 +39,26 @@ class WhatsAppController extends AbstractController
         self::$logger->info('Evento enviado para a fila', ['event' => $event]);
 
         return new Response('[accepted]', Response::HTTP_ACCEPTED);
+    }
+
+
+
+    #[Route('/whatsapp/create-session', name: 'whatsapp_session', methods: ['POST'])]
+    #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+    public function handleWhatsappCreateSession(
+        Request $request,
+    ): Response {
+        $rawInput = $request->getContent();
+        $event = json_decode($rawInput, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
+            return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
+        }
+        $phone = $event['phone'];
+        $session = $this->whatsAppService->createSession($phone);
+
+        self::$logger->info('Created a session', ['phone' => $phone]);
+
+        return new Response($session, Response::HTTP_ACCEPTED);
     }
 }
