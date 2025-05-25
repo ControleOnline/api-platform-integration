@@ -18,7 +18,7 @@ use ControleOnline\WhatsApp\Messages\WhatsAppMedia;
 use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
 use ControleOnline\WhatsApp\Profile\WhatsAppProfile;
 use ControleOnline\WhatsApp\WhatsAppClient;
-use Mautic\Api\Webhooks;
+use ControleOnline\Entity\Connection;
 
 class WhatsAppService
 {
@@ -52,22 +52,17 @@ class WhatsAppService
 
     public function integrate(Integration $integration)
     {
-        $json = json_decode($integration->getBody(), true);
+        $message = json_decode($integration->getBody(), true);
 
-        switch ($json["action"]) {
-            case 'sendMessage':
-                return $this->sendMessage($json);
-                break;
-            case 'sendMedia':
-                return $this->sendMedia($json);
-                break;
-            case 'receiveMessage':
-                return $this->receiveMessage($json);
-                break;
-            default:
-                return null;
-                break;
-        }
+        $messageContent = new WhatsAppContent();
+        $messageContent->setBody($message['message']);
+
+        $whatsAppMessage = new WhatsAppMessage();
+        $whatsAppMessage->setOriginNumber($message['origin']);
+        $whatsAppMessage->setDestinationNumber($message['destination']);
+        $whatsAppMessage->setMessageContent($messageContent);
+
+        $this->processMessage($whatsAppMessage);
     }
 
     public function createSession(string $phoneNumber)
@@ -78,37 +73,44 @@ class WhatsAppService
         return self::$whatsAppClient->createSession($whatsAppProfile);
     }
 
-
-    private function receiveMessage(array $message) {}
-
-    private function sendMessage(array $message)
+    private function receiveMessage(WhatsAppMessage $whatsAppMessage)
     {
-        $messageContent = new WhatsAppContent();
-        $messageContent->setBody($message['message']);
+        $whatsAppProfile = new WhatsAppProfile();
+        $content = $whatsAppMessage->getMessageContent();
+        $whatsAppProfile->setPhoneNumber($content['destination']);
 
-        $whatsAppMessage = new WhatsAppMessage();
-        $whatsAppMessage->setOriginNumber($message['origin']);
-        $whatsAppMessage->setDestinationNumber($message['destination']);
-        $whatsAppMessage->setMessageContent($messageContent);
-
-        return self::$whatsAppClient->sendMessage($whatsAppMessage);
+        $connection = $this->getConnectionFromProfile($whatsAppProfile);
+        $connection->gettype();
     }
 
-    private function sendMedia(array $message)
+    private function getConnectionFromProfile(WhatsAppProfile $whatsAppProfile): Connection
     {
+        return $this->manager->getRepository(Connection::class)->findOneBy([
+            'phone' => $whatsAppProfile->getPhoneNumber(),
+            'channel' => 'whatsapp'
+        ]);
+    }
 
-        $media = new WhatsAppMedia();
-        $media->setData($message['file']);
+    public function processMessage(WhatsAppMessage $whatsAppMessage)
+    {
+        $content = $whatsAppMessage->getMessageContent();
 
-        $messageContent = new WhatsAppContent();
-        $messageContent->setBody($message['message']);
-        $messageContent->setMedia($media);
-
-        $whatsAppMessage = new WhatsAppMessage();
-        $whatsAppMessage->setOriginNumber($message['origin']);
-        $whatsAppMessage->setDestinationNumber($message['destination']);
-        $whatsAppMessage->setMessageContent($messageContent);
-
-        return self::$whatsAppClient->sendMedia($whatsAppMessage);
+        switch ($content["action"]) {
+            case 'sendMessage':
+                return self::$whatsAppClient->sendMessage($whatsAppMessage);
+                break;
+            case 'sendMedia':
+                $media = new WhatsAppMedia();
+                $media->setData($content['file']);
+                $content->setMedia($media);
+                return self::$whatsAppClient->sendMedia($whatsAppMessage);
+                break;
+            case 'receiveMessage':
+                return $this->receiveMessage($whatsAppMessage);
+                break;
+            default:
+                return null;
+                break;
+        }
     }
 }
