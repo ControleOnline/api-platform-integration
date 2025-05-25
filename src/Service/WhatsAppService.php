@@ -33,6 +33,7 @@ class WhatsAppService
         private OrderService $orderService,
         private WalletService $walletService,
         private StatusService $statusService,
+        private AutomationMessagesService $automationMessagesService,
 
     ) {
         if (!self::$whatsAppClient)
@@ -75,21 +76,14 @@ class WhatsAppService
 
     private function receiveMessage(WhatsAppMessage $whatsAppMessage)
     {
-        $whatsAppProfile = new WhatsAppProfile();
         $content = $whatsAppMessage->getMessageContent();
+
+        $whatsAppProfile = new WhatsAppProfile();
         $whatsAppProfile->setPhoneNumber($content['destination']);
 
-        $connection = $this->getConnectionFromProfile($whatsAppProfile);
-        $connection->gettype();
+        return $this->automationMessagesService->receiveMessage($whatsAppMessage, $whatsAppProfile);
     }
 
-    private function getConnectionFromProfile(WhatsAppProfile $whatsAppProfile): Connection
-    {
-        return $this->manager->getRepository(Connection::class)->findOneBy([
-            'phone' => $whatsAppProfile->getPhoneNumber(),
-            'channel' => 'whatsapp'
-        ]);
-    }
 
     public function processMessage(WhatsAppMessage $whatsAppMessage)
     {
