@@ -34,6 +34,7 @@ class WhatsAppService
         private WalletService $walletService,
         private StatusService $statusService,
         private AutomationMessagesService $automationMessagesService,
+        private TaskInterationService $taskInterationService,
 
     ) {
         if (!self::$whatsAppClient)
@@ -77,13 +78,29 @@ class WhatsAppService
     private function receiveMessage(WhatsAppMessage $whatsAppMessage)
     {
         $content = $whatsAppMessage->getMessageContent();
-
         $whatsAppProfile = new WhatsAppProfile();
         $whatsAppProfile->setPhoneNumber($content['destination']);
-
-        return $this->automationMessagesService->receiveMessage($whatsAppMessage, $whatsAppProfile);
+        $connection = $this->getConnectionFromProfile($whatsAppProfile);
+        switch ($connection->gettype()) {
+            case 'support':
+                return $this->taskInterationService->addClientInteration($whatsAppMessage, $connection->getPeople(), 'support');
+                break;
+            case 'crm':
+                return $this->taskInterationService->addClientInteration($whatsAppMessage, $connection->getPeople(), 'relationship');
+                break;
+            default:
+                return $this->automationMessagesService->receiveMessage($whatsAppMessage, $connection);
+                break;
+        }
     }
 
+    private function getConnectionFromProfile(WhatsAppProfile $profile): Connection
+    {
+        return $this->manager->getRepository(Connection::class)->findOneBy([
+            'phone' => $profile->getPhoneNumber(),
+            'channel' => 'whatsapp'
+        ]);
+    }
 
     public function processMessage(WhatsAppMessage $whatsAppMessage)
     {
@@ -95,7 +112,7 @@ class WhatsAppService
                 break;
             case 'sendMedia':
                 $media = new WhatsAppMedia();
-                $media->setData($content['file']);
+                $media->setData(pack("C*", ...$content['file']));
                 $content->setMedia($media);
                 return self::$whatsAppClient->sendMedia($whatsAppMessage);
                 break;
