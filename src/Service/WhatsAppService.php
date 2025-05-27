@@ -61,6 +61,7 @@ class WhatsAppService
         $messageContent->setBody($message['message']);
 
         $whatsAppMessage = new WhatsAppMessage();
+        $whatsAppMessage->setAction($message['action']);
         $whatsAppMessage->setOriginNumber($message['origin']);
         $whatsAppMessage->setDestinationNumber($message['destination']);
         $whatsAppMessage->setMessageContent($messageContent);
@@ -108,7 +109,7 @@ class WhatsAppService
         $content = $whatsAppMessage->getMessageContent();
         $message = json_decode($content->getBody(), true);
         print_r($message);
-        switch ($message["action"]) {
+        switch ($message->getAction()) {
             case 'sendMessage':
                 return self::$whatsAppClient->sendMessage($whatsAppMessage);
                 break;
