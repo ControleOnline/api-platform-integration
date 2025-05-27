@@ -109,7 +109,7 @@ class WhatsAppService
         $content = $whatsAppMessage->getMessageContent();
         $message = json_decode($content->getBody(), true);
         print_r($message);
-        switch ($message->getAction()) {
+        switch ($whatsAppMessage->getAction()) {
             case 'sendMessage':
                 return self::$whatsAppClient->sendMessage($whatsAppMessage);
                 break;
