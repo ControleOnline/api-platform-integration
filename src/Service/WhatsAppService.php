@@ -106,9 +106,9 @@ class WhatsAppService
 
     public function processMessage(WhatsAppMessage $whatsAppMessage)
     {
+        $whatsAppMessage->validate();
         $content = $whatsAppMessage->getMessageContent();
         $message = json_decode($content->getBody(), true);
-        print_r($message);
         switch ($whatsAppMessage->getAction()) {
             case 'sendMessage':
                 return self::$whatsAppClient->sendMessage($whatsAppMessage);
