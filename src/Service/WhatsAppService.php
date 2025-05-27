@@ -19,6 +19,7 @@ use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
 use ControleOnline\WhatsApp\Profile\WhatsAppProfile;
 use ControleOnline\WhatsApp\WhatsAppClient;
 use ControleOnline\Entity\Connection;
+use Symfony\Component\Serializer\Encoder\JsonDecode;
 
 class WhatsAppService
 {
@@ -105,14 +106,15 @@ class WhatsAppService
     public function processMessage(WhatsAppMessage $whatsAppMessage)
     {
         $content = $whatsAppMessage->getMessageContent();
+        $message = json_decode($content->getBody(), true);
 
-        switch ($content["action"]) {
+        switch ($message["action"]) {
             case 'sendMessage':
                 return self::$whatsAppClient->sendMessage($whatsAppMessage);
                 break;
             case 'sendMedia':
                 $media = new WhatsAppMedia();
-                $media->setData(pack("C*", ...$content['file']));
+                $media->setData($message['file']);
                 $content->setMedia($media);
                 return self::$whatsAppClient->sendMedia($whatsAppMessage);
                 break;
