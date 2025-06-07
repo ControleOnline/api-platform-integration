@@ -79,9 +79,11 @@ class WhatsAppService
 
     private function receiveMessage(WhatsAppMessage $whatsAppMessage)
     {
-        $content = $whatsAppMessage->getMessageContent()->getBody();
+        $content = $whatsAppMessage->getMessageContent();
+        $message = json_decode($content->getBody(), true);
+
         $whatsAppProfile = new WhatsAppProfile();
-        $whatsAppProfile->setPhoneNumber($content['destination']);
+        $whatsAppProfile->setPhoneNumber($message['destination']);
         $connection = $this->getConnectionFromProfile($whatsAppProfile);
         switch ($connection->gettype()) {
             case 'support':
