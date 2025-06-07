@@ -67,7 +67,7 @@ class WhatsAppService
         $whatsAppMessage->setDestinationNumber($message['destination']);
         $whatsAppMessage->setMessageContent($messageContent);
 
-        $this->processMessage($whatsAppMessage);
+        return $this->processMessage($whatsAppMessage);
     }
 
     public function createSession(string $phoneNumber)
