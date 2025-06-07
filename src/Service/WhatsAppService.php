@@ -19,6 +19,7 @@ use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
 use ControleOnline\WhatsApp\Profile\WhatsAppProfile;
 use ControleOnline\WhatsApp\WhatsAppClient;
 use ControleOnline\Entity\Connection;
+use ControleOnline\Entity\Phone;
 use Symfony\Component\Serializer\Encoder\JsonDecode;
 
 class WhatsAppService
@@ -79,11 +80,8 @@ class WhatsAppService
 
     private function receiveMessage(WhatsAppMessage $whatsAppMessage)
     {
-        $content = $whatsAppMessage->getMessageContent();
-        $message = json_decode($content->getBody(), true);
-
         $whatsAppProfile = new WhatsAppProfile();
-        $whatsAppProfile->setPhoneNumber($message['destination']);
+        $whatsAppProfile->setPhoneNumber($whatsAppMessage->getDestinationNumber());
         $connection = $this->getConnectionFromProfile($whatsAppProfile);
         switch ($connection->gettype()) {
             case 'support':
@@ -100,8 +98,14 @@ class WhatsAppService
 
     private function getConnectionFromProfile(WhatsAppProfile $profile): Connection
     {
+        $phone  = $this->manager->getRepository(Phone::class)->findOneBy([
+            'phone' => substr($profile->getPhoneNumber(), 4),
+            'ddd' => substr($profile->getPhoneNumber(), 2, 2),
+            'ddi' => substr($profile->getPhoneNumber(), 0, 2)
+        ]);
+
         return $this->manager->getRepository(Connection::class)->findOneBy([
-            'phone' => $profile->getPhoneNumber(),
+            'phone' => $phone,
             'channel' => 'whatsapp'
         ]);
     }
