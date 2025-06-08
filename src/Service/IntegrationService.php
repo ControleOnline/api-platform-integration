@@ -9,14 +9,24 @@ use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
+use Symfony\Component\Lock\LockFactory;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+
 
 class IntegrationService
 {
+    private $lock;
     public function __construct(
         private EntityManagerInterface $manager,
         private Security $security,
         private StatusService $statusService,
-    ) {}
+        private LockFactory $lockFactory,
+        private ContainerInterface $container,
+
+
+    ) {
+        $this->lock = $this->lockFactory->createLock('integration:start');
+    }
 
 
     public function getAllOpenIntegrations($limit = 100): array
@@ -33,6 +43,26 @@ class IntegrationService
             ->setMaxResults($limit);
         return $queryBuilder->getQuery()->getResult();
     }
+
+    public function executeIntegration(Integration $integration)
+    {
+        $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+        $method = 'integrate';
+        $return = null;
+        if ($this->container->has($serviceName)) {
+            $service = $this->container->get($serviceName);
+            if (method_exists($service, $method))
+                $return = $service->$method($integration);
+        }
+
+        if ($return) $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
+        else $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+
+        $this->manager->persist($integration);
+        $this->manager->flush();
+    }
+
+
 
     public function getWebsocketOpen(array $devices = [], $limit = 100): array
     {
@@ -87,6 +117,11 @@ class IntegrationService
 
         $this->manager->persist($integration);
         $this->manager->flush();
+
+        if ($this->lock->acquire()) {
+            $this->executeIntegration($integration);
+            $this->lock->release();
+        }
 
         return $integration;
     }

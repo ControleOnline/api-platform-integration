@@ -49,25 +49,6 @@ class IntegrationCommand extends DefaultCommand
         $this->setDescription('Query the integration table and process records with pending status');
     }
 
-    protected function executeIntegration(Integration $integration)
-    {
-        $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
-        $method = 'integrate';
-        $return = null;
-        if ($this->container->has($serviceName)) {
-            $this->addLog('Service: ' . $serviceName);
-            $service = $this->container->get($serviceName);
-            if (method_exists($service, $method))
-                $return = $service->$method($integration);
-        }
-
-        if ($return) $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
-        else $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
-
-        $this->entityManager->persist($integration);
-        $this->entityManager->flush();
-    }
-
     protected function runCommand(): int
     {
         if ($this->lock->acquire()) {
@@ -76,8 +57,10 @@ class IntegrationCommand extends DefaultCommand
 
             foreach ($integrations as $integration)
                 try {
+                    $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
                     $this->addLog(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
-                    $this->executeIntegration($integration);
+                    $this->addLog('Service: ' . $serviceName);
+                    $this->integrationService->executeIntegration($integration);
                 } catch (Throwable $e) {
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
