@@ -63,8 +63,8 @@ class WhatsAppService
 
         $whatsAppMessage = new WhatsAppMessage();
         $whatsAppMessage->setAction($message['action']);
-        $whatsAppMessage->setOriginNumber($message['origin']);
-        $whatsAppMessage->setDestinationNumber($message['destination']);
+        $whatsAppMessage->setOriginNumber((int)$message['origin']);
+        $whatsAppMessage->setDestinationNumber((int)$message['destination']);
         $whatsAppMessage->setMessageContent($messageContent);
 
         return $this->processMessage($whatsAppMessage);
