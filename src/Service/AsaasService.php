@@ -5,6 +5,7 @@ namespace ControleOnline\Service;
 use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
+use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\InvoiceService;
@@ -129,6 +130,43 @@ class AsaasService
             ],
 
         ]);
+    }
+
+
+    public function payWithCard(Order $order, array $json)
+    {
+
+        $this->init($order->getProvider());
+        $userPeople = $user = $this->security->getToken()->getUser()->getPeople();
+        $customer = $this->discoveryCustomer($userPeople);
+
+
+
+        $data = [
+            "customer" =>  $customer['id'],
+            "billingType" => $json['billingType'],
+            "remoteIp" => '200.187.64.87',
+            "value" => $json['value'],
+            "dueDate" => date('Y-m-d'),
+            "daysAfterDueDateToRegistrationCancellation" => 1,
+            "externalReference" => $order->getId(),
+            "creditCard" => $json['creditCard']
+        ];
+
+        $response = $this->client->request('POST', 'payments/', [
+            'json' => $data
+        ]);
+
+        return json_decode($response->getBody()->getContents(), true);
+    }
+
+    public function discoveryCustomer(People $people)
+    {
+        $response = $this->client->request('GET',  'customers', ['query' => ['cpfCnpj' => '32115692861']]);
+        $customer = json_decode($response->getBody()->getContents(), true);
+
+        if ($customer['totalCount'] > 0)
+            return $customer['data'][0];
     }
 
     public function getClient($client_id)
