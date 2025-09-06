@@ -34,7 +34,7 @@ class AsaasService
         private OrderService $orderService,
         private WalletService $walletService,
         private StatusService $statusService,
-
+        private ExtraDataService $extraDataService
     ) {}
 
     private function getApiKey(People $people)
@@ -162,9 +162,20 @@ class AsaasService
             'json' => $data
         ])->getBody()->getContents(), true);
 
-        dd($response);
+        if ($response['id']) {
+            $this->discoveryAsaasCode($invoice, $response['id']);
+            $invoice->setPrice($response['value']);
+            $this->manager->persist($invoice);
+            $this->manager->flush();
+        }
 
         return $invoice;
+    }
+
+    private function discoveryAsaasCode(object $entity, string $code)
+    {
+        $extraFields = $this->extraDataService->discoveryExtraFields('Code', 'Asaas', '{}', 'code');
+        return $this->extraDataService->discoveryExtraData($entity->getId(), $extraFields, $code,  $entity);
     }
 
     public function discoveryCustomer(People $people)
@@ -172,8 +183,10 @@ class AsaasService
         $response = $this->client->request('GET',  'customers', ['query' => ['cpfCnpj' => '32115692861']]);
         $customer = json_decode($response->getBody()->getContents(), true);
 
-        if ($customer['totalCount'] > 0)
+        if ($customer['totalCount'] > 0) {
+            $this->discoveryAsaasCode($people, $customer[0]['id']);
             return $customer['data'][0];
+        }
     }
 
     public function getClient($client_id)
