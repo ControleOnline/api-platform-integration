@@ -5,8 +5,9 @@ namespace ControleOnline\Service;
 use ControleOnline\Entity\Invoice;
 use Endroid\QrCode\Builder\Builder;
 use Endroid\QrCode\Encoding\Encoding;
-use Endroid\QrCode\ErrorCorrectionLevel\ErrorCorrectionLevelHigh;
+use Endroid\QrCode\ErrorCorrectionLevel;
 use Endroid\QrCode\Writer\PngWriter;
+use Endroid\QrCode\RoundBlockSizeMode;
 
 class BitcoinService
 {
@@ -22,10 +23,10 @@ class BitcoinService
             validateResult: false,
             data: $payload,
             encoding: new Encoding('UTF-8'),
-            errorCorrectionLevel: ErrorCorrectionLevelHigh::class, // nível alto, seguro
+            errorCorrectionLevel: new ErrorCorrectionLevel, // aqui é instância
             size: 300,
             margin: 10,
-            roundBlockSizeMode: \Endroid\QrCode\RoundBlockSizeMode::Margin
+            roundBlockSizeMode: RoundBlockSizeMode::Margin
         );
 
         $result = $builder->build();
