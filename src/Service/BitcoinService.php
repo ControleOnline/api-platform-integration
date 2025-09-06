@@ -23,7 +23,7 @@ class BitcoinService
             validateResult: false,
             data: $payload,
             encoding: new Encoding('UTF-8'),
-            errorCorrectionLevel: ErrorCorrectionLevel::H, // Nível de correção de erro alto
+            errorCorrectionLevel: ErrorCorrectionLevel::High, // Nível de correção de erro alto
             size: 300,
             margin: 10,
             roundBlockSizeMode: RoundBlockSizeMode::Margin
