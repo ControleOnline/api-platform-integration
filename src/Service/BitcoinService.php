@@ -3,7 +3,9 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Invoice;
-use Endroid\QrCode\QrCode;
+use Endroid\QrCode\Builder\Builder;
+use Endroid\QrCode\Encoding\Encoding;
+use Endroid\QrCode\ErrorCorrectionLevel\ErrorCorrectionLevelHigh;
 use Endroid\QrCode\Writer\PngWriter;
 
 class BitcoinService
@@ -14,12 +16,19 @@ class BitcoinService
         $amount = $invoice->getPrice();
         $payload = "bitcoin:{$walletAddress}?amount={$amount}";
 
-        $qrCode = new QrCode($payload);
-        $qrCode->setSize(300);
+        $builder = new Builder(
+            writer: new PngWriter(),
+            writerOptions: [],
+            validateResult: false,
+            data: $payload,
+            encoding: new Encoding('UTF-8'),
+            errorCorrectionLevel: ErrorCorrectionLevelHigh::class, // nível alto, seguro
+            size: 300,
+            margin: 10,
+            roundBlockSizeMode: \Endroid\QrCode\RoundBlockSizeMode::Margin
+        );
 
-        $writer = new PngWriter();
-        $result = $writer->write($qrCode);
-
+        $result = $builder->build();
         $encodedImage = base64_encode($result->getString());
 
         return [
