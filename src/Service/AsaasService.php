@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\Card;
 use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
@@ -133,31 +134,37 @@ class AsaasService
     }
 
 
-    public function payWithCard(Order $order, array $json)
+    public function payWithCard(Invoice $invoice, Card $card): Invoice
     {
 
-        $this->init($order->getProvider());
-        $userPeople = $user = $this->security->getToken()->getUser()->getPeople();
+        $this->init($invoice->getReceiver());
+        $userPeople =  $this->security->getToken()->getUser()->getPeople();
         $customer = $this->discoveryCustomer($userPeople);
-
-
 
         $data = [
             "customer" =>  $customer['id'],
-            "billingType" => $json['billingType'],
+            "billingType" => 'CREDIT_CARD',
             "remoteIp" => '200.187.64.87',
-            "value" => $json['value'],
-            "dueDate" => date('Y-m-d'),
-            "daysAfterDueDateToRegistrationCancellation" => 1,
-            "externalReference" => $order->getId(),
-            "creditCard" => $json['creditCard']
+            "value" => $invoice->getPrice(),
+            "dueDate" => $invoice->getDueDate()->format('Y-m-d'),
+            "daysAfterDueDateToRegistrationCancellation" => 10,
+            "externalReference" => $invoice->getId(),
+            "creditCard" => [
+                "holderName" => $card->getName(),
+                "number" =>  $card->getNumberGroup1() . $card->getNumberGroup2() . $card->getNumberGroup3() . $card->getNumberGroup4(),
+                "expiryMonth" => $card->getExpirationMonth(),
+                "expiryYear" => $card->getExpirationYear(),
+                "ccv" => $card->getCcv(),
+            ]
         ];
 
-        $response = $this->client->request('POST', 'payments/', [
+        $response = json_decode($this->client->request('POST', 'payments/', [
             'json' => $data
-        ]);
+        ])->getBody()->getContents(), true);
 
-        return json_decode($response->getBody()->getContents(), true);
+        dd($response);
+
+        return $invoice;
     }
 
     public function discoveryCustomer(People $people)

@@ -2,17 +2,17 @@
 
 namespace ControleOnline\Controller\Asaas;
 
-use ControleOnline\Entity\Order;
+use ControleOnline\Entity\Invoice;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\AsaasService;
+use ControleOnline\Service\CardService;
 use ControleOnline\Service\LoggerService;
 use Doctrine\ORM\EntityManagerInterface;
 
-class AsaasPaymentController extends AbstractController
+class AsaasCardController extends AbstractController
 {
     protected static $logger;
 
@@ -20,25 +20,19 @@ class AsaasPaymentController extends AbstractController
         private EntityManagerInterface $manager,
         private LoggerService $loggerService,
         protected Security $security,
+        protected AsaasService $asaasService,
+        protected CardService $cardService
     ) {
         self::$logger = $loggerService->getLogger('asaas');
     }
 
-    #[Route('/payment/asaas/{id}', name: 'payment_asaas', methods: ['POST'])]
+
     public function __invoke(
-        int $id,
-        Request $request,
-        AsaasService $asaasService
+        Invoice $invoice,
+        Request $request
     ): JsonResponse {
         try {
 
-            $user = $this->security->getToken()->getUser();
-            if (!$user)
-                return new JsonResponse(['error' => 'You should not pass!!!'], 301);
-
-            $order = $this->manager->getRepository(Order::class)->find($id);
-            if (!$order)
-                return new JsonResponse(['error' => 'Order not found'], 404);
 
             $json = json_decode($request->getContent(), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
@@ -46,7 +40,9 @@ class AsaasPaymentController extends AbstractController
                 return new JsonResponse(['error' => 'Invalid JSON'], 400);
             }
 
-            $asaasService->payWithCard($order,$json);
+            $card = $this->cardService->findCardById($json['card_id']);
+
+            $this->asaasService->payWithCard($invoice, $card);
 
             self::$logger->info('Pagamento Asaas criado', ['event' => $json]);
 
