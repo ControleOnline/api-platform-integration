@@ -19,6 +19,7 @@ use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
 use ControleOnline\WhatsApp\Profile\WhatsAppProfile;
 use ControleOnline\WhatsApp\WhatsAppClient;
 use ControleOnline\Entity\Connection;
+use ControleOnline\Entity\People;
 use ControleOnline\Entity\Phone;
 use Symfony\Component\Serializer\Encoder\JsonDecode;
 
@@ -69,7 +70,10 @@ class WhatsAppService
 
         return $this->processMessage($whatsAppMessage);
     }
-
+  public function searchConnectionFromPeople(People $people, string $type): ?Connection
+  {
+    return $this->manager->getRepository(Connection::class)->findOneBy(['type' => $type, 'people' => $people]);
+  }
     public function createSession(string $phoneNumber)
     {
         $whatsAppProfile = new WhatsAppProfile();
