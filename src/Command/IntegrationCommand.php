@@ -53,7 +53,7 @@ class IntegrationCommand extends DefaultCommand
     {
         if ($this->lock->acquire()) {
             $this->addLog('Iniciando a verificação da fila de integração...');
-            $integrations = $this->integrationService->getAllOpenIntegrations(10);
+            $integrations = $this->integrationService->getAllOpenIntegrations(1000);
 
             foreach ($integrations as $integration)
                 try {
