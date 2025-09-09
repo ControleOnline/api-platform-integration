@@ -70,10 +70,12 @@ class WhatsAppService
 
         return $this->processMessage($whatsAppMessage);
     }
-  public function searchConnectionFromPeople(People $people, string $type): ?Connection
-  {
-    return $this->manager->getRepository(Connection::class)->findOneBy(['type' => $type, 'people' => $people]);
-  }
+
+    public function searchConnectionFromPeople(People $people, string $type): ?Connection
+    {
+        return $this->manager->getRepository(Connection::class)->findOneBy(['type' => $type, 'people' => $people]);
+    }
+    
     public function createSession(string $phoneNumber)
     {
         $whatsAppProfile = new WhatsAppProfile();
