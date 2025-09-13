@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Controller\WhatsApp;
+namespace ControleOnline\Controller\ClickSign;
 
 use ControleOnline\Service\IntegrationService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
