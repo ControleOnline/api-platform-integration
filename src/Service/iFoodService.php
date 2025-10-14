@@ -233,7 +233,7 @@ class iFoodService
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
         $this->addFees($order, $orderDetails['total']);
     }
-    private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderProductParent = null, ?string $productType = 'product')
+    private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderParentProduct = null, ?string $productType = 'product')
     {
         foreach ($items as $item) {
 
@@ -244,7 +244,7 @@ class iFoodService
             $productGroup = null;
             if (isset($item['groupName']))
                 $productGroup = $this->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
-            $orderProduct =  $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderProductParent);
+            $orderProduct =  $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderParentProduct);
             if (isset($item['options']) && $item['options'])
                 $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
             if (isset($item['customizations']) && $item['customizations'])
@@ -353,12 +353,12 @@ class iFoodService
     {
         $productGroup = $this->entityManager->getRepository(ProductGroup::class)->findOneBy([
             'productGroup' => $groupName,
-            'productParent' => $parentProduct
+            'parentProduct' => $parentProduct
         ]);
 
         if (!$productGroup) {
             $productGroup = new ProductGroup();
-            $productGroup->setProductParent($parentProduct);
+            $productGroup->setParentProduct($parentProduct);
             $productGroup->setProductGroup($groupName);
             $productGroup->setPriceCalculation('sum');
             $productGroup->setRequired(false);
