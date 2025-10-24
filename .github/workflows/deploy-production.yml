@@ -18,7 +18,7 @@ jobs:
           key: ${{ secrets.CONTROLEONLINE }}
           port: ${{ secrets.PORT }}        
           script: |
-                  cd ~/sistemas/controleonline/api/modules/integration
+                  cd ~/sistemas/controleonline/api/modules/controleonline/integration
                   git checkout master
                   git pull origin master
                   cd ~/sistemas/controleonline/api/
