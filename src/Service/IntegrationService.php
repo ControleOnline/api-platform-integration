@@ -118,10 +118,10 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
-        if ($this->lock->acquire()) {
-            $this->executeIntegration($integration);
-            $this->lock->release();
-        }
+        //if ($this->lock->acquire()) {
+        //    $this->executeIntegration($integration);
+        //    $this->lock->release();
+        //}
 
         return $integration;
     }
