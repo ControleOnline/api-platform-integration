@@ -71,11 +71,11 @@ class WhatsAppService
         return $this->processMessage($whatsAppMessage);
     }
 
-    public function searchConnectionFromPeople(People $people, string $type): ?Connection
+    public function searchConnectionFromPeople(People $people, string $type, $mainConnection = false): ?Connection
     {
-        return $this->manager->getRepository(Connection::class)->findOneBy(['type' => $type, 'people' => $people]);
+        return $this->taskInterationService->searchConnectionFromPeople($people,  $type, $mainConnection);
     }
-    
+
     public function createSession(string $phoneNumber)
     {
         $whatsAppProfile = new WhatsAppProfile();
