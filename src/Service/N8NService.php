@@ -4,7 +4,6 @@ namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Task;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
-use Doctrine\ORM\EntityManagerInterface;
 use ControleOnline\Entity\Connection;
 use ControleOnline\Messages\MessageInterface;
 
@@ -13,9 +12,15 @@ class N8NService
 
     public function __construct(
         private HttpClientInterface $n8nClient,
-        private EntityManagerInterface $entityManager,
         private SkyNetService $skyNetService,
-    ) {}
+    ) {
+        $this->skyNetService->discoveryBotUser('N8N');
+        $this->n8nClient = $this->n8nClient->withOptions([
+            'headers' => [
+                'api-key' => $this->skyNetService->getBotUser()->getApiKey(),
+            ]
+        ]);
+    }
 
     public function sendToWebhook(MessageInterface $message, Connection $connection, Task $task)
     {
