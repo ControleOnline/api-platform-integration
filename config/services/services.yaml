@@ -19,7 +19,7 @@ services:
         resource: '../../src/Filter'
     ControleOnline\Service\N8NService:
         arguments:
-            $httpClient: '@http_client.n8n'
+            $n8nClient: '@http_client.n8n'
     http_client.n8n:
         class: Symfony\Contracts\HttpClient\HttpClientInterface
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
