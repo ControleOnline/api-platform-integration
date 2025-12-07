@@ -34,7 +34,7 @@ class N8NService
                     'taskStatus' => $task->getTaskStatus() ? $task->getTaskStatus()->getStatus() : null,
                     'category' => $task->getCategory() ? $task->getCategory()->getName() : null,
                     'reason' => $task->getReason() ? $task->getReason()->getName() : null,
-                    'criticality' => $task->getCriticality() ? $task->getCriticality()->getLevel() : null,
+                    'criticality' => $task->getCriticality() ? $task->getCriticality()->getName() : null,
                     'createdAt' => $task->getCreatedAt() ? $task->getCreatedAt()->format('Y-m-d H:i:s') : null,
                     'alterDate' => $task->getAlterDate() ? $task->getAlterDate()->format('Y-m-d H:i:s') : null,
                     'order' => [
