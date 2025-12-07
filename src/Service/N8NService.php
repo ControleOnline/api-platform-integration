@@ -17,7 +17,7 @@ class N8NService
         $this->skyNetService->discoveryBotUser('N8N');
         $this->n8nClient = $this->n8nClient->withOptions([
             'headers' => [
-                'api-key' => $this->skyNetService->getBotUser()->getApiKey(),
+                'api-token' => $this->skyNetService->getBotUser()->getApiKey(),
             ]
         ]);
     }
