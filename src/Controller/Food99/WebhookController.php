@@ -17,11 +17,11 @@ class WebhookController extends AbstractController
     public function __construct(
         private LoggerService $loggerService,
     ) {
-        self::$logger = $loggerService->getLogger('99Food');
+        self::$logger = $loggerService->getLogger('Food99');
     }
 
-    #[Route('/webhook/99food', name: '99food_webhook', methods: ['POST'])]
-    public function handle99FoodWebhook(
+    #[Route('/webhook/Food99', name: 'Food99_webhook', methods: ['POST'])]
+    public function handleFood99Webhook(
         Request $request,
         IntegrationService $integrationService
     ): Response {
@@ -30,7 +30,7 @@ class WebhookController extends AbstractController
 
         $event = json_decode($rawInput, true);
 
-        $integrationService->addIntegration($rawInput, '99Food');
+        $integrationService->addIntegration($rawInput, 'Food99');
         self::$logger->info('Evento enviado para a fila', ['event' => $event]);
 
         return new Response('[accepted]', Response::HTTP_ACCEPTED);
