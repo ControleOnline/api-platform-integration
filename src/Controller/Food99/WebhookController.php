@@ -1,6 +1,6 @@
 <?php
 
-namespace ControleOnline\Controller\99Food;
+namespace ControleOnline\Controller\Food99;
 
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
