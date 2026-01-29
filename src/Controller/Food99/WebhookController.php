@@ -20,7 +20,7 @@ class WebhookController extends AbstractController
         self::$logger = $loggerService->getLogger('Food99');
     }
 
-    #[Route('/webhook/Food99', name: 'Food99_webhook', methods: ['POST'])]
+    #[Route('/webhook/99food', name: 'Food99_webhook', methods: ['POST'])]
     public function handleFood99Webhook(
         Request $request,
         IntegrationService $integrationService
