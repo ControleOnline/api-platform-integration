@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -11,33 +12,27 @@ use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\User;
+use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
+use ControleOnline\Service\LoggerService;
 use DateTime;
+use Exception;
 
-class Food99Service
+
+class Food99Service extends DefaultFoodService
 {
-    private static $extraFields;
-    private static $people99;
-    protected static $logger;
-
-    public function __construct(
-        private EntityManagerInterface $entityManager,
-        private LoggerService $loggerService,
-        private ExtraDataService $extraDataService,
-        private PeopleService $peopleService,
-        private OrderService $orderService,
-        private StatusService $statusService,
-        private AddressService $addressService,
-        private WalletService $walletService,
-        private OrderProductService $orderProductService
-    ) {
-        self::$logger = $this->loggerService->getLogger('Food99');
-        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', 'Food99', '{}', 'code');
-        self::$people99 = $this->peopleService->discoveryPeople('Food99', null, null, 'Food99', 'J');
+    private function init()
+    {
+        self::$app = 'Food99';
+        self::$logger = $this->loggerService->getLogger(self::$app);
+        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', self::$app, '{}', 'code');
+        self::$foodPeople = $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
 
     public function integrate(Integration $integration): ?Order
     {
+        $this->init();
         self::$logger->info('Food99 RAW BODY', [
             'body' => $integration->getBody()
         ]);
@@ -77,18 +72,14 @@ class Food99Service
             return $exists;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(
-            self::$extraFields,
-            (string) ($info['shop']['shop_id'] ?? ''),
-            People::class
-        );
+        $provider = $this->extraDataService->getEntityByExtraData(self::$extraFields, $info['shop']['shop_id'], People::class);
 
         if (!$provider) {
             $provider = $this->peopleService->discoveryPeople(
-                $info['shop']['shop_id'] ?? null,
                 null,
                 null,
-                $info['shop']['shop_name'] ?? 'Food99',
+                null,
+                $info['shop']['shop_name'],
                 'J'
             );
         }
@@ -96,19 +87,7 @@ class Food99Service
         $client = $this->discoveryClient($data['receive_address'] ?? []);
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
 
-        $order = new Order();
-        $order->setClient($client);
-        $order->setProvider($provider);
-        $order->setPayer($client);
-        $order->setStatus($status);
-        $order->setAlterDate(new DateTime());
-        $order->setApp('Food99');
-        $order->setOrderType('sale');
-        $order->setUser($this->getApiUser());
-        $order->setPrice($info['price']['order_price'] ?? 0);
-        $order->addOtherInformations('Food99', $json);
-
-        $this->entityManager->persist($order);
+        $order = $this->createOrder($client, $provider, $info['price']['order_price'] ?? 0, $status, $this->getApiUser(),  $json);
 
         $items = $data['order_items'] ?? [];
 
@@ -132,7 +111,7 @@ class Food99Service
         $this->entityManager->persist($order);
         $this->entityManager->flush();
 
-        return $this->discoveryFood99Code($order, $orderId);
+        return $this->discoveryFoodCode($order, $orderId);
     }
 
     private function addProducts(
@@ -238,39 +217,7 @@ class Food99Service
             }
         }
 
-        return $this->discoveryFood99Code($product, $code);
-    }
-
-    private function discoveryProductGroup(
-        Product $parentProduct,
-        string $groupCode,
-        string $groupName
-    ): ProductGroup {
-        $group = $this->entityManager
-            ->getRepository(ProductGroup::class)
-            ->findOneBy([
-                'parentProduct' => $parentProduct,
-                'productGroup' => $groupCode
-            ]);
-
-        if ($group) {
-            return $group;
-        }
-
-        $group = new ProductGroup();
-        $group->setParentProduct($parentProduct);
-        $group->setProductGroup($groupCode);
-        $group->setPriceCalculation('sum');
-        $group->setRequired(false);
-        $group->setMinimum(0);
-        $group->setMaximum(0);
-        $group->setActive(true);
-        $group->setGroupOrder(0);
-
-        $this->entityManager->persist($group);
-        $this->entityManager->flush();
-
-        return $group;
+        return $this->discoveryFoodCode($product, $code);
     }
 
     private function discoveryClient(array $address): ?People
@@ -286,7 +233,7 @@ class Food99Service
             $address['name']
         );
 
-        return $this->discoveryFood99Code(
+        return $this->discoveryFoodCode(
             $client,
             (string) ($address['uid'] ?? uniqid())
         );
@@ -313,22 +260,5 @@ class Food99Service
         );
 
         $order->setAddressDestination($addr);
-    }
-
-    private function getApiUser(): User
-    {
-        return $this->entityManager
-            ->getRepository(User::class)
-            ->find(7);
-    }
-
-    private function discoveryFood99Code(object $entity, string $code)
-    {
-        return $this->extraDataService->discoveryExtraData(
-            $entity->getId(),
-            self::$extraFields,
-            $code,
-            $entity
-        );
     }
 }

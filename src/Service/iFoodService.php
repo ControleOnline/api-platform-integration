@@ -19,38 +19,21 @@ use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
 
-class iFoodService
+class iFoodService extends DefaultFoodService
 {
-    private static $extraFields;
-    private static $iFoodPeople;
-    protected static $logger;
 
-
-    public function __construct(
-        private EntityManagerInterface $entityManager,
-        private LoggerService $loggerService,
-        private HttpClientInterface $httpClient,
-        private ExtraDataService $extraDataService,
-        private PeopleService $peopleService,
-        private OrderService $orderService,
-        private StatusService $statusService,
-        private AddressService $addressService,
-        private ProductService $productService,
-        private WebsocketClient $websocketClient,
-        private ConfigService $configService,
-        private DeviceService $deviceService,
-        private OrderPrintService $orderPrintService,
-        private InvoiceService $invoiceService,
-        private WalletService $walletService,
-        private OrderProductService $orderProductService
-    ) {
-        self::$logger = $loggerService->getLogger('iFood');
-        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', 'iFood', '{}', 'code');
-        self::$iFoodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
+    private function init()
+    {
+        self::$app = 'iFood';
+        self::$logger = $this->loggerService->getLogger(self::$app);
+        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', self::$app, '{}', 'code');
+        self::$foodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
     }
+
 
     public  function integrate(Integration $integration)
     {
+        $this->init();
 
         $json = json_decode($integration->getBody(), true);
 
@@ -81,7 +64,7 @@ class iFoodService
 
             $other = (array) $order->getOtherInformations(true);
             $other[$json['fullCode']] = $json;
-            $order->addOtherInformations('iFood', $other);
+            $order->addOtherInformations(self::$app, $other);
             $order->setStatus($status);
             $this->entityManager->persist($order);
             $this->entityManager->flush();
@@ -91,10 +74,7 @@ class iFoodService
         return null;
     }
 
-    private function getApiUser(): User
-    {
-        return $this->entityManager->getRepository(User::class)->find(7);
-    }
+
 
     private function addOrder(array $json): ?Order
     {
@@ -122,20 +102,7 @@ class iFoodService
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
 
-        $order = new Order();
-        $order->setClient($client);
-        $order->setProvider($provider);
-        $order->setPayer($client);
-        $order->setStatus($status);
-        $order->setAlterDate(new DateTime());
-        $order->setApp('iFood');
-        $order->setOrderType('sale');
-        $order->addOtherInformations('iFood', [$json['fullCode'] => $json]);
-        $order->setUser($this->getApiUser());
-        $totalPrice = $orderDetails['total']['orderAmount'] ?? 0;
-        $order->setPrice($totalPrice);
-
-        $this->entityManager->persist($order);
+        $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status, $this->getApiUser(), [$json['fullCode'] => $json]);
 
         $this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
@@ -147,24 +114,15 @@ class iFoodService
         $this->addLog('info', 'Pedido processado com sucesso', ['orderId' => $orderId]);
 
         $this->printOrder($order);
-        return $this->discoveryiFoodCode($order, $orderId);
+        return $this->discoveryFoodCode($order, $orderId);
     }
 
 
-    private function printOrder(Order $order)
-    {
-        $devices = $this->configService->getConfig($order->getProvider(), 'ifood-devices', true);
 
-        if ($devices)
-            $devices = $this->deviceService->findDevices($devices);
-
-        foreach ($devices as $device)
-            $this->orderPrintService->generatePrintData($order, $device, ['sound' => 'iFood']);
-    }
 
     private function addReceiveInvoices(Order $order, array $payments)
     {
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
         foreach ($payments as $payment)
             $this->invoiceService->createInvoiceByOrder($order, $payment['value'], $payment['prepaid'] ? $status : null, new DateTime(), null,  $iFoodWallet);
@@ -196,14 +154,14 @@ class iFoodService
 
     private function addDeliveryFee(Order &$order, array $payments)
     {
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
-        $order->setRetrieveContact(self::$iFoodPeople);
+        $order->setRetrieveContact(self::$foodPeople);
 
         $this->invoiceService->createInvoice(
             $order,
             $order->getProvider(),
-            self::$iFoodPeople,
+            self::$foodPeople,
             $payments['deliveryFee'],
             $status,
             new DateTime(),
@@ -215,11 +173,11 @@ class iFoodService
     private function addFees(Order $order, array $payments)
     {
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), 'iFood');
+        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $this->invoiceService->createInvoice(
             $order,
             $order->getProvider(),
-            self::$iFoodPeople,
+            self::$foodPeople,
             $payments['additionalFees'],
             $status,
             new DateTime(),
@@ -341,36 +299,7 @@ class iFoodService
 
         $this->peopleService->discoveryClient($provider, $client);
 
-        return $this->discoveryiFoodCode($client, $codClienteiFood);
-    }
-
-    private function discoveryiFoodCode(object $entity, string $code)
-    {
-        return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
-    }
-
-    private function discoveryProductGroup(Product $parentProduct, string $groupName): ProductGroup
-    {
-        $productGroup = $this->entityManager->getRepository(ProductGroup::class)->findOneBy([
-            'productGroup' => $groupName,
-            'parentProduct' => $parentProduct
-        ]);
-
-        if (!$productGroup) {
-            $productGroup = new ProductGroup();
-            $productGroup->setParentProduct($parentProduct);
-            $productGroup->setProductGroup($groupName);
-            $productGroup->setPriceCalculation('sum');
-            $productGroup->setRequired(false);
-            $productGroup->setMinimum(0);
-            $productGroup->setMaximum(0);
-            $productGroup->setActive(true);
-            $productGroup->setGroupOrder(0);
-            $this->entityManager->persist($productGroup);
-            $this->entityManager->flush();
-        }
-
-        return $productGroup;
+        return $this->discoveryFoodCode($client, $codClienteiFood);
     }
 
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
@@ -422,13 +351,6 @@ class iFoodService
         }
 
 
-        return $this->discoveryiFoodCode($product, $codProductiFood);
-    }
-
-
-    private function addLog(string $type, $log)
-    {
-        echo $log;
-        self::$logger->$type($log);
+        return $this->discoveryFoodCode($product, $codProductiFood);
     }
 }
