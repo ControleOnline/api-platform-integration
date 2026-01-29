@@ -87,7 +87,7 @@ class Food99Service extends DefaultFoodService
         $client = $this->discoveryClient($data['receive_address'] ?? []);
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
 
-        $order = $this->createOrder($client, $provider, $info['price']['order_price'] ?? 0, $status, $this->getApiUser(),  $json);
+        $order = $this->createOrder($client, $provider, $info['price']['order_price'] ?? 0, $status,   $json);
 
         $items = $data['order_items'] ?? [];
 
@@ -128,7 +128,7 @@ class Food99Service extends DefaultFoodService
             $productGroup = null;
 
             if ($parentProduct && !empty($item['app_content_id'])) {
-                $productGroup = $this->discoveryProductGroup(
+                $productGroup = $this->productGroupService->discoveryProductGroup(
                     $parentProduct,
                     $item['app_content_id'],
                     $item['content_name'] ?: $item['app_content_id']
@@ -189,7 +189,7 @@ class Food99Service extends DefaultFoodService
         }
 
         if ($parentProduct && !empty($item['app_content_id'])) {
-            $group = $this->discoveryProductGroup(
+            $group = $this->productGroupService->discoveryProductGroup(
                 $parentProduct,
                 $item['app_content_id'],
                 $item['content_name'] ?: $item['app_content_id']

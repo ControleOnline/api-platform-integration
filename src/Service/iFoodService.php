@@ -102,7 +102,7 @@ class iFoodService extends DefaultFoodService
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
 
-        $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status, $this->getApiUser(), [$json['fullCode'] => $json]);
+        $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status,  [$json['fullCode'] => $json]);
 
         $this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
@@ -201,7 +201,7 @@ class iFoodService extends DefaultFoodService
             $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
             $productGroup = null;
             if (isset($item['groupName']))
-                $productGroup = $this->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
+                $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
             $orderProduct =  $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderParentProduct);
             if (isset($item['options']) && $item['options'])
                 $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
@@ -337,7 +337,7 @@ class iFoodService extends DefaultFoodService
             $this->entityManager->persist($product);
             $this->entityManager->flush();
             if ($parentProduct && isset($item['groupName'])) {
-                $productGroup = $this->discoveryProductGroup($parentProduct, $item['groupName']);
+                $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct, $item['groupName']);
                 $productGroupProduct = new ProductGroupProduct();
                 $productGroupProduct->setProduct($parentProduct);
                 $productGroupProduct->setProductChild($product);

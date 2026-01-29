@@ -46,7 +46,8 @@ class DefaultFoodService
         protected OrderPrintService $orderPrintService,
         protected InvoiceService $invoiceService,
         protected WalletService $walletService,
-        protected OrderProductService $orderProductService
+        protected OrderProductService $orderProductService,
+        protected ProductGroupService $productGroupService
     ) {}
 
 
@@ -73,7 +74,6 @@ class DefaultFoodService
         People $provider,
         float $price,
         Status $status,
-        User $user,
         array $otherInformations
     ): Order {
         $order = new Order();
@@ -81,11 +81,9 @@ class DefaultFoodService
         $order->setProvider($provider);
         $order->setPayer($client);
         $order->setStatus($status);
-        $order->setAlterDate(new DateTime());
         $order->setApp(self::$app);
         $order->setOrderType('sale');
         $order->addOtherInformations(self::$app, $otherInformations);
-        $order->setUser($user);
 
         $order->setPrice($price);
 
@@ -93,40 +91,9 @@ class DefaultFoodService
         return $order;
     }
 
-
-        protected function getApiUser(): User
-    {
-        return $this->entityManager->getRepository(User::class)->find(7);
-    }
-
     protected function addLog(string $type, $log)
     {
         echo $log;
         self::$logger->$type($log);
-    }
-
-
-     protected function discoveryProductGroup(Product $parentProduct, string $groupName): ProductGroup
-    {
-        $productGroup = $this->entityManager->getRepository(ProductGroup::class)->findOneBy([
-            'productGroup' => $groupName,
-            'parentProduct' => $parentProduct
-        ]);
-
-        if (!$productGroup) {
-            $productGroup = new ProductGroup();
-            $productGroup->setParentProduct($parentProduct);
-            $productGroup->setProductGroup($groupName);
-            $productGroup->setPriceCalculation('sum');
-            $productGroup->setRequired(false);
-            $productGroup->setMinimum(0);
-            $productGroup->setMaximum(0);
-            $productGroup->setActive(true);
-            $productGroup->setGroupOrder(0);
-            $this->entityManager->persist($productGroup);
-            $this->entityManager->flush();
-        }
-
-        return $productGroup;
     }
 }
