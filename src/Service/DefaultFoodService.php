@@ -51,15 +51,15 @@ class DefaultFoodService
     ) {}
 
 
-    protected function printOrder(Order $order, $sound = false)
+    protected function printOrder(Order $order)
     {
-        $devices = $this->configService->getConfig($order->getProvider(), 'ifood-devices', true);
+        $devices = $this->configService->getConfig($order->getProvider(), $order->getApp() . '-devices', true);
 
         if ($devices)
             $devices = $this->deviceService->findDevices($devices);
 
         foreach ($devices as $device)
-            $this->orderPrintService->generatePrintData($order, $device, ['sound' => $sound]);
+            $this->orderPrintService->generatePrintData($order, $device, ['sound' => $order->getApp()]);
     }
 
 

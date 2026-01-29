@@ -110,7 +110,8 @@ class Food99Service extends DefaultFoodService
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
-
+        
+        $this->printOrder($order);
         return $this->discoveryFoodCode($order, $orderId);
     }
 
