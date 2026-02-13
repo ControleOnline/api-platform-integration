@@ -2,23 +2,13 @@
 
 namespace ControleOnline\Service;
 
-use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
-use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
-use ControleOnline\Entity\User;
-use ControleOnline\Service\Client\WebsocketClient;
-use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Contracts\HttpClient\HttpClientInterface;
-use ControleOnline\Service\LoggerService;
-use DateTime;
-use Exception;
-
 
 class Food99Service extends DefaultFoodService
 {
@@ -33,20 +23,30 @@ class Food99Service extends DefaultFoodService
     public function integrate(Integration $integration): ?Order
     {
         $this->init();
+
         self::$logger->info('Food99 RAW BODY', [
             'body' => $integration->getBody()
         ]);
 
         $json = json_decode($integration->getBody(), true);
 
+        $data  = is_array($json) ? ($json['data'] ?? []) : [];
+        $info  = is_array($data) ? ($data['order_info'] ?? []) : [];
+        $items = is_array($info) ? ($info['order_items'] ?? null) : null;
+
         self::$logger->info('Food99 JSON DECODE', [
             'json_error' => json_last_error_msg(),
-            'has_type' => isset($json['type']),
-            'has_data' => isset($json['data']),
-            'has_order_items' => isset($json['data']['order_items']),
-            'order_items_type' => gettype($json['data']['order_items'] ?? null),
-            'order_items_value' => $json['data']['order_items'] ?? null,
+            'has_type' => is_array($json) && isset($json['type']),
+            'has_data' => is_array($json) && isset($json['data']),
+            'has_order_info' => is_array($data) && isset($data['order_info']),
+            'has_order_items' => isset($items) || (is_array($data) && isset($data['order_items'])),
+            'order_items_path' => isset($items) ? 'data.order_info.order_items' : (isset($data['order_items']) ? 'data.order_items' : null),
+            'order_items_type' => gettype($items ?? ($data['order_items'] ?? null)),
         ]);
+
+        if (!is_array($json)) {
+            return null;
+        }
 
         if (($json['type'] ?? null) !== 'orderNew') {
             return null;
@@ -58,46 +58,79 @@ class Food99Service extends DefaultFoodService
     private function addOrder(array $json): ?Order
     {
         $data = $json['data'] ?? [];
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $info = $data['order_info'] ?? [];
+        if (!is_array($info)) {
+            $info = [];
+        }
+
+        // Fallbacks (alguns webhooks podem mandar fora do order_info)
+        $shop  = $info['shop']  ?? ($data['shop']  ?? []);
+        $price = $info['price'] ?? ($data['price'] ?? []);
+
+        if (!is_array($shop))  $shop = [];
+        if (!is_array($price)) $price = [];
+
+        // order_items: PRIORIDADE no order_info
+        $items = $info['order_items'] ?? ($data['order_items'] ?? []);
+        if (!is_array($items)) {
+            $items = [];
+        }
+
+        // receive_address: PRIORIDADE no order_info
+        $receiveAddress = $info['receive_address'] ?? ($data['receive_address'] ?? []);
+        if (!is_array($receiveAddress)) {
+            $receiveAddress = [];
+        }
 
         self::$logger->info('Food99 ADD ORDER DATA', [
             'keys' => array_keys($data),
-            'order_items_type' => gettype($data['order_items'] ?? null),
+            'has_order_info' => !empty($info),
+            'order_items_type' => gettype($items),
+            'order_items_count' => is_array($items) ? count($items) : null,
         ]);
 
-        $info = $data['order_info'] ?? [];
-        $orderId = (string) ($data['order_id'] ?? uniqid());
+        $orderId = (string)($data['order_id'] ?? ($info['order_id'] ?? uniqid()));
 
         $exists = $this->extraDataService->getEntityByExtraData(self::$extraFields, $orderId, Order::class);
         if ($exists) {
             return $exists;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(self::$extraFields, $info['shop']['shop_id'], People::class);
+        $shopId = $shop['shop_id'] ?? null;
+
+        $provider = null;
+        if ($shopId) {
+            $provider = $this->extraDataService->getEntityByExtraData(self::$extraFields, $shopId, People::class);
+        }
 
         if (!$provider) {
             $provider = $this->peopleService->discoveryPeople(
                 null,
                 null,
                 null,
-                $info['shop']['shop_name'],
+                $shop['shop_name'] ?? 'Loja Food99',
                 'J'
             );
         }
 
-        $client = $this->discoveryClient($data['receive_address'] ?? []);
+        $client = $this->discoveryClient($receiveAddress);
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
 
-        $order = $this->createOrder($client, $provider, $info['price']['order_price'] ?? 0, $status,   $json);
+        $orderPrice = $price['order_price'] ?? 0;
 
-        $items = $data['order_items'] ?? [];
+        $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
 
         self::$logger->info('Food99 BEFORE addProducts', [
             'is_array' => is_array($items),
             'count' => is_array($items) ? count($items) : null,
-            'value' => $items
+            'value_preview' => is_array($items) ? array_slice($items, 0, 2) : null
         ]);
 
-        if (is_array($items) && !empty($items)) {
+        if (!empty($items)) {
             $this->addProducts($order, $items);
         } else {
             self::$logger->error('Food99 order_items inválido', [
@@ -106,11 +139,12 @@ class Food99Service extends DefaultFoodService
             ]);
         }
 
-        $this->addAddress($order, $data['receive_address'] ?? []);
+        // NÃO quebrar se vier sem endereço completo
+        $this->addAddress($order, $receiveAddress);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
-        
+
         $this->printOrder($order);
         return $this->discoveryFoodCode($order, $orderId);
     }
@@ -122,6 +156,10 @@ class Food99Service extends DefaultFoodService
         ?OrderProduct $orderParentProduct = null
     ) {
         foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
             $productType = $parentProduct ? 'component' : 'product';
 
             $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
@@ -246,9 +284,21 @@ class Food99Service extends DefaultFoodService
             return;
         }
 
+        // Se não tem CEP, não chama AddressService (ele exige int e quebra com null)
+        $rawPostal = $address['postal_code'] ?? null;
+        $postalCode = $rawPostal !== null ? (int) preg_replace('/\D+/', '', (string) $rawPostal) : 0;
+
+        if ($postalCode <= 0) {
+            self::$logger->warning('Food99 address missing/invalid postal_code (skipping address)', [
+                'postal_code' => $rawPostal,
+                'address_keys' => array_keys($address),
+            ]);
+            return;
+        }
+
         $addr = $this->addressService->discoveryAddress(
             $order->getClient(),
-            $address['postal_code'] ?? null,
+            $postalCode,
             $address['street_number'] ?? null,
             $address['street_name'] ?? null,
             $address['district'] ?? null,
