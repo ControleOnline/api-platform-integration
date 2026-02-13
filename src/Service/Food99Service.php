@@ -20,6 +20,56 @@ class Food99Service extends DefaultFoodService
         self::$foodPeople = $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
 
+
+    public function readyOrder(string $orderId): void
+    {
+        $this->call99Endpoint('/api/v1/order/ready', [
+            'order_id' => $orderId,
+        ]);
+    }
+
+    public function deliveredOrder(string $orderId): void
+    {
+        $this->call99Endpoint('/api/v1/order/complete', [
+            'order_id' => $orderId,
+        ]);
+    }
+
+    public function cancelByShop(string $orderId): void
+    {
+        $this->call99Endpoint('/api/v1/order/cancel', [
+            'order_id' => $orderId,
+            'cancel_reason' => 'SHOP_CANCEL',
+        ]);
+    }
+
+    private function call99Endpoint(string $uri, array $payload): void
+    {
+        $url = 'https://openapi.waimai.meituan.com' . $uri;
+
+        try {
+            $response = $this->httpClient->request('POST', $url, [
+                'json' => $payload,
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Authorization' => 'Bearer ' . $this->getAccessToken(),
+                ],
+            ]);
+
+            self::$logger->info('Food99 ACTION RESPONSE', [
+                'uri' => $uri,
+                'payload' => $payload,
+                'response' => $response->toArray(false),
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 ACTION ERROR', [
+                'uri' => $uri,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+
     public function integrate(Integration $integration): ?Order
     {
         $this->init();
@@ -67,20 +117,17 @@ class Food99Service extends DefaultFoodService
             $info = [];
         }
 
-        // Fallbacks (alguns webhooks podem mandar fora do order_info)
         $shop  = $info['shop']  ?? ($data['shop']  ?? []);
         $price = $info['price'] ?? ($data['price'] ?? []);
 
         if (!is_array($shop))  $shop = [];
         if (!is_array($price)) $price = [];
 
-        // order_items: PRIORIDADE no order_info
         $items = $info['order_items'] ?? ($data['order_items'] ?? []);
         if (!is_array($items)) {
             $items = [];
         }
 
-        // receive_address: PRIORIDADE no order_info
         $receiveAddress = $info['receive_address'] ?? ($data['receive_address'] ?? []);
         if (!is_array($receiveAddress)) {
             $receiveAddress = [];
@@ -139,14 +186,46 @@ class Food99Service extends DefaultFoodService
             ]);
         }
 
-        // NÃO quebrar se vier sem endereço completo
         $this->addAddress($order, $receiveAddress);
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
 
+        $this->confirmOrder($orderId);
+
         $this->printOrder($order);
         return $this->discoveryFoodCode($order, $orderId);
+    }
+
+    private function confirmOrder(string $orderId): void
+    {
+        $url = 'https://openapi.waimai.meituan.com/api/v1/order/confirm';
+
+        $payload = [
+            'order_id' => $orderId,
+        ];
+
+        try {
+            $response = $this->httpClient->request('POST', $url, [
+                'json' => $payload,
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Authorization' => 'Bearer ' . $this->getAccessToken(),
+                ],
+            ]);
+
+            $result = $response->toArray(false);
+
+            self::$logger->info('Food99 ORDER CONFIRM RESPONSE', [
+                'order_id' => $orderId,
+                'response' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 ORDER CONFIRM ERROR', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function addProducts(
@@ -284,7 +363,6 @@ class Food99Service extends DefaultFoodService
             return;
         }
 
-        // Se não tem CEP, não chama AddressService (ele exige int e quebra com null)
         $rawPostal = $address['postal_code'] ?? null;
         $postalCode = $rawPostal !== null ? (int) preg_replace('/\D+/', '', (string) $rawPostal) : 0;
 

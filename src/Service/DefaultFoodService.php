@@ -68,6 +68,34 @@ class DefaultFoodService
         return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
     }
 
+    protected function discoveryFoodCodeByEntity(object $entity)
+    {
+        return $this->extraDataService->getByExtraFieldByEntity($this->extraFields, $entity)?->getValue();
+    }
+
+
+    public function changeStatus(Order $order)
+    {
+        $this->init();
+        $orderId = $this->discoveryFoodCodeByEntity($order);
+
+        if (!$orderId) {
+            return null;
+        }
+
+        $realStatus = $order->getStatus()->getRealStatus();
+
+
+        match ($realStatus) {
+            'cancelled' => $this->cancelByShop($orderId),
+            'ready'     => $this->readyOrder($orderId),
+            'delivered' => $this->deliveredOrder($orderId),
+            default     => null,
+        };
+
+        return null;
+    }
+
 
     protected function createOrder(
         People $client,
