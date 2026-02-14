@@ -16,7 +16,6 @@ class Food99Service extends DefaultFoodService
     {
         self::$app = 'Food99';
         self::$logger = $this->loggerService->getLogger(self::$app);
-        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', self::$app, '{}', 'code');
         self::$foodPeople = $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
 
@@ -142,7 +141,7 @@ class Food99Service extends DefaultFoodService
 
         $orderId = (string)($data['order_id'] ?? ($info['order_id'] ?? uniqid()));
 
-        $exists = $this->extraDataService->getEntityByExtraData(self::$extraFields, $orderId, Order::class);
+        $exists = $this->extraDataService->getEntityByExtraData(self::$app, $orderId, Order::class);
         if ($exists) {
             return $exists;
         }
@@ -151,7 +150,7 @@ class Food99Service extends DefaultFoodService
 
         $provider = null;
         if ($shopId) {
-            $provider = $this->extraDataService->getEntityByExtraData(self::$extraFields, $shopId, People::class);
+            $provider = $this->extraDataService->getEntityByExtraData(self::$app, $shopId, People::class);
         }
 
         if (!$provider) {
@@ -283,7 +282,7 @@ class Food99Service extends DefaultFoodService
         $code = $item['app_item_id'] ?? uniqid();
 
         $product = $this->extraDataService->getEntityByExtraData(
-            self::$extraFields,
+            self::$app,
             $code,
             Product::class
         );

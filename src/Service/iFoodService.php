@@ -26,7 +26,6 @@ class iFoodService extends DefaultFoodService
     {
         self::$app = 'iFood';
         self::$logger = $this->loggerService->getLogger(self::$app);
-        self::$extraFields = $this->extraDataService->discoveryExtraFields('Code', self::$app, '{}', 'code');
         self::$foodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
     }
 
@@ -58,7 +57,7 @@ class iFoodService extends DefaultFoodService
     {
         $orderId =  $json['orderId'] ?? null;
 
-        $order = $this->extraDataService->getEntityByExtraData(self::$extraFields, $orderId, Order::class);
+        $order = $this->extraDataService->getEntityByExtraData(self::$app, $orderId, Order::class);
         if ($order) {
             $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
 
@@ -87,8 +86,8 @@ class iFoodService extends DefaultFoodService
             return null;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(self::$extraFields, $merchantId, People::class);
-        $order = $this->extraDataService->getEntityByExtraData(self::$extraFields, $orderId, Order::class);
+        $provider = $this->extraDataService->getEntityByExtraData(self::$app, $merchantId, People::class);
+        $order = $this->extraDataService->getEntityByExtraData(self::$app, $orderId, Order::class);
         if ($order)
             return $order;
 
@@ -285,7 +284,7 @@ class iFoodService extends DefaultFoodService
 
         $codClienteiFood = $customerData['id'];
 
-        $client = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codClienteiFood, People::class);
+        $client = $this->extraDataService->getEntityByExtraData(self::$app, $codClienteiFood, People::class);
 
         $phone = [
             'ddd' => '11',
@@ -305,7 +304,7 @@ class iFoodService extends DefaultFoodService
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
     {
         $codProductiFood = $item['id'];
-        $product = $this->extraDataService->getEntityByExtraData(self::$extraFields, $codProductiFood, Product::class);
+        $product = $this->extraDataService->getEntityByExtraData(self::$app, $codProductiFood, Product::class);
 
         if (!$product && !empty($item['externalCode']))
             $product = $this->entityManager->getRepository(Product::class)->findOneBy([

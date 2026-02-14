@@ -24,7 +24,6 @@ use Exception;
 class DefaultFoodService
 {
 
-    protected static $extraFields;
     protected static $foodPeople;
     protected static $logger;
     protected static $app;
@@ -65,12 +64,12 @@ class DefaultFoodService
 
     protected function discoveryFoodCode(object $entity, string $code)
     {
-        return $this->extraDataService->discoveryExtraData($entity->getId(), self::$extraFields, $code,  $entity);
+        return $this->extraDataService->discoveryExtraData($entity->getId(), self::$app, $code,  $entity);
     }
 
     protected function discoveryFoodCodeByEntity(object $entity)
     {
-        return $this->extraDataService->getByExtraFieldByEntity($this->extraFields, $entity)?->getValue();
+        return $this->extraDataService->getByExtraFieldByEntity(self::$app, $entity)?->getValue();
     }
 
 
