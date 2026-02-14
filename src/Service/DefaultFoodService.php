@@ -63,7 +63,7 @@ class DefaultFoodService
 
     protected function discoveryFoodCode(object $entity, string $code)
     {
-        return $this->extraDataService->discoveryExtraData($entity->getId(), self::$app, $code,  $entity);
+        return $this->extraDataService->discoveryExtraData($entity, self::$app, 'code', $code);
     }
 
     protected function discoveryFoodCodeByEntity(object $entity)

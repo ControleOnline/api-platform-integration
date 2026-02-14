@@ -57,7 +57,7 @@ class iFoodService extends DefaultFoodService
     {
         $orderId =  $json['orderId'] ?? null;
 
-        $order = $this->extraDataService->getEntityByExtraData(self::$app, $orderId, Order::class);
+        $order = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderId, Order::class);
         if ($order) {
             $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
 
@@ -86,8 +86,8 @@ class iFoodService extends DefaultFoodService
             return null;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(self::$app, $merchantId, People::class);
-        $order = $this->extraDataService->getEntityByExtraData(self::$app, $orderId, Order::class);
+        $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $merchantId, People::class);
+        $order = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderId, Order::class);
         if ($order)
             return $order;
 
@@ -284,7 +284,7 @@ class iFoodService extends DefaultFoodService
 
         $codClienteiFood = $customerData['id'];
 
-        $client = $this->extraDataService->getEntityByExtraData(self::$app, $codClienteiFood, People::class);
+        $client = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $codClienteiFood, People::class);
 
         $phone = [
             'ddd' => '11',
@@ -304,7 +304,7 @@ class iFoodService extends DefaultFoodService
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
     {
         $codProductiFood = $item['id'];
-        $product = $this->extraDataService->getEntityByExtraData(self::$app, $codProductiFood, Product::class);
+        $product = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $codProductiFood, Product::class);
 
         if (!$product && !empty($item['externalCode']))
             $product = $this->entityManager->getRepository(Product::class)->findOneBy([
