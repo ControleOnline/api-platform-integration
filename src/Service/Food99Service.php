@@ -10,8 +10,10 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
+use ControleOnline\Event\OrderUpdatedEvent;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
-class Food99Service extends DefaultFoodService
+class Food99Service extends DefaultFoodService  implements EventSubscriberInterface
 {
     private function init()
     {
@@ -391,5 +393,20 @@ class Food99Service extends DefaultFoodService
         );
 
         $order->setAddressDestination($addr);
+    }
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            OrderUpdatedEvent::class => 'onOrderUpdated',
+        ];
+    }
+
+    public function onOrderUpdated(OrderUpdatedEvent $event)
+    {
+        $order = $event->order;
+        if ($order->getApp() === '99Food') {
+            $this->changeStatus($order);
+        }
     }
 }
