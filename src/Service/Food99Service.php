@@ -147,8 +147,6 @@ class Food99Service extends DefaultFoodService
             return $exists;
         }
 
-        dd($shop);
-
         $shopId = $shop['shop_id'] ?? null;
 
         $provider = null;
