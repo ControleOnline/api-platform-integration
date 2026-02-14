@@ -7,5 +7,10 @@ use Symfony\Contracts\EventDispatcher\Event;
 
 class OrderUpdatedEvent extends Event
 {
-    public function __construct(public readonly Order $order) {}
+    public $order;
+    public function setOrder(Order $order)
+    {
+        $this->order = $order;
+        return $this;
+    }
 }
