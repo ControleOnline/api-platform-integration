@@ -35,7 +35,6 @@ class DefaultFoodService
         protected HttpClientInterface $httpClient,
         protected ExtraDataService $extraDataService,
         protected PeopleService $peopleService,
-        protected OrderService $orderService,
         protected StatusService $statusService,
         protected AddressService $addressService,
         protected ProductService $productService,
