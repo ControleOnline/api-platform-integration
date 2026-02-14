@@ -19,9 +19,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
+use ControleOnline\Event\OrderUpdatedEvent;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 
-class DefaultFoodService
+class DefaultFoodService implements EventSubscriberInterface
 {
 
     protected static $foodPeople;
@@ -121,5 +123,21 @@ class DefaultFoodService
     {
         echo $log;
         self::$logger->$type($log);
+    }
+
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            OrderUpdatedEvent::class => 'onOrderUpdated',
+        ];
+    }
+
+    public function onOrderUpdated(OrderUpdatedEvent $event)
+    {
+        $order = $event->order;
+        if ($order->getApp() === '99Food') {
+            $this->changeStatus($order);
+        }
     }
 }
