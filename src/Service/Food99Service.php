@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -152,7 +153,6 @@ class Food99Service extends DefaultFoodService
         if ($shopId) {
             $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $shopId, People::class);
         }
-        dd($provider);
 
         if (!$provider) {
             $provider = $this->peopleService->discoveryPeople(
@@ -162,6 +162,7 @@ class Food99Service extends DefaultFoodService
                 $shop['shop_name'] ?? 'Loja Food99',
                 'J'
             );
+            $this->extraDataService->discoveryExtraData($provider, self::$app, 'code', $shopId);
         }
 
         $client = $this->discoveryClient($receiveAddress);
