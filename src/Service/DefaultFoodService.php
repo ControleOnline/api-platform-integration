@@ -135,15 +135,18 @@ class DefaultFoodService implements EventSubscriberInterface
 
     public function onEntityChanged(EntityChangedEvent $event)
     {
+        $oldEntity = $event->getOldEntity();
         $entity = $event->getEntity();
 
-        if (!$entity instanceof Order)
+        if (!$entity instanceof Order || !$oldEntity instanceof Order)
             return;
 
         $this->init();
         if ($entity->getApp() !== self::$app)
             return;
 
-        $this->changeStatus($entity);
+        if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
+            $this->changeStatus($entity);
+        
     }
 }
