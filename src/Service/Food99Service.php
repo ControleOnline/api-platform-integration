@@ -152,6 +152,7 @@ class Food99Service extends DefaultFoodService
         if ($shopId) {
             $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $shopId, People::class);
         }
+        dd($provider);
 
         if (!$provider) {
             $provider = $this->peopleService->discoveryPeople(
