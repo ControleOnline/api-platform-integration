@@ -2,7 +2,6 @@
 
 namespace ControleOnline\Service;
 
-use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;

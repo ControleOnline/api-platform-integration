@@ -13,6 +13,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
+use ControleOnline\Event\EntityChangedEvent;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -129,15 +130,16 @@ class DefaultFoodService implements EventSubscriberInterface
     public static function getSubscribedEvents(): array
     {
         return [
-            OrderUpdatedEvent::class => 'onOrderUpdated',
+            EntityChangedEvent::class => 'onEntityChanged',
         ];
     }
 
-    public function onOrderUpdated(OrderUpdatedEvent $event)
+    public function onEntityChanged(EntityChangedEvent $event)
     {
-        $order = $event->order;
-        if ($order->getApp() === '99Food') {
-            $this->changeStatus($order);
-        }
+        $entity = $event->getEntity();
+        if (!$entity instanceof Order || $entity->getApp() !== self::$app)
+            return;
+
+        $this->changeStatus($entity);
     }
 }
