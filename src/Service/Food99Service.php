@@ -9,9 +9,11 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
+use ControleOnline\Event\EntityChangedEvent;
+use ControleOnline\Event\OrderUpdatedEvent;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
-
-class Food99Service extends DefaultFoodService  
+class Food99Service extends DefaultFoodService  implements EventSubscriberInterface
 {
     private function init()
     {
@@ -392,5 +394,47 @@ class Food99Service extends DefaultFoodService
 
         $order->setAddressDestination($addr);
     }
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            EntityChangedEvent::class => 'onEntityChanged',
+        ];
+    }
 
+    public function onEntityChanged(EntityChangedEvent $event)
+    {
+        $oldEntity = $event->getOldEntity();
+        $entity = $event->getEntity();
+
+        if (!$entity instanceof Order || !$oldEntity instanceof Order)
+            return;
+
+        $this->init();
+        if ($entity->getApp() !== self::$app)
+            return;
+
+        if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
+            $this->changeStatus($entity);
+    }
+
+    public function changeStatus(Order $order)
+    {
+        $orderId = $this->discoveryFoodCodeByEntity($order);
+
+        if (!$orderId) {
+            return null;
+        }
+
+        $realStatus = $order->getStatus()->getRealStatus();
+
+
+        match ($realStatus) {
+            'cancelled' => $this->cancelByShop($orderId),
+            'ready'     => $this->readyOrder($orderId),
+            'delivered' => $this->deliveredOrder($orderId),
+            default     => null,
+        };
+
+        return null;
+    }
 }

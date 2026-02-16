@@ -13,18 +13,15 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
-use ControleOnline\Event\EntityChangedEvent;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
-use ControleOnline\Event\OrderUpdatedEvent;
-use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 
-class DefaultFoodService implements EventSubscriberInterface
+class DefaultFoodService
 {
 
     protected static $foodPeople;
@@ -75,28 +72,6 @@ class DefaultFoodService implements EventSubscriberInterface
     }
 
 
-    public function changeStatus(Order $order)
-    {
-        $orderId = $this->discoveryFoodCodeByEntity($order);
-
-        if (!$orderId) {
-            return null;
-        }
-
-        $realStatus = $order->getStatus()->getRealStatus();
-
-
-        match ($realStatus) {
-            'cancelled' => $this->cancelByShop($orderId),
-            'ready'     => $this->readyOrder($orderId),
-            'delivered' => $this->deliveredOrder($orderId),
-            default     => null,
-        };
-
-        return null;
-    }
-
-
     protected function createOrder(
         People $client,
         People $provider,
@@ -123,30 +98,5 @@ class DefaultFoodService implements EventSubscriberInterface
     {
         echo $log;
         self::$logger->$type($log);
-    }
-
-
-    public static function getSubscribedEvents(): array
-    {
-        return [
-            EntityChangedEvent::class => 'onEntityChanged',
-        ];
-    }
-
-    public function onEntityChanged(EntityChangedEvent $event)
-    {
-        $oldEntity = $event->getOldEntity();
-        $entity = $event->getEntity();
-
-        if (!$entity instanceof Order || !$oldEntity instanceof Order)
-            return;
-
-        $this->init();
-        if ($entity->getApp() !== self::$app)
-            return;
-
-        if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
-            $this->changeStatus($entity);
-        
     }
 }
