@@ -90,9 +90,6 @@ class DefaultFoodService
 
         $order->setPrice($price);
 
-        // ALEMAC // 18/02/2026 // Adiciona origem do pedido
-        $this->extraDataService->createExtraData($order, 'source', self::$app);
-
         $this->entityManager->persist($order);
         return $order;
     }
