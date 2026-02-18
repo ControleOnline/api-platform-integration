@@ -23,7 +23,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 class iFoodService extends DefaultFoodService implements EventSubscriberInterface
 {
-
+    // INICIALIZAÇÃO
+    // Define constantes: app name, logger e entidade padrão do iFood
     private function init()
     {
         self::$app = 'iFood';
@@ -31,15 +32,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         self::$foodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
     }
 
-
-    public  function integrate(Integration $integration)
+    // PONTO DE ENTRADA DO WEBHOOK
+    // Recebe webhook do iFood, decodifica JSON e roteia para ação correta (PLACED ou CANCELLED)
+    public function integrate(Integration $integration)
     {
         $this->init();
 
         $json = json_decode($integration->getBody(), true);
 
         $fullCode = $json['fullCode'];
-        $this->addLog('info', 'Código recebido', ['code' =>  $json['fullCode']]);
+        $this->addLog('info', 'Código recebido', ['code' => $json['fullCode']]);
 
         switch ($fullCode) {
             case 'PLACED':
@@ -55,9 +57,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    // CANCELAMENTO DE PEDIDO
+    // Busca pedido pelo orderId do iFood, marca como cancelado e atualiza banco
     private function cancelOrder(array $json): ?Order
     {
-        $orderId =  $json['orderId'] ?? null;
+        $orderId = $json['orderId'] ?? null;
 
         $order = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderId, Order::class);
         if ($order) {
@@ -75,16 +79,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return null;
     }
 
-
-
+    // CRIAÇÃO DE NOVO PEDIDO
+    // Valida IDs, busca restaurante e cliente, pega detalhes do iFood,
+    // cria pedido com produtos, entrega e pagamentos, grava no banco
     private function addOrder(array $json): ?Order
     {
 
-        $orderId =  $json['orderId'] ?? null;
+        $orderId = $json['orderId'] ?? null;
         $merchantId = $json['merchantId'] ?? null;
 
         if (!$orderId || !$merchantId) {
-            $this->addLog('error', 'Dados do pedido incompletos', ['json' =>  $json]);
+            $this->addLog('error', 'Dados do pedido incompletos', ['json' => $json]);
             return null;
         }
 
@@ -99,11 +104,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $json['order']  = $orderDetails;
+        $json['order'] = $orderDetails;
         $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
 
-        $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status,  [$json['fullCode'] => $json]);
+        $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status, [$json['fullCode'] => $json]);
 
         $this->addProducts($order, $orderDetails['items']);
         $this->addDelivery($order, $orderDetails);
@@ -118,17 +123,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->discoveryFoodCode($order, $orderId);
     }
 
-
-
-
+    // FATURAS DE RECEBIMENTO (Pagamentos)
+    // Para cada método de pagamento, cria fatura de recebimento no banco
     private function addReceiveInvoices(Order $order, array $payments)
     {
         $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
         foreach ($payments as $payment)
-            $this->invoiceService->createInvoiceByOrder($order, $payment['value'], $payment['prepaid'] ? $status : null, new DateTime(), null,  $iFoodWallet);
+            $this->invoiceService->createInvoiceByOrder($order, $payment['value'], $payment['prepaid'] ? $status : null, new DateTime(), null, $iFoodWallet);
     }
 
+    // ENTREGA
+    // Define endereço de entrega e, se entrega for por terceiros, cria taxa de entrega
     private function addDelivery(Order &$order, array $orderDetails)
     {
         $delivery = $orderDetails['delivery'];
@@ -153,6 +159,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $order->setAddressDestination($deliveryAddress);
     }
 
+    // TAXA DE ENTREGA
+    // Cria fatura para taxa de entrega (cobrada do restaurante para o iFood)
     private function addDeliveryFee(Order &$order, array $payments)
     {
         $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
@@ -171,6 +179,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    // TAXAS ADICIONAIS
+    // Cria fatura para taxas/comissões do iFood
     private function addFees(Order $order, array $payments)
     {
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
@@ -187,11 +197,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    // PAGAMENTOS
+    // Agrupa todas as operações de pagamento: faturas de recebimento e taxas
     private function addPayments(Order $order, array $orderDetails)
     {
         $this->addReceiveInvoices($order, $orderDetails['payments']['methods']);
         $this->addFees($order, $orderDetails['total']);
     }
+
+    // PRODUTOS
+    // Percorre itens do pedido recursivamente, criando produtos e relacionamentos
+    // Trata produtos, opções e customizações como componentes hierárquicos
     private function addProducts(Order $order, array $items, ?Product $parentProduct = null, ?OrderProduct $orderParentProduct = null, ?string $productType = 'product')
     {
         foreach ($items as $item) {
@@ -203,7 +219,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $productGroup = null;
             if (isset($item['groupName']))
                 $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
-            $orderProduct =  $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderParentProduct);
+            $orderProduct = $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderParentProduct);
             if (isset($item['options']) && $item['options'])
                 $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
             if (isset($item['customizations']) && $item['customizations'])
@@ -211,6 +227,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    // TOKEN OAUTH
+    // Autentica na API do iFood e retorna token de acesso
     private function getAccessToken(): ?string
     {
         try {
@@ -248,7 +266,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
-
+    // FETCH DETALHES DO PEDIDO
+    // Chama API do iFood para buscar informações completas do pedido (cliente, produtos, entrega, pagamentos)
     private function fetchOrderDetails(string $orderId): ?array
     {
         try {
@@ -261,7 +280,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $response = $this->httpClient->request('GET', 'https://merchant-api.ifood.com.br/order/v1.0/orders/' . $orderId, [
                 'headers' => [
-                    'Authorization' => 'Bearer ' .   $token,
+                    'Authorization' => 'Bearer ' . $token,
                 ],
             ]);
 
@@ -277,6 +296,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    // DESCOBERTA/CRIAÇÃO DO CLIENTE
+    // Busca cliente existente pelo ID do iFood ou cria novo com dados do pedido
     private function discoveryClient(People $provider, array $customerData): ?People
     {
         if (empty($customerData['name']) || empty($customerData['phone'])) {
@@ -303,6 +324,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->discoveryFoodCode($client, $codClienteiFood);
     }
 
+    // DESCOBERTA/CRIAÇÃO DO PRODUTO
+    // Busca produto existente por múltiplas chaves (iFood ID, código externo, EAN, nome)
+    // Se não encontrar, cria novo produto. Se tem pai, associa como grupo/componente
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
     {
         $codProductiFood = $item['id'];
@@ -351,9 +375,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
         }
 
-
         return $this->discoveryFoodCode($product, $codProductiFood);
     }
+
+    // ESCUTA DE MUDANÇAS DE ENTIDADE
+    // Registra a classe como listener de eventos de mudança de entidade
     public static function getSubscribedEvents(): array
     {
         return [
@@ -361,6 +387,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    // HANDLER DE MUDANÇA DE ENTIDADE
+    // Quando um pedido do iFood muda de status, dispara sincronização com o iFood
     public function onEntityChanged(EntityChangedEvent $event)
     {
         $oldEntity = $event->getOldEntity();
@@ -376,7 +404,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
             $this->changeStatus($entity);
     }
-    
+
+    // SINCRONIZAÇÃO DE STATUS COM iFOOD
+    // Envia para iFood o novo status do pedido (pronto, entregue, cancelado)
     public function changeStatus(Order $order)
     {
         $orderId = $this->discoveryFoodCodeByEntity($order);
@@ -386,7 +416,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $realStatus = $order->getStatus()->getRealStatus();
-
 
         match ($realStatus) {
             'cancelled' => $this->cancelByShop($orderId),

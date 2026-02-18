@@ -17,7 +17,7 @@ class iFoodController extends AbstractController
     public function __construct(
         private LoggerService $loggerService,
     ) {
-        self::$logger = $loggerService->getLogger('ifood');
+        self::$logger = $loggerService->getLogger('iFood');
     }
 
     #[Route('/webhook/ifood', name: 'ifood_webhook', methods: ['POST'])]
