@@ -10,10 +10,9 @@ use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Event\EntityChangedEvent;
-use ControleOnline\Event\OrderUpdatedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
-class Food99Service extends DefaultFoodService  implements EventSubscriberInterface
+class Food99Service extends DefaultFoodService implements EventSubscriberInterface
 {
     private function init()
     {

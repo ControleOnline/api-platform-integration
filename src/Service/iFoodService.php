@@ -12,14 +12,13 @@ use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\User;
-use ControleOnline\Event\EntityChangedEvent;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
-use ControleOnline\Event\OrderUpdatedEvent;
+use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 class iFoodService extends DefaultFoodService implements EventSubscriberInterface
