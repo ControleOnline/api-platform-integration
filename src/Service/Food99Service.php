@@ -301,7 +301,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $product = new Product();
             $product->setProduct($item['name'] ?? 'Produto Food99');
             $product->setSku(null);
-            $product->setPrice($item['sku_price'] ?? 0);
+            $product->setPrice($item['sku_price'] ? $item['sku_price'] / 100 : 0);
             $product->setProductUnit($unity);
             $product->setType($productType);
             $product->setProductCondition('new');
@@ -333,7 +333,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $pgp->setProductGroup($group);
                 $pgp->setProductType($productType);
                 $pgp->setQuantity($item['amount'] ?? 1);
-                $pgp->setPrice($item['sku_price'] ?? 0);
+                $pgp->setPrice($item['sku_price'] ? $item['sku_price'] / 100 : 0);
 
                 $this->entityManager->persist($pgp);
                 $this->entityManager->flush();
