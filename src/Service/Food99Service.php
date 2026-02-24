@@ -142,7 +142,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ]);
 
         $orderId = (string)$data['order_id'];
-        $orderIndex = (string)$data['order_index'];
+        $orderIndex = (string)$data['order_info']['order_index'];
 
         $exists = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderIndex, Order::class);
         if ($exists) {
