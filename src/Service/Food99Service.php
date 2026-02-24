@@ -168,7 +168,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $client = $this->discoveryClient($receiveAddress);
-        $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
+        $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
 
         $orderPrice = $price['order_price'] ?? 0;
 

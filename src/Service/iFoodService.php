@@ -105,7 +105,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $json['order'] = $orderDetails;
-        $status = $this->statusService->discoveryStatus('pending', 'quote', 'order');
+        $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
         $client = $this->discoveryClient($provider, $orderDetails['customer'] ?? []);
 
         $order = $this->createOrder($client, $provider, $orderDetails['total']['orderAmount'] ?? 0, $status, [$json['fullCode'] => $json]);
