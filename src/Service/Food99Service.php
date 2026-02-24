@@ -141,9 +141,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'order_items_count' => is_array($items) ? count($items) : null,
         ]);
 
-        $orderId = (string)($data['order_id'] ?? ($info['order_id'] ?? uniqid()));
+        $orderId = (string)$data['order_id'];
+        $orderIndex = (string)$data['order_index'];
 
-        $exists = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderId, Order::class);
+        $exists = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderIndex, Order::class);
         if ($exists) {
             return $exists;
         }
@@ -196,7 +197,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->confirmOrder($orderId);
 
         $this->printOrder($order);
-        return $this->discoveryFoodCode($order, $orderId);
+        $this->discoveryFoodCode($order, $orderId, 'id');
+        return $this->discoveryFoodCode($order, $orderIndex);
     }
 
     private function confirmOrder(string $orderId): void
@@ -282,7 +284,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ?Product $parentProduct,
         string $productType
     ): Product {
-        $code = $item['app_item_id'] ?? uniqid();
+        $code = $item['app_item_id'];
 
         $product = $this->extraDataService->getEntityByExtraData(
             self::$app,
@@ -356,7 +358,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         return $this->discoveryFoodCode(
             $client,
-            (string) ($address['uid'] ?? uniqid())
+            (string) $address['uid']
         );
     }
 
