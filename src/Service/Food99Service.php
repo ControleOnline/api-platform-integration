@@ -170,7 +170,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $client = $this->discoveryClient($receiveAddress);
         $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
 
-        $orderPrice = $price['order_price'] ?? 0;
+        $orderPrice = $price['order_price'] ? $price['order_price'] / 100 : 0;
 
         $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
 
@@ -261,7 +261,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $order,
                 $product,
                 $item['amount'] ?? 1,
-                $item['sku_price'] ?? 0,
+                $item['sku_price'] ? $item['sku_price'] / 100 : 0,
                 $productGroup,
                 $parentProduct,
                 $orderParentProduct
