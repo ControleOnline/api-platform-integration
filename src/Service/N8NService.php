@@ -13,8 +13,11 @@ class N8NService
     public function __construct(
         private HttpClientInterface $n8nClient,
         private SkyNetService $skyNetService,
-    ) {
-        //$this->skyNetService->discoveryBotUser('N8N');
+    ) {}
+
+    public function init()
+    {
+        $this->skyNetService->discoveryBotUser('N8N');
         $this->n8nClient = $this->n8nClient->withOptions([
             'headers' => [
                 'api-token' => $this->skyNetService->getBotUser()->getApiKey(),
@@ -24,6 +27,7 @@ class N8NService
 
     public function sendToWebhook(MessageInterface $message, Connection $connection, Task $task)
     {
+        $this->init();
         return $this->n8nClient->request('POST', 'init', [
             'json' => [
                 'origin' => $message->getOriginNumber(),
