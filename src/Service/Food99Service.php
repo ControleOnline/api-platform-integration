@@ -117,7 +117,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return null;
     }
 
-    private function requestAuthToken(string $appId, string $appSecret, string $appShopId): ?array
+    private function requestAuthToken(string $appId, string $appSecret, string $appShopId, bool $allowRefreshFallback = true): ?array
     {
         try {
             $response = $this->httpClient->request('GET', $this->getFood99BaseUrl() . '/v1/auth/authtoken/get', [
@@ -132,13 +132,32 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
             $authToken = $data['auth_token'] ?? null;
             $tokenExpirationTime = $data['token_expiration_time'] ?? null;
+            $errno = (int) ($payload['errno'] ?? 1);
+            $errmsg = (string) ($payload['errmsg'] ?? '');
 
-            if (($payload['errno'] ?? 1) !== 0 || !$authToken) {
+            if ($errno !== 0 || !$authToken) {
+                if (
+                    $allowRefreshFallback
+                    && in_array($errno, [10100, 10101, 10102], true)
+                ) {
+                    self::$logger->info('Food99 auth token request requires refresh fallback', [
+                        'app_shop_id' => $appShopId,
+                        'status_code' => $response->getStatusCode(),
+                        'errno' => $errno,
+                        'errmsg' => $errmsg,
+                    ]);
+
+                    $refreshSuccess = $this->refreshAuthToken($appId, $appSecret, $appShopId);
+                    if ($refreshSuccess) {
+                        return $this->requestAuthToken($appId, $appSecret, $appShopId, false);
+                    }
+                }
+
                 self::$logger->error('Food99 auth token request failed', [
                     'app_shop_id' => $appShopId,
                     'status_code' => $response->getStatusCode(),
-                    'errno' => $payload['errno'] ?? null,
-                    'errmsg' => $payload['errmsg'] ?? null,
+                    'errno' => $errno,
+                    'errmsg' => $errmsg,
                 ]);
                 return null;
             }
