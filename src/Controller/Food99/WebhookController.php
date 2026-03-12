@@ -28,8 +28,16 @@ class WebhookController extends AbstractController
         $rawInput = $request->getContent();
         $headerSign = $request->headers->get('didi-header-sign');
         $appSecret = $_ENV['OAUTH_99FOOD_CLIENT_SECRET'];
+        $payload = json_decode($rawInput, true);
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $shop = is_array($info['shop'] ?? null) ? $info['shop'] : (is_array($data['shop'] ?? null) ? $data['shop'] : []);
 
         if (!$headerSign) {
+            self::$logger->warning('Food99 webhook missing signature header', [
+                'content_length' => strlen($rawInput),
+                'event_type' => $payload['type'] ?? null,
+            ]);
             return new Response('Missing signature', Response::HTTP_UNAUTHORIZED);
         }
         $signStr = $rawInput . $appSecret;
@@ -37,6 +45,10 @@ class WebhookController extends AbstractController
         
         if ($checkSign !== $headerSign) {
             self::$logger->warning('Invalid signature', [
+                'event_type' => $payload['type'] ?? null,
+                'order_id' => isset($data['order_id']) ? (string) $data['order_id'] : null,
+                'order_index' => isset($info['order_index']) ? (string) $info['order_index'] : null,
+                'shop_id' => isset($shop['shop_id']) ? (string) $shop['shop_id'] : null,
                 'expected' => $checkSign,
                 'received' => $headerSign
             ]);
@@ -44,7 +56,13 @@ class WebhookController extends AbstractController
         }
 
         $integrationService->addIntegration($rawInput, 'Food99');
-        self::$logger->info('Webhook autenticado');
+        self::$logger->info('Webhook autenticado', [
+            'event_type' => $payload['type'] ?? null,
+            'order_id' => isset($data['order_id']) ? (string) $data['order_id'] : null,
+            'order_index' => isset($info['order_index']) ? (string) $info['order_index'] : null,
+            'shop_id' => isset($shop['shop_id']) ? (string) $shop['shop_id'] : null,
+            'shop_name' => $shop['shop_name'] ?? null,
+        ]);
 
 
         return new Response('[accepted]', Response::HTTP_ACCEPTED);
