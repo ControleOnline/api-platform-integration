@@ -220,6 +220,17 @@ class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/marketplace/integrations/99food/detail', name: 'marketplace_integrations_food99_detail', methods: ['GET'])]
+    public function getIntegrationDetail(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        return new JsonResponse($this->food99Service->getIntegrationSnapshot($provider));
+    }
+
     #[Route('/marketplace/integrations/99food/store/authorization-page', name: 'marketplace_integrations_food99_authorization_page', methods: ['POST'])]
     public function getAuthorizationPage(Request $request): JsonResponse
     {

@@ -850,6 +850,105 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function resolvePublishedRemoteItemIds(?array $menuDetails): array
+    {
+        $items = is_array($menuDetails['data']['items'] ?? null) ? $menuDetails['data']['items'] : [];
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn(array $item) => isset($item['app_item_id']) ? (string) $item['app_item_id'] : null,
+            array_filter($items, 'is_array')
+        ))));
+    }
+
+    private function mapProductsWithRemoteCatalog(array $products, array $remoteItemIds): array
+    {
+        $remoteItemIdSet = array_flip($remoteItemIds);
+
+        return array_map(function (array $product) use ($remoteItemIdSet) {
+            $candidateId = (string) ($product['food99_code'] ?: $product['suggested_app_item_id'] ?: $product['id']);
+            $product['published_remotely'] = isset($remoteItemIdSet[$candidateId]);
+
+            return $product;
+        }, $products);
+    }
+
+    private function resolveStatusLabel(?int $bizStatus): string
+    {
+        return match ($bizStatus) {
+            1 => 'Online',
+            2 => 'Offline',
+            default => 'Indefinido',
+        };
+    }
+
+    private function resolveSubStatusLabel(?int $subStatus): string
+    {
+        return match ($subStatus) {
+            1 => 'Pronta',
+            2 => 'Pausada',
+            3 => 'Fechada',
+            default => 'Indefinido',
+        };
+    }
+
+    public function getIntegrationSnapshot(People $provider): array
+    {
+        $this->init();
+
+        $products = $this->listSelectableMenuProducts($provider);
+        $integratedStoreCode = $this->getIntegratedStoreCode($provider);
+        $authToken = $this->resolveAccessToken($provider);
+        $authAvailable = !empty($authToken);
+
+        $storeDetails = $authAvailable ? $this->getStoreDetails($provider) : null;
+        $deliveryAreas = $authAvailable ? $this->listDeliveryAreas($provider) : null;
+        $menuDetails = $authAvailable ? $this->getStoreMenuDetails($provider) : null;
+
+        $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
+        $connected = !empty($integratedStoreCode) || $remoteConnected;
+        $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
+        $remoteItemIds = $this->resolvePublishedRemoteItemIds($menuDetails);
+        $mappedProducts = $this->mapProductsWithRemoteCatalog($products['products'] ?? [], $remoteItemIds);
+        $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
+        $subBizStatus = isset($remoteStore['sub_biz_status']) ? (int) $remoteStore['sub_biz_status'] : null;
+
+        return [
+            'provider' => [
+                'id' => $provider->getId(),
+                'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
+            ],
+            'integration' => [
+                'key' => '99food',
+                'label' => '99Food',
+                'minimum_required_items' => 5,
+                'eligible_product_count' => $products['eligible_product_count'] ?? 0,
+                'connected' => $connected,
+                'remote_connected' => $remoteConnected,
+                'food99_code' => $integratedStoreCode,
+                'app_shop_id' => (string) $provider->getId(),
+                'auth_available' => $authAvailable,
+                'online' => $remoteConnected && $bizStatus === 1,
+                'biz_status' => $bizStatus,
+                'biz_status_label' => $this->resolveStatusLabel($bizStatus),
+                'sub_biz_status' => $subBizStatus,
+                'sub_biz_status_label' => $this->resolveSubStatusLabel($subBizStatus),
+            ],
+            'store' => $storeDetails,
+            'delivery_areas' => $deliveryAreas,
+            'menu' => array_merge($menuDetails ?? [], [
+                'remote_item_ids' => $remoteItemIds,
+            ]),
+            'products' => [
+                ...$products,
+                'products' => $mappedProducts,
+                'published_product_count' => count(array_filter(
+                    $mappedProducts,
+                    static fn(array $product) => !empty($product['published_remotely'])
+                )),
+            ],
+        ];
+    }
+
     public function buildStoreMenuPayloadFromProducts(People $provider, array $productIds): array
     {
         $this->init();
