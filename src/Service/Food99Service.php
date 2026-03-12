@@ -938,14 +938,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'menu' => array_merge($menuDetails ?? [], [
                 'remote_item_ids' => $remoteItemIds,
             ]),
-            'products' => [
-                ...$products,
+            'products' => array_merge($products, [
                 'products' => $mappedProducts,
                 'published_product_count' => count(array_filter(
                     $mappedProducts,
                     static fn(array $product) => !empty($product['published_remotely'])
                 )),
-            ],
+            ]),
         ];
     }
 
