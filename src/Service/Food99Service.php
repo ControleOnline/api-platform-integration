@@ -506,24 +506,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         if ($code === null || $code === '') {
-            $sql = <<<SQL
-                SELECT ed.data_value
-                FROM extra_data ed
-                INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-                WHERE ef.context = :context
-                  AND ef.field_name = :fieldName
-                  AND LOWER(ed.entity_name) = LOWER(:entityName)
-                  AND ed.entity_id = :entityId
-                ORDER BY ed.id DESC
-                LIMIT 1
-            SQL;
-
-            $code = $this->entityManager->getConnection()->fetchOne($sql, [
-                'context' => self::$app,
-                'fieldName' => 'code',
-                'entityName' => 'People',
-                'entityId' => $provider->getId(),
-            ]);
+            $code = $this->findLocalFoodCodeByEntity('People', $provider->getId());
         }
 
         if ($code === null || $code === '') {
@@ -531,6 +514,92 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return (string) $code;
+    }
+
+    private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
+    {
+        $sql = <<<SQL
+            SELECT ed.data_value
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND ef.field_name = :fieldName
+              AND LOWER(ed.entity_name) = LOWER(:entityName)
+              AND ed.entity_id = :entityId
+            ORDER BY ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $code = $this->entityManager->getConnection()->fetchOne($sql, [
+            'context' => self::$app,
+            'fieldName' => 'code',
+            'entityName' => $entityName,
+            'entityId' => $entityId,
+        ]);
+
+        if ($code === null || $code === '') {
+            return null;
+        }
+
+        return (string) $code;
+    }
+
+    private function getFood99CodeFieldId(): ?int
+    {
+        $sql = <<<SQL
+            SELECT id
+            FROM extra_fields
+            WHERE context = :context
+              AND field_name = :fieldName
+            ORDER BY id ASC
+            LIMIT 1
+        SQL;
+
+        $fieldId = $this->entityManager->getConnection()->fetchOne($sql, [
+            'context' => self::$app,
+            'fieldName' => 'code',
+        ]);
+
+        return is_numeric($fieldId) ? (int) $fieldId : null;
+    }
+
+    private function persistLocalFoodCodeByEntity(string $entityName, int $entityId, string $code): ?string
+    {
+        $existingCode = $this->findLocalFoodCodeByEntity($entityName, $entityId);
+        if ($existingCode) {
+            return $existingCode;
+        }
+
+        $fieldId = $this->getFood99CodeFieldId();
+        if (!$fieldId) {
+            self::$logger->error('Food99 code field not found for local code persistence', [
+                'entity_name' => $entityName,
+                'entity_id' => $entityId,
+            ]);
+            return null;
+        }
+
+        try {
+            $this->entityManager->getConnection()->insert('extra_data', [
+                'extra_fields_id' => $fieldId,
+                'entity_id' => $entityId,
+                'entity_name' => $entityName,
+                'data_value' => $code,
+                'source' => 'Food99',
+                'dateTime' => date('Y-m-d H:i:s'),
+            ]);
+
+            return $code;
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 local code persistence failed, trying to reuse existing value', [
+                'entity_name' => $entityName,
+                'entity_id' => $entityId,
+                'code' => $code,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->findLocalFoodCodeByEntity($entityName, $entityId);
+        }
     }
 
     public function getAuthorizationPage(array $payload): ?array
@@ -1141,10 +1210,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $codes = [];
         foreach ($products as $product) {
-            $code = $this->discoveryFoodCodeByEntity($product);
+            $code = $this->findLocalFoodCodeByEntity('Product', (int) $product->getId());
             if (!$code) {
                 $code = (string) $product->getId();
-                $this->discoveryFoodCode($product, $code);
+                $persistedCode = $this->persistLocalFoodCodeByEntity('Product', (int) $product->getId(), $code);
+                $code = $persistedCode ?: $code;
             }
 
             $codes[$product->getId()] = (string) $code;

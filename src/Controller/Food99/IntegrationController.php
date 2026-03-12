@@ -483,22 +483,41 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
-        $productIds = $this->extractProductIds($payload);
-        $preview = $this->food99Service->buildStoreMenuPayloadFromProducts($provider, $productIds);
-        if (!empty($preview['errors'])) {
-            return new JsonResponse($preview, Response::HTTP_UNPROCESSABLE_ENTITY);
+        try {
+            $productIds = $this->extractProductIds($payload);
+            $preview = $this->food99Service->buildStoreMenuPayloadFromProducts($provider, $productIds);
+            if (!empty($preview['errors'])) {
+                return new JsonResponse($preview, Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+
+            $this->food99Service->ensureMenuProductCodes($provider, $productIds);
+            $result = $this->food99Service->uploadStoreMenu($provider, $preview['payload']);
+
+            return new JsonResponse([
+                'provider_id' => $provider->getId(),
+                'selected_product_count' => $preview['selected_product_count'] ?? 0,
+                'eligible_product_count' => $preview['eligible_product_count'] ?? 0,
+                'result' => $result,
+                'payload' => $preview['payload'],
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 menu upload endpoint error', [
+                'provider_id' => $provider->getId(),
+                'product_ids' => $this->extractProductIds($payload),
+                'error' => $e->getMessage(),
+            ]);
+
+            return new JsonResponse([
+                'provider_id' => $provider->getId(),
+                'selected_product_count' => 0,
+                'eligible_product_count' => 0,
+                'result' => [
+                    'errno' => 10001,
+                    'errmsg' => 'Nao foi possivel publicar o menu no 99Food.',
+                    'data' => [],
+                ],
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
-
-        $this->food99Service->ensureMenuProductCodes($provider, $productIds);
-        $result = $this->food99Service->uploadStoreMenu($provider, $preview['payload']);
-
-        return new JsonResponse([
-            'provider_id' => $provider->getId(),
-            'selected_product_count' => $preview['selected_product_count'] ?? 0,
-            'eligible_product_count' => $preview['eligible_product_count'] ?? 0,
-            'result' => $result,
-            'payload' => $preview['payload'],
-        ]);
     }
 
     #[Route('/marketplace/integrations/99food/menu/task/{taskId}', name: 'marketplace_integrations_food99_menu_task', methods: ['GET'])]
