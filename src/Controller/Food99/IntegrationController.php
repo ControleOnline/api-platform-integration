@@ -151,10 +151,29 @@ class IntegrationController extends AbstractController
         }
 
         $products = $this->food99Service->listSelectableMenuProducts($provider);
-        $integratedStoreCode = $this->food99Service->getIntegratedStoreCode($provider);
-        $storeDetails = $this->food99Service->getStoreDetails($provider);
+        $integratedStoreCode = null;
+        $storeDetails = null;
+
+        try {
+            $integratedStoreCode = $this->food99Service->getIntegratedStoreCode($provider);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 local integration lookup error', [
+                'provider_id' => $provider->getId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            $storeDetails = $this->food99Service->getStoreDetails($provider);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 remote integration lookup error', [
+                'provider_id' => $provider->getId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
-        $connected = !empty($integratedStoreCode);
+        $connected = !empty($integratedStoreCode) || $remoteConnected;
 
         return new JsonResponse([
             'provider' => [
