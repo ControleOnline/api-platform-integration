@@ -151,8 +151,10 @@ class IntegrationController extends AbstractController
         }
 
         $products = $this->food99Service->listSelectableMenuProducts($provider);
+        $integratedStoreCode = $this->food99Service->getIntegratedStoreCode($provider);
         $storeDetails = $this->food99Service->getStoreDetails($provider);
-        $connected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
+        $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
+        $connected = !empty($integratedStoreCode);
 
         return new JsonResponse([
             'provider' => [
@@ -165,8 +167,10 @@ class IntegrationController extends AbstractController
                 'minimum_required_items' => 5,
                 'eligible_product_count' => $products['eligible_product_count'] ?? 0,
                 'connected' => $connected,
-                'store' => $connected ? ($storeDetails['data'] ?? null) : null,
-                'store_error' => $connected ? null : [
+                'remote_connected' => $remoteConnected,
+                'food99_code' => $integratedStoreCode,
+                'store' => $remoteConnected ? ($storeDetails['data'] ?? null) : null,
+                'store_error' => $remoteConnected ? null : [
                     'errno' => $storeDetails['errno'] ?? null,
                     'errmsg' => $storeDetails['errmsg'] ?? null,
                 ],

@@ -447,6 +447,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $this->request99WithResponse($method, $uri, $payload);
     }
 
+    public function getIntegratedStoreCode(People $provider): ?string
+    {
+        $this->init();
+
+        $code = $this->discoveryFoodCodeByEntity($provider);
+        if ($code === null || $code === '') {
+            return null;
+        }
+
+        return (string) $code;
+    }
+
     public function getAuthorizationPage(array $payload): ?array
     {
         $this->init();
