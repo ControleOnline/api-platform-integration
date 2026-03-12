@@ -228,7 +228,51 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
-        return new JsonResponse($this->food99Service->getIntegrationSnapshot($provider));
+        try {
+            return new JsonResponse($this->food99Service->getIntegrationSnapshot($provider));
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 integration detail error', [
+                'provider_id' => $provider->getId(),
+                'error' => $e->getMessage(),
+            ]);
+
+            $products = $this->food99Service->listSelectableMenuProducts($provider);
+            $food99Code = $this->food99Service->getIntegratedStoreCode($provider);
+
+            return new JsonResponse([
+                'provider' => [
+                    'id' => $provider->getId(),
+                    'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
+                ],
+                'integration' => [
+                    'key' => '99food',
+                    'label' => '99Food',
+                    'minimum_required_items' => 5,
+                    'eligible_product_count' => $products['eligible_product_count'] ?? 0,
+                    'connected' => !empty($food99Code),
+                    'remote_connected' => false,
+                    'food99_code' => $food99Code,
+                    'app_shop_id' => (string) $provider->getId(),
+                    'auth_available' => false,
+                    'online' => false,
+                    'biz_status' => null,
+                    'biz_status_label' => 'Indefinido',
+                    'sub_biz_status' => null,
+                    'sub_biz_status_label' => 'Indefinido',
+                ],
+                'store' => null,
+                'delivery_areas' => null,
+                'menu' => [
+                    'remote_item_ids' => [],
+                ],
+                'products' => array_merge($products, [
+                    'published_product_count' => 0,
+                ]),
+                'errors' => [
+                    'detail' => $e->getMessage(),
+                ],
+            ]);
+        }
     }
 
     #[Route('/marketplace/integrations/99food/store/authorization-page', name: 'marketplace_integrations_food99_authorization_page', methods: ['POST'])]

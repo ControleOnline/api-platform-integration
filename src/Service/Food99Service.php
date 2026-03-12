@@ -258,6 +258,30 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
     }
 
+    public function resolveIntegrationAccessToken(People $provider): ?string
+    {
+        $this->init();
+
+        $appId = $this->resolveAppId();
+        $appSecret = $this->resolveAppSecret();
+        $appShopId = $this->resolveAppShopId($provider);
+
+        if (!$appId || !$appSecret || !$appShopId) {
+            return null;
+        }
+
+        // In the current 99Food flow, a previously generated token often requires
+        // an explicit refresh before a new get succeeds after process restarts.
+        $this->refreshAuthToken($appId, $appSecret, $appShopId);
+
+        $tokenData = $this->requestAuthToken($appId, $appSecret, $appShopId, false);
+        if (!$tokenData || empty($tokenData['auth_token'])) {
+            $tokenData = $this->requestAuthToken($appId, $appSecret, $appShopId, true);
+        }
+
+        return !empty($tokenData['auth_token']) ? (string) $tokenData['auth_token'] : null;
+    }
+
 
     public function readyOrder(string $orderId, ?People $provider = null): void
     {
@@ -897,22 +921,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $products = $this->listSelectableMenuProducts($provider);
         $integratedStoreCode = $this->getIntegratedStoreCode($provider);
-        $authToken = $this->resolveAccessToken($provider);
-        $authAvailable = !empty($authToken);
+        $connected = !empty($integratedStoreCode);
 
-        $storeDetails = $authAvailable ? $this->getStoreDetails($provider) : null;
-        $deliveryAreas = $authAvailable ? $this->listDeliveryAreas($provider) : null;
-        $menuDetails = $authAvailable ? $this->getStoreMenuDetails($provider) : null;
-
-        $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
-        $connected = !empty($integratedStoreCode) || $remoteConnected;
-        $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
-        $remoteItemIds = $this->resolvePublishedRemoteItemIds($menuDetails);
-        $mappedProducts = $this->mapProductsWithRemoteCatalog($products['products'] ?? [], $remoteItemIds);
-        $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
-        $subBizStatus = isset($remoteStore['sub_biz_status']) ? (int) $remoteStore['sub_biz_status'] : null;
-
-        return [
+        $detail = [
             'provider' => [
                 'id' => $provider->getId(),
                 'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
@@ -923,29 +934,87 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'minimum_required_items' => 5,
                 'eligible_product_count' => $products['eligible_product_count'] ?? 0,
                 'connected' => $connected,
-                'remote_connected' => $remoteConnected,
+                'remote_connected' => false,
                 'food99_code' => $integratedStoreCode,
                 'app_shop_id' => (string) $provider->getId(),
-                'auth_available' => $authAvailable,
-                'online' => $remoteConnected && $bizStatus === 1,
-                'biz_status' => $bizStatus,
-                'biz_status_label' => $this->resolveStatusLabel($bizStatus),
-                'sub_biz_status' => $subBizStatus,
-                'sub_biz_status_label' => $this->resolveSubStatusLabel($subBizStatus),
+                'auth_available' => false,
+                'online' => false,
+                'biz_status' => null,
+                'biz_status_label' => 'Indefinido',
+                'sub_biz_status' => null,
+                'sub_biz_status_label' => 'Indefinido',
             ],
-            'store' => $storeDetails,
-            'delivery_areas' => $deliveryAreas,
-            'menu' => array_merge($menuDetails ?? [], [
-                'remote_item_ids' => $remoteItemIds,
-            ]),
+            'store' => null,
+            'delivery_areas' => null,
+            'menu' => [
+                'remote_item_ids' => [],
+            ],
             'products' => array_merge($products, [
+                'published_product_count' => 0,
+                'products' => $this->mapProductsWithRemoteCatalog($products['products'] ?? [], []),
+            ]),
+            'errors' => [],
+        ];
+
+        if (!$connected) {
+            return $detail;
+        }
+
+        $authToken = $this->resolveIntegrationAccessToken($provider);
+        $detail['integration']['auth_available'] = !empty($authToken);
+
+        if (!$authToken) {
+            $detail['errors']['auth'] = 'Nao foi possivel obter o auth_token da loja na 99Food.';
+            return $detail;
+        }
+
+        try {
+            $storeDetails = $this->getStoreDetails($provider);
+            $detail['store'] = $storeDetails;
+
+            $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
+            $detail['integration']['remote_connected'] = $remoteConnected;
+
+            $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
+            $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
+            $subBizStatus = isset($remoteStore['sub_biz_status']) ? (int) $remoteStore['sub_biz_status'] : null;
+
+            $detail['integration']['online'] = $remoteConnected && $bizStatus === 1;
+            $detail['integration']['biz_status'] = $bizStatus;
+            $detail['integration']['biz_status_label'] = $this->resolveStatusLabel($bizStatus);
+            $detail['integration']['sub_biz_status'] = $subBizStatus;
+            $detail['integration']['sub_biz_status_label'] = $this->resolveSubStatusLabel($subBizStatus);
+        } catch (\Throwable $e) {
+            $detail['errors']['store'] = $e->getMessage();
+        }
+
+        try {
+            $deliveryAreas = $this->listDeliveryAreas($provider);
+            $detail['delivery_areas'] = $deliveryAreas;
+        } catch (\Throwable $e) {
+            $detail['errors']['delivery_areas'] = $e->getMessage();
+        }
+
+        try {
+            $menuDetails = $this->getStoreMenuDetails($provider);
+            $remoteItemIds = $this->resolvePublishedRemoteItemIds($menuDetails);
+            $mappedProducts = $this->mapProductsWithRemoteCatalog($products['products'] ?? [], $remoteItemIds);
+
+            $detail['menu'] = array_merge(is_array($menuDetails) ? $menuDetails : [], [
+                'remote_item_ids' => $remoteItemIds,
+            ]);
+            $detail['products'] = array_merge($products, [
                 'products' => $mappedProducts,
                 'published_product_count' => count(array_filter(
                     $mappedProducts,
                     static fn(array $product) => !empty($product['published_remotely'])
                 )),
-            ]),
-        ];
+            ]);
+        } catch (\Throwable $e) {
+            $detail['errors']['menu'] = $e->getMessage();
+        }
+
+        return $detail;
     }
 
     public function buildStoreMenuPayloadFromProducts(People $provider, array $productIds): array
