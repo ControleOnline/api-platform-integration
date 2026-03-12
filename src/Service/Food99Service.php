@@ -494,7 +494,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        $code = $this->discoveryFoodCodeByEntity($provider);
+        $code = null;
+
+        try {
+            $code = $this->discoveryFoodCodeByEntity($provider);
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 helper lookup failed, using database fallback', [
+                'provider_id' => $provider->getId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         if ($code === null || $code === '') {
             $sql = <<<SQL
                 SELECT ed.data_value
@@ -502,7 +512,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
                 WHERE ef.context = :context
                   AND ef.field_name = :fieldName
-                  AND ed.entity_name = :entityName
+                  AND LOWER(ed.entity_name) = LOWER(:entityName)
                   AND ed.entity_id = :entityId
                 ORDER BY ed.id DESC
                 LIMIT 1

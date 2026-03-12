@@ -224,6 +224,7 @@ class IntegrationController extends AbstractController
                 'connected' => $connected,
                 'remote_connected' => null,
                 'food99_code' => $integratedStoreCode,
+                'app_shop_id' => (string) $provider->getId(),
                 'store' => null,
                 'store_error' => null,
             ]],
