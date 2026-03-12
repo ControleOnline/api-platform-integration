@@ -453,6 +453,27 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $code = $this->discoveryFoodCodeByEntity($provider);
         if ($code === null || $code === '') {
+            $sql = <<<SQL
+                SELECT ed.data_value
+                FROM extra_data ed
+                INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+                WHERE ef.context = :context
+                  AND ef.field_name = :fieldName
+                  AND ed.entity_name = :entityName
+                  AND ed.entity_id = :entityId
+                ORDER BY ed.id DESC
+                LIMIT 1
+            SQL;
+
+            $code = $this->entityManager->getConnection()->fetchOne($sql, [
+                'context' => self::$app,
+                'fieldName' => 'code',
+                'entityName' => 'People',
+                'entityId' => $provider->getId(),
+            ]);
+        }
+
+        if ($code === null || $code === '') {
             return null;
         }
 
