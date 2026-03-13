@@ -39,6 +39,54 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $extra);
     }
 
+    private function normalizeIncomingFood99Value(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        return trim((string) $value);
+    }
+
+    private function buildOrderIntegrationLockKey(string $orderId): string
+    {
+        return 'food99:order:' . substr(sha1($orderId), 0, 40);
+    }
+
+    private function acquireOrderIntegrationLock(string $orderId): bool
+    {
+        try {
+            $acquired = (int) $this->entityManager->getConnection()->fetchOne(
+                'SELECT GET_LOCK(:lockKey, 5)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+
+            return $acquired === 1;
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 could not acquire order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function releaseOrderIntegrationLock(string $orderId): void
+    {
+        try {
+            $this->entityManager->getConnection()->fetchOne(
+                'SELECT RELEASE_LOCK(:lockKey)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 could not release order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     private function sanitizePayloadForLog(array $payload): array
     {
         foreach (['auth_token', 'app_secret', 'appSecret', 'access_token', 'finance_access_token'] as $secretKey) {
@@ -747,6 +795,70 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $this->upsertFood99ExtraDataValue($entityName, $entityId, 'id', $id);
     }
 
+    private function findExistingIntegratedOrder(string $orderId, string $orderCode): ?Order
+    {
+        if ($orderId !== '') {
+            $order = $this->findFood99EntityByExtraData('Order', 'id', $orderId, Order::class);
+            if ($order instanceof Order) {
+                return $order;
+            }
+        }
+
+        if ($orderCode !== '') {
+            $order = $this->findFood99EntityByExtraData('Order', 'code', $orderCode, Order::class);
+            if ($order instanceof Order) {
+                return $order;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveIncomingOrderCode(string $orderId, string $orderIndex): string
+    {
+        return $orderIndex !== '' ? $orderIndex : $orderId;
+    }
+
+    private function resolveOrderClient(array $address, string $orderId): People
+    {
+        $client = $this->discoveryClient($address);
+        if ($client instanceof People) {
+            return $client;
+        }
+
+        $nameParts = array_filter([
+            $this->normalizeIncomingFood99Value($address['name'] ?? null),
+            $this->normalizeIncomingFood99Value($address['first_name'] ?? null),
+            $this->normalizeIncomingFood99Value($address['last_name'] ?? null),
+        ]);
+        $fallbackName = trim(implode(' ', array_unique($nameParts)));
+        if ($fallbackName === '') {
+            $fallbackName = 'Cliente Food99';
+        }
+
+        $clientCode = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
+        if ($clientCode === '') {
+            $clientCode = 'food99-order-' . $orderId;
+        }
+
+        self::$logger->warning('Food99 order received without a resolved customer name; using fallback customer record', [
+            'order_id' => $orderId,
+            'client_code' => $clientCode,
+            'address_keys' => array_keys($address),
+        ]);
+
+        $client = $this->peopleService->discoveryPeople(
+            $clientCode,
+            null,
+            null,
+            $fallbackName
+        );
+
+        $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $clientCode);
+
+        return $client;
+    }
+
     private function persistProviderIntegrationState(People $provider, array $fields): void
     {
         foreach ($fields as $fieldName => $value) {
@@ -805,6 +917,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $publishedItemIds
         ))));
         $publishedItemIdSet = array_flip($publishedItemIds);
+        $localCandidateIds = [];
 
         foreach ($this->fetchMenuProducts($provider) as $row) {
             $productId = (int) ($row['id'] ?? 0);
@@ -813,6 +926,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $candidateId = trim((string) ($row['food99_code'] ?? '')) ?: (string) $productId;
+            $localCandidateIds[] = $candidateId;
             $published = isset($publishedItemIdSet[$candidateId]);
 
             if ($published && empty($row['food99_code'])) {
@@ -821,6 +935,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $this->upsertFood99ExtraDataValue('Product', $productId, 'published', $published ? '1' : '0');
         }
+
+        $remoteOnlyItemCount = count(array_diff($publishedItemIds, array_unique($localCandidateIds)));
+        $this->persistProviderIntegrationState($provider, [
+            'remote_only_item_count' => $remoteOnlyItemCount,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+        ]);
     }
 
     private function persistProviderMenuUploadSubmission(People $provider, array $menuPayload, mixed $taskId = null): void
@@ -929,6 +1049,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $menuCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_count');
         $menuItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_item_count');
         $deliveryAreaCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'delivery_area_count');
+        $remoteOnlyItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_only_item_count');
 
         return [
             'connected' => !empty($food99Code),
@@ -944,6 +1065,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'menu_count' => is_numeric($menuCount) ? (int) $menuCount : 0,
             'menu_item_count' => is_numeric($menuItemCount) ? (int) $menuItemCount : 0,
             'delivery_area_count' => is_numeric($deliveryAreaCount) ? (int) $deliveryAreaCount : 0,
+            'remote_only_item_count' => is_numeric($remoteOnlyItemCount) ? (int) $remoteOnlyItemCount : 0,
             'last_error_code' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
             'last_error_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
         ];
@@ -1344,6 +1466,26 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ))));
     }
 
+    private function resolveIncomingProductCode(array $item, string $productType): string
+    {
+        foreach (['app_item_id', 'mdu_id', 'app_external_id'] as $key) {
+            $candidate = $this->normalizeIncomingFood99Value($item[$key] ?? null);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        $fallbackSource = implode('|', array_filter([
+            $productType,
+            $this->normalizeIncomingFood99Value($item['name'] ?? null),
+            $this->normalizeIncomingFood99Value($item['content_name'] ?? null),
+            $this->normalizeIncomingFood99Value($item['app_content_id'] ?? null),
+            $this->normalizeIncomingFood99Value($item['sku_price'] ?? null),
+        ]));
+
+        return 'food99:' . substr(sha1($fallbackSource !== '' ? $fallbackSource : json_encode($item)), 0, 24);
+    }
+
     private function mapProductsWithRemoteCatalog(array $products, array $remoteItemIds): array
     {
         $remoteItemIdSet = array_flip($remoteItemIds);
@@ -1488,12 +1630,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'menu' => null,
             'errors' => [],
         ];
-
-        $integratedStoreCode = $this->getIntegratedStoreCode($provider);
-        if (!$integratedStoreCode) {
-            $sync['errors']['integration'] = 'A empresa ainda nao possui um codigo de loja integrado ao 99Food.';
-            return $sync;
-        }
 
         $authToken = $this->resolveIntegrationAccessToken($provider);
         $sync['auth_available'] = !empty($authToken);
@@ -1884,75 +2020,99 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'order_items_count' => is_array($items) ? count($items) : null,
         ]));
 
-        $orderId = (string)$data['order_id'];
-        $orderIndex = (string)$data['order_info']['order_index'];
+        $orderId = $this->normalizeIncomingFood99Value($data['order_id'] ?? null);
+        $orderIndex = $this->normalizeIncomingFood99Value($data['order_info']['order_index'] ?? null);
+        $orderCode = $this->resolveIncomingOrderCode($orderId, $orderIndex);
 
-        $exists = $this->findFood99EntityByExtraData('Order', 'code', $orderIndex, Order::class);
-        if ($exists) {
-            self::$logger->info('Food99 order already integrated, skipping duplicate creation', $this->buildLogContext(null, $json));
-            return $exists;
+        if ($orderId === '') {
+            self::$logger->error('Food99 order ignored because order_id is missing', $this->buildLogContext(null, $json));
+            return null;
         }
 
-        $shopId = $shop['shop_id'] ?? null;
+        $lockAcquired = $this->acquireOrderIntegrationLock($orderId);
 
-        $provider = null;
-        if ($shopId) {
-            $provider = $this->findFood99EntityByExtraData('People', 'code', $shopId, People::class);
-        }
+        try {
+            $exists = $this->findExistingIntegratedOrder($orderId, $orderCode);
+            if ($exists instanceof Order) {
+                self::$logger->info('Food99 order already integrated, skipping duplicate creation', $this->buildLogContext(null, $json, [
+                    'local_order_id' => $exists->getId(),
+                ]));
+                return $exists;
+            }
 
-        if (!$provider) {
-            $provider = $this->peopleService->discoveryPeople(
-                null,
-                null,
-                null,
-                $shop['shop_name'] ?? 'Loja Food99',
-                'J'
-            );
-            if ($shopId) {
-                $this->persistLocalFoodCodeByEntity('People', (int) $provider->getId(), (string) $shopId);
+            $shopId = $this->normalizeIncomingFood99Value($shop['shop_id'] ?? null);
+
+            $provider = null;
+            if ($shopId !== '') {
+                $provider = $this->findFood99EntityByExtraData('People', 'code', $shopId, People::class);
+            }
+
+            if (!$provider) {
+                $provider = $this->peopleService->discoveryPeople(
+                    null,
+                    null,
+                    null,
+                    $shop['shop_name'] ?? 'Loja Food99',
+                    'J'
+                );
+                if ($shopId !== '') {
+                    $this->persistLocalFoodCodeByEntity('People', (int) $provider->getId(), $shopId);
+                }
+            }
+
+            $client = $this->resolveOrderClient($receiveAddress, $orderId);
+            $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
+            $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
+
+            $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+
+            $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
+            $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
+
+            self::$logger->info('Food99 order shell persisted locally before item/address processing', $this->buildLogContext(null, $json, [
+                'provider_id' => $provider?->getId(),
+                'client_id' => $client?->getId(),
+                'local_order_id' => $order->getId(),
+                'order_code' => $orderCode,
+            ]));
+
+            self::$logger->info('Food99 BEFORE addProducts', $this->buildLogContext(null, $json, [
+                'is_array' => is_array($items),
+                'count' => is_array($items) ? count($items) : null,
+                'value_preview' => is_array($items) ? array_slice($items, 0, 2) : null
+            ]));
+
+            if (!empty($items)) {
+                $this->addProducts($order, $items);
+            } else {
+                self::$logger->error('Food99 order_items inválido', [
+                    'order_id' => $orderId,
+                    'order_items' => $items
+                ]);
+            }
+
+            $this->addAddress($order, $receiveAddress);
+
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+
+            self::$logger->info('Food99 order persisted locally', $this->buildLogContext(null, $json, [
+                'provider_id' => $provider?->getId(),
+                'client_id' => $client?->getId(),
+                'local_order_id' => $order->getId(),
+            ]));
+
+            $this->confirmOrder($orderId, $provider);
+            $this->printOrder($order);
+
+            return $order;
+        } finally {
+            if ($lockAcquired) {
+                $this->releaseOrderIntegrationLock($orderId);
             }
         }
-
-        $client = $this->discoveryClient($receiveAddress);
-        $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
-
-        $orderPrice = $price['order_price'] ? $price['order_price'] / 100 : 0;
-
-        $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
-
-        self::$logger->info('Food99 BEFORE addProducts', $this->buildLogContext(null, $json, [
-            'is_array' => is_array($items),
-            'count' => is_array($items) ? count($items) : null,
-            'value_preview' => is_array($items) ? array_slice($items, 0, 2) : null
-        ]));
-
-        if (!empty($items)) {
-            $this->addProducts($order, $items);
-        } else {
-            self::$logger->error('Food99 order_items inválido', [
-                'order_id' => $orderId,
-                'order_items' => $items
-            ]);
-        }
-
-        $this->addAddress($order, $receiveAddress);
-
-        $this->entityManager->persist($order);
-        $this->entityManager->flush();
-
-        self::$logger->info('Food99 order persisted locally', $this->buildLogContext(null, $json, [
-            'provider_id' => $provider?->getId(),
-            'client_id' => $client?->getId(),
-            'local_order_id' => $order->getId(),
-        ]));
-
-        $this->confirmOrder($orderId, $provider);
-
-        $this->printOrder($order);
-        $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
-        $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderIndex);
-
-        return $order;
     }
 
     private function confirmOrder(string $orderId, ?People $provider = null): void
@@ -2016,37 +2176,46 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 continue;
             }
 
-            $productType = $parentProduct ? 'component' : 'product';
+            try {
+                $productType = $parentProduct ? 'component' : 'product';
 
-            $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
+                $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
 
-            $productGroup = null;
+                $productGroup = null;
 
-            if ($parentProduct && !empty($item['app_content_id'])) {
-                $productGroup = $this->productGroupService->discoveryProductGroup(
-                    $parentProduct,
-                    $item['app_content_id'],
-                    $item['content_name'] ?: $item['app_content_id']
-                );
-            }
+                if ($parentProduct && !empty($item['app_content_id'])) {
+                    $productGroup = $this->productGroupService->discoveryProductGroup(
+                        $parentProduct,
+                        $item['app_content_id'],
+                        $item['content_name'] ?: $item['app_content_id']
+                    );
+                }
 
-            $orderProduct = $this->orderProductService->addOrderProduct(
-                $order,
-                $product,
-                $item['amount'] ?? 1,
-                $item['sku_price'] ? $item['sku_price'] / 100 : 0,
-                $productGroup,
-                $parentProduct,
-                $orderParentProduct
-            );
-
-            if (!empty($item['sub_item_list']) && is_array($item['sub_item_list'])) {
-                $this->addProducts(
+                $orderProduct = $this->orderProductService->addOrderProduct(
                     $order,
-                    $item['sub_item_list'],
                     $product,
-                    $orderProduct
+                    $item['amount'] ?? 1,
+                    isset($item['sku_price']) ? ((float) $item['sku_price']) / 100 : 0,
+                    $productGroup,
+                    $parentProduct,
+                    $orderParentProduct
                 );
+
+                if (!empty($item['sub_item_list']) && is_array($item['sub_item_list'])) {
+                    $this->addProducts(
+                        $order,
+                        $item['sub_item_list'],
+                        $product,
+                        $orderProduct
+                    );
+                }
+            } catch (\Throwable $e) {
+                self::$logger->error('Food99 order item could not be processed and was skipped', [
+                    'local_order_id' => $order->getId(),
+                    'provider_id' => $order->getProvider()?->getId(),
+                    'item' => $item,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }
@@ -2057,7 +2226,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ?Product $parentProduct,
         string $productType
     ): Product {
-        $code = $item['app_item_id'];
+        $code = $this->resolveIncomingProductCode($item, $productType);
 
         $product = $this->findFood99EntityByExtraData('Product', 'code', $code, Product::class);
 
@@ -2066,10 +2235,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 ->getRepository(ProductUnity::class)
                 ->findOneBy(['productUnit' => 'UN']);
 
+            if (!$unity instanceof ProductUnity) {
+                throw new \RuntimeException('Product unity UN not found for Food99 product creation.');
+            }
+
             $product = new Product();
             $product->setProduct($item['name'] ?? 'Produto Food99');
             $product->setSku(null);
-            $product->setPrice($item['sku_price'] ? $item['sku_price'] / 100 : 0);
+            $product->setPrice(isset($item['sku_price']) ? ((float) $item['sku_price']) / 100 : 0);
             $product->setProductUnit($unity);
             $product->setType($productType);
             $product->setProductCondition('new');
@@ -2101,7 +2274,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $pgp->setProductGroup($group);
                 $pgp->setProductType($productType);
                 $pgp->setQuantity($item['amount'] ?? 1);
-                $pgp->setPrice($item['sku_price'] ? $item['sku_price'] / 100 : 0);
+                $pgp->setPrice(isset($item['sku_price']) ? ((float) $item['sku_price']) / 100 : 0);
 
                 $this->entityManager->persist($pgp);
                 $this->entityManager->flush();

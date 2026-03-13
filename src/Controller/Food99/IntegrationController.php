@@ -198,6 +198,10 @@ class IntegrationController extends AbstractController
 
             return $product;
         }, $products['products'] ?? []);
+        $publishedProductCount = count(array_filter(
+            $mappedProducts,
+            static fn(array $product) => !empty($product['published_remotely'])
+        ));
 
         return [
             'provider' => [
@@ -226,6 +230,8 @@ class IntegrationController extends AbstractController
                 'menu_count' => $storedState['menu_count'],
                 'menu_item_count' => $storedState['menu_item_count'],
                 'delivery_area_count' => $storedState['delivery_area_count'],
+                'remote_only_item_count' => $storedState['remote_only_item_count'],
+                'published_product_count' => $publishedProductCount,
                 'last_menu_task_id' => $storedState['last_menu_task_id'],
             ],
             'store' => null,
@@ -235,10 +241,7 @@ class IntegrationController extends AbstractController
             ],
             'products' => array_merge($products, [
                 'products' => $mappedProducts,
-                'published_product_count' => count(array_filter(
-                    $mappedProducts,
-                    static fn(array $product) => !empty($product['published_remotely'])
-                )),
+                'published_product_count' => $publishedProductCount,
             ]),
             'errors' => [],
         ];
@@ -254,6 +257,10 @@ class IntegrationController extends AbstractController
 
         $products = $this->food99Service->listSelectableMenuProducts($provider);
         $storedState = $this->food99Service->getStoredIntegrationState($provider);
+        $publishedProductCount = count(array_filter(
+            $products['products'] ?? [],
+            static fn(array $product) => !empty($product['food99_published'])
+        ));
 
         return new JsonResponse([
             'provider' => [
@@ -274,6 +281,8 @@ class IntegrationController extends AbstractController
                 'store_status' => $storedState['store_status'],
                 'online' => $storedState['online'],
                 'last_sync_at' => $storedState['last_sync_at'],
+                'published_product_count' => $publishedProductCount,
+                'remote_only_item_count' => $storedState['remote_only_item_count'],
                 'last_error_code' => $storedState['last_error_code'],
                 'last_error_message' => $storedState['last_error_message'],
                 'store' => null,
