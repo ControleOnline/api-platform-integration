@@ -102,7 +102,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         if ($provider) {
-            $providerCode = $this->discoveryFoodCodeByEntity($provider);
+            $providerCode = $this->getIntegratedStoreCode($provider);
             if ($providerCode) {
                 return (string) $providerCode;
             }
@@ -280,6 +280,20 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return !empty($tokenData['auth_token']) ? (string) $tokenData['auth_token'] : null;
+    }
+
+    public function persistIntegrationAuthError(People $provider, ?string $message = null): void
+    {
+        $this->init();
+
+        $this->persistProviderLastError($provider, 'auth', $message ?: 'Nao foi possivel obter o auth_token da loja na 99Food.');
+    }
+
+    public function clearIntegrationError(People $provider): void
+    {
+        $this->init();
+
+        $this->persistProviderLastError($provider, '', '');
     }
 
 
@@ -494,20 +508,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        $code = null;
-
-        try {
-            $code = $this->discoveryFoodCodeByEntity($provider);
-        } catch (\Throwable $e) {
-            self::$logger->warning('Food99 helper lookup failed, using database fallback', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        if ($code === null || $code === '') {
-            $code = $this->findLocalFoodCodeByEntity('People', $provider->getId());
-        }
+        $code = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'code');
 
         if ($code === null || $code === '') {
             return null;
@@ -516,8 +517,73 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return (string) $code;
     }
 
-    private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
+    private function normalizeExtraDataValue(mixed $value): string
     {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if ($value === null) {
+            return '';
+        }
+
+        return trim((string) $value);
+    }
+
+    private function ensureFood99FieldId(string $fieldName, string $fieldType = 'text'): ?int
+    {
+        $sql = <<<SQL
+            SELECT id
+            FROM extra_fields
+            WHERE context = :context
+              AND field_name = :fieldName
+            ORDER BY id ASC
+            LIMIT 1
+        SQL;
+
+        $connection = $this->entityManager->getConnection();
+        $fieldId = $connection->fetchOne($sql, [
+            'context' => self::$app,
+            'fieldName' => $fieldName,
+        ]);
+
+        if (is_numeric($fieldId)) {
+            return (int) $fieldId;
+        }
+
+        try {
+            $connection->insert('extra_fields', [
+                'field_name' => $fieldName,
+                'field_type' => $fieldType,
+                'context' => self::$app,
+                'required' => 0,
+                'field_configs' => '{}',
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 extra field creation failed, retrying lookup', [
+                'field_name' => $fieldName,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $fieldId = $connection->fetchOne($sql, [
+            'context' => self::$app,
+            'fieldName' => $fieldName,
+        ]);
+
+        return is_numeric($fieldId) ? (int) $fieldId : null;
+    }
+
+    private function getFood99ExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
+    {
+        if ($entityId <= 0) {
+            return null;
+        }
+
         $sql = <<<SQL
             SELECT ed.data_value
             FROM extra_data ed
@@ -530,76 +596,357 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             LIMIT 1
         SQL;
 
-        $code = $this->entityManager->getConnection()->fetchOne($sql, [
+        $value = $this->entityManager->getConnection()->fetchOne($sql, [
             'context' => self::$app,
-            'fieldName' => 'code',
+            'fieldName' => $fieldName,
             'entityName' => $entityName,
             'entityId' => $entityId,
         ]);
 
-        if ($code === null || $code === '') {
+        if ($value === null || $value === '') {
             return null;
         }
 
-        return (string) $code;
+        return (string) $value;
     }
 
-    private function getFood99CodeFieldId(): ?int
+    private function getFood99ExtraDataValueByEntity(object $entity, string $fieldName = 'code'): ?string
     {
+        if (!method_exists($entity, 'getId')) {
+            return null;
+        }
+
+        $entityId = (int) $entity->getId();
+        if ($entityId <= 0) {
+            return null;
+        }
+
+        $parts = explode('\\', $entity::class);
+        $entityName = end($parts) ?: '';
+
+        return $this->getFood99ExtraDataValue($entityName, $entityId, $fieldName);
+    }
+
+    private function upsertFood99ExtraDataValue(
+        string $entityName,
+        int $entityId,
+        string $fieldName,
+        mixed $value,
+        string $fieldType = 'text'
+    ): ?string {
+        if ($entityId <= 0) {
+            return null;
+        }
+
+        $fieldId = $this->ensureFood99FieldId($fieldName, $fieldType);
+        if (!$fieldId) {
+            self::$logger->error('Food99 extra field could not be ensured', [
+                'entity_name' => $entityName,
+                'entity_id' => $entityId,
+                'field_name' => $fieldName,
+            ]);
+            return null;
+        }
+
+        $normalizedValue = $this->normalizeExtraDataValue($value);
+        $connection = $this->entityManager->getConnection();
+        $existingId = $connection->fetchOne(
+            'SELECT id FROM extra_data WHERE extra_fields_id = :fieldId AND LOWER(entity_name) = LOWER(:entityName) AND entity_id = :entityId ORDER BY id DESC LIMIT 1',
+            [
+                'fieldId' => $fieldId,
+                'entityName' => $entityName,
+                'entityId' => $entityId,
+            ]
+        );
+
+        $payload = [
+            'data_value' => $normalizedValue,
+            'source' => self::$app,
+            'dateTime' => date('Y-m-d H:i:s'),
+        ];
+
+        try {
+            if (is_numeric($existingId)) {
+                $connection->update('extra_data', $payload, [
+                    'id' => (int) $existingId,
+                ]);
+            } else {
+                $connection->insert('extra_data', array_merge($payload, [
+                    'extra_fields_id' => $fieldId,
+                    'entity_id' => $entityId,
+                    'entity_name' => $entityName,
+                ]));
+            }
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 extra data upsert failed', [
+                'entity_name' => $entityName,
+                'entity_id' => $entityId,
+                'field_name' => $fieldName,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+
+        return $normalizedValue === '' ? null : $normalizedValue;
+    }
+
+    private function findFood99EntityByExtraData(
+        string $entityName,
+        string $fieldName,
+        mixed $value,
+        string $entityClass
+    ): ?object {
+        $normalizedValue = $this->normalizeExtraDataValue($value);
+        if ($normalizedValue === '') {
+            return null;
+        }
+
         $sql = <<<SQL
-            SELECT id
-            FROM extra_fields
-            WHERE context = :context
-              AND field_name = :fieldName
-            ORDER BY id ASC
+            SELECT ed.entity_id
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND ef.field_name = :fieldName
+              AND LOWER(ed.entity_name) = LOWER(:entityName)
+              AND ed.data_value = :value
+            ORDER BY ed.id DESC
             LIMIT 1
         SQL;
 
-        $fieldId = $this->entityManager->getConnection()->fetchOne($sql, [
+        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
             'context' => self::$app,
-            'fieldName' => 'code',
+            'fieldName' => $fieldName,
+            'entityName' => $entityName,
+            'value' => $normalizedValue,
         ]);
 
-        return is_numeric($fieldId) ? (int) $fieldId : null;
+        if (!is_numeric($entityId)) {
+            return null;
+        }
+
+        return $this->entityManager->getRepository($entityClass)->find((int) $entityId);
+    }
+
+    private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
+    {
+        return $this->getFood99ExtraDataValue($entityName, $entityId, 'code');
+    }
+
+    private function findLocalFoodIdByEntity(string $entityName, int $entityId): ?string
+    {
+        return $this->getFood99ExtraDataValue($entityName, $entityId, 'id');
     }
 
     private function persistLocalFoodCodeByEntity(string $entityName, int $entityId, string $code): ?string
     {
-        $existingCode = $this->findLocalFoodCodeByEntity($entityName, $entityId);
-        if ($existingCode) {
-            return $existingCode;
+        return $this->upsertFood99ExtraDataValue($entityName, $entityId, 'code', $code);
+    }
+
+    private function persistLocalFoodIdByEntity(string $entityName, int $entityId, string $id): ?string
+    {
+        return $this->upsertFood99ExtraDataValue($entityName, $entityId, 'id', $id);
+    }
+
+    private function persistProviderIntegrationState(People $provider, array $fields): void
+    {
+        foreach ($fields as $fieldName => $value) {
+            $this->upsertFood99ExtraDataValue('People', (int) $provider->getId(), (string) $fieldName, $value);
+        }
+    }
+
+    private function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
+    {
+        $this->persistProviderIntegrationState($provider, [
+            'last_error_code' => $code,
+            'last_error_message' => $message,
+        ]);
+    }
+
+    private function persistProviderStoreState(People $provider, array $storeData): void
+    {
+        $shopId = isset($storeData['shop_id']) ? (string) $storeData['shop_id'] : $this->getIntegratedStoreCode($provider);
+        $bizStatus = isset($storeData['biz_status']) ? (int) $storeData['biz_status'] : null;
+        $subBizStatus = isset($storeData['sub_biz_status']) ? (int) $storeData['sub_biz_status'] : null;
+        $storeStatus = isset($storeData['store_status']) ? (int) $storeData['store_status'] : null;
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => $shopId,
+            'biz_status' => $bizStatus,
+            'sub_biz_status' => $subBizStatus,
+            'store_status' => $storeStatus,
+            'remote_connected' => 1,
+            'online' => $bizStatus === 1 ? 1 : 0,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function persistProviderMenuState(People $provider, array $menuData, mixed $taskId = null): void
+    {
+        $menus = is_array($menuData['menus'] ?? null) ? $menuData['menus'] : [];
+        $items = is_array($menuData['items'] ?? null) ? $menuData['items'] : [];
+
+        $this->persistProviderIntegrationState($provider, [
+            'menu_count' => count($menus),
+            'menu_item_count' => count($items),
+            'last_menu_task_id' => $taskId,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'remote_connected' => 1,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function syncPublishedProductsForProvider(People $provider, array $publishedItemIds): void
+    {
+        $publishedItemIds = array_values(array_unique(array_filter(array_map(
+            fn(mixed $itemId) => $this->normalizeExtraDataValue($itemId),
+            $publishedItemIds
+        ))));
+        $publishedItemIdSet = array_flip($publishedItemIds);
+
+        foreach ($this->fetchMenuProducts($provider) as $row) {
+            $productId = (int) ($row['id'] ?? 0);
+            if ($productId <= 0) {
+                continue;
+            }
+
+            $candidateId = trim((string) ($row['food99_code'] ?? '')) ?: (string) $productId;
+            $published = isset($publishedItemIdSet[$candidateId]);
+
+            if ($published && empty($row['food99_code'])) {
+                $this->persistLocalFoodCodeByEntity('Product', $productId, $candidateId);
+            }
+
+            $this->upsertFood99ExtraDataValue('Product', $productId, 'published', $published ? '1' : '0');
+        }
+    }
+
+    private function persistProviderMenuUploadSubmission(People $provider, array $menuPayload, mixed $taskId = null): void
+    {
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_task_id' => $taskId,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function persistProviderDeliveryAreaState(People $provider, array $deliveryAreaData): void
+    {
+        $areaGroups = is_array($deliveryAreaData['area_group'] ?? null) ? $deliveryAreaData['area_group'] : [];
+
+        $this->persistProviderIntegrationState($provider, [
+            'delivery_area_count' => count($areaGroups),
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'remote_connected' => 1,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function syncStoreStateFromResponse(People $provider, ?array $response): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderStoreState($provider, $data);
+            return $response;
         }
 
-        $fieldId = $this->getFood99CodeFieldId();
-        if (!$fieldId) {
-            self::$logger->error('Food99 code field not found for local code persistence', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-            ]);
-            return null;
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
+    }
+
+    private function syncMenuStateFromResponse(People $provider, ?array $response, mixed $taskId = null): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderMenuState($provider, $data, $taskId);
+            $this->syncPublishedProductsForProvider($provider, $this->resolvePublishedRemoteItemIds([
+                'data' => $data,
+            ]));
+            return $response;
         }
 
-        try {
-            $this->entityManager->getConnection()->insert('extra_data', [
-                'extra_fields_id' => $fieldId,
-                'entity_id' => $entityId,
-                'entity_name' => $entityName,
-                'data_value' => $code,
-                'source' => 'Food99',
-                'dateTime' => date('Y-m-d H:i:s'),
-            ]);
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
 
-            return $code;
-        } catch (\Throwable $e) {
-            self::$logger->warning('Food99 local code persistence failed, trying to reuse existing value', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'code' => $code,
-                'error' => $e->getMessage(),
-            ]);
+        return $response;
+    }
 
-            return $this->findLocalFoodCodeByEntity($entityName, $entityId);
+    private function syncDeliveryAreaStateFromResponse(People $provider, ?array $response): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderDeliveryAreaState($provider, $data);
+            return $response;
         }
+
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
+    }
+
+    private function syncStoreStatusWebhook(array $json): void
+    {
+        $appShopId = isset($json['app_shop_id'])
+            ? (int) preg_replace('/\D+/', '', (string) $json['app_shop_id'])
+            : 0;
+
+        if ($appShopId <= 0) {
+            self::$logger->warning('Food99 shopStatus webhook ignored because app_shop_id is missing', [
+                'payload' => $json,
+            ]);
+            return;
+        }
+
+        $provider = $this->entityManager->getRepository(People::class)->find($appShopId);
+        if (!$provider instanceof People) {
+            self::$logger->warning('Food99 shopStatus webhook ignored because provider was not found', [
+                'app_shop_id' => $appShopId,
+            ]);
+            return;
+        }
+
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $this->persistProviderStoreState($provider, $data);
+    }
+
+    public function getStoredIntegrationState(People $provider): array
+    {
+        $this->init();
+
+        $bizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'biz_status');
+        $subBizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'sub_biz_status');
+        $storeStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'store_status');
+        $food99Code = $this->getIntegratedStoreCode($provider);
+        $menuCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_count');
+        $menuItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_item_count');
+        $deliveryAreaCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'delivery_area_count');
+
+        return [
+            'connected' => !empty($food99Code),
+            'food99_code' => $food99Code,
+            'app_shop_id' => (string) $provider->getId(),
+            'biz_status' => is_numeric($bizStatus) ? (int) $bizStatus : null,
+            'sub_biz_status' => is_numeric($subBizStatus) ? (int) $subBizStatus : null,
+            'store_status' => is_numeric($storeStatus) ? (int) $storeStatus : null,
+            'remote_connected' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_connected') === '1',
+            'online' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'online') === '1',
+            'last_sync_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_sync_at'),
+            'last_menu_task_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_id'),
+            'menu_count' => is_numeric($menuCount) ? (int) $menuCount : 0,
+            'menu_item_count' => is_numeric($menuItemCount) ? (int) $menuItemCount : 0,
+            'delivery_area_count' => is_numeric($deliveryAreaCount) ? (int) $deliveryAreaCount : 0,
+            'last_error_code' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
+            'last_error_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
+        ];
     }
 
     public function getAuthorizationPage(array $payload): ?array
@@ -648,7 +995,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/detail', [], $provider);
+        return $this->syncStoreStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/detail', [], $provider)
+        );
     }
 
     public function updateStoreInformation(People $provider, array $payload): ?array
@@ -677,7 +1027,21 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $payload['auto_switch'] = $autoSwitch;
         }
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
+        $response = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
+        if (($response['errno'] ?? 1) === 0) {
+            $this->persistProviderIntegrationState($provider, [
+                'biz_status' => $bizStatus,
+                'online' => $bizStatus === 1 ? 1 : 0,
+                'remote_connected' => 1,
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => '',
+                'last_error_message' => '',
+            ]);
+        } else {
+            $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+        }
+
+        return $response;
     }
 
     public function setStoreCancellationRefund(People $provider, array $payload): ?array
@@ -691,7 +1055,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider);
+        return $this->syncMenuStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider)
+        );
     }
 
     public function updateMenuItem(People $provider, array $payload): ?array
@@ -779,7 +1146,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('GET', '/v1/shop/deliveryArea/list', [], $provider);
+        return $this->syncDeliveryAreaStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/deliveryArea/list', [], $provider)
+        );
     }
 
     public function addDeliveryArea(People $provider, array $payload): ?array
@@ -851,6 +1221,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'providerId' => $provider->getId(),
             'food99Context' => self::$app,
             'codeFieldName' => 'code',
+            'publishedFieldName' => 'published',
         ];
         $sql = <<<SQL
             SELECT
@@ -862,7 +1233,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 p.active,
                 c.id AS category_id,
                 c.name AS category_name,
-                ed.data_value AS food99_code
+                ed.data_value AS food99_code,
+                ed_published.data_value AS food99_published
             FROM product p
             LEFT JOIN product_category pc ON pc.id = (
                 SELECT MIN(pc2.id)
@@ -879,6 +1251,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 ON ed.extra_fields_id = ef.id
                AND ed.entity_name = 'Product'
                AND ed.entity_id = p.id
+            LEFT JOIN extra_fields ef_published
+                ON ef_published.context = :food99Context
+               AND ef_published.field_name = :publishedFieldName
+            LEFT JOIN extra_data ed_published
+                ON ed_published.extra_fields_id = ef_published.id
+               AND ed_published.entity_name = 'Product'
+               AND ed_published.entity_id = p.id
             WHERE p.company_id = :providerId
               AND p.active = 1
               AND p.type IN ('manufactured', 'custom', 'product')
@@ -907,6 +1286,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $categoryName = $row['category_name'] ? trim((string) $row['category_name']) : null;
         $price = round((float) ($row['price'] ?? 0), 2);
         $appItemId = trim((string) ($row['food99_code'] ?? '')) ?: (string) $productId;
+        $published = in_array((string) ($row['food99_published'] ?? ''), ['1', 'true'], true);
 
         $blockers = [];
         if ($productName === '') {
@@ -930,6 +1310,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'name' => $categoryName,
             ] : null,
             'food99_code' => trim((string) ($row['food99_code'] ?? '')) ?: null,
+            'food99_published' => $published,
             'suggested_app_item_id' => $appItemId,
             'eligible' => empty($blockers),
             'blockers' => $blockers,
@@ -1094,6 +1475,57 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return $detail;
+    }
+
+    public function syncIntegrationState(People $provider): array
+    {
+        $this->init();
+
+        $sync = [
+            'auth_available' => false,
+            'store' => null,
+            'delivery_areas' => null,
+            'menu' => null,
+            'errors' => [],
+        ];
+
+        $integratedStoreCode = $this->getIntegratedStoreCode($provider);
+        if (!$integratedStoreCode) {
+            $sync['errors']['integration'] = 'A empresa ainda nao possui um codigo de loja integrado ao 99Food.';
+            return $sync;
+        }
+
+        $authToken = $this->resolveIntegrationAccessToken($provider);
+        $sync['auth_available'] = !empty($authToken);
+
+        if (!$authToken) {
+            $message = 'Nao foi possivel obter o auth_token da loja na 99Food.';
+            $this->persistIntegrationAuthError($provider, $message);
+            $sync['errors']['auth'] = $message;
+            return $sync;
+        }
+
+        $this->clearIntegrationError($provider);
+
+        $storeDetails = $this->getStoreDetails($provider);
+        $sync['store'] = $storeDetails;
+        if (($storeDetails['errno'] ?? 1) !== 0) {
+            $sync['errors']['store'] = $storeDetails['errmsg'] ?? 'Nao foi possivel sincronizar os detalhes da loja.';
+        }
+
+        $deliveryAreas = $this->listDeliveryAreas($provider);
+        $sync['delivery_areas'] = $deliveryAreas;
+        if (($deliveryAreas['errno'] ?? 1) !== 0) {
+            $sync['errors']['delivery_areas'] = $deliveryAreas['errmsg'] ?? 'Nao foi possivel sincronizar as areas de entrega.';
+        }
+
+        $menuDetails = $this->getStoreMenuDetails($provider);
+        $sync['menu'] = $menuDetails;
+        if (($menuDetails['errno'] ?? 1) !== 0) {
+            $sync['errors']['menu'] = $menuDetails['errmsg'] ?? 'Nao foi possivel sincronizar o menu remoto.';
+        }
+
+        return $sync;
     }
 
     public function buildStoreMenuPayloadFromProducts(People $provider, array $productIds): array
@@ -1348,7 +1780,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $validationError;
         }
 
-        return $this->call99EndpointWithResponse('/v3/item/item/upload', $payload, $provider);
+        $response = $this->call99EndpointWithResponse('/v3/item/item/upload', $payload, $provider);
+        $taskId = is_array($response['data'] ?? null) ? ($response['data']['taskID'] ?? null) : null;
+
+        if (($response['errno'] ?? 1) === 0) {
+            $this->persistProviderMenuUploadSubmission($provider, $payload, $taskId);
+            return $response;
+        }
+
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
     }
 
     public function getMenuUploadTaskInfo(People $provider, int|string $taskId): ?array
@@ -1391,6 +1833,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             self::$logger->warning('Food99 payload is not a valid JSON object', [
                 'integration_id' => $integration->getId(),
             ]);
+            return null;
+        }
+
+        if (($json['type'] ?? null) === 'shopStatus') {
+            $this->syncStoreStatusWebhook($json);
             return null;
         }
 
@@ -1440,7 +1887,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $orderId = (string)$data['order_id'];
         $orderIndex = (string)$data['order_info']['order_index'];
 
-        $exists = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderIndex, Order::class);
+        $exists = $this->findFood99EntityByExtraData('Order', 'code', $orderIndex, Order::class);
         if ($exists) {
             self::$logger->info('Food99 order already integrated, skipping duplicate creation', $this->buildLogContext(null, $json));
             return $exists;
@@ -1450,7 +1897,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $provider = null;
         if ($shopId) {
-            $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $shopId, People::class);
+            $provider = $this->findFood99EntityByExtraData('People', 'code', $shopId, People::class);
         }
 
         if (!$provider) {
@@ -1461,7 +1908,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $shop['shop_name'] ?? 'Loja Food99',
                 'J'
             );
-            $this->extraDataService->discoveryExtraData($provider, self::$app, 'code', $shopId);
+            if ($shopId) {
+                $this->persistLocalFoodCodeByEntity('People', (int) $provider->getId(), (string) $shopId);
+            }
         }
 
         $client = $this->discoveryClient($receiveAddress);
@@ -1500,8 +1949,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->confirmOrder($orderId, $provider);
 
         $this->printOrder($order);
-        $this->discoveryFoodCode($order, $orderId, 'id');
-        return $this->discoveryFoodCode($order, $orderIndex);
+        $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
+        $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderIndex);
+
+        return $order;
     }
 
     private function confirmOrder(string $orderId, ?People $provider = null): void
@@ -1608,12 +2059,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     ): Product {
         $code = $item['app_item_id'];
 
-        $product = $this->extraDataService->getEntityByExtraData(
-            self::$app,
-            'code',
-            $code,
-            Product::class
-        );
+        $product = $this->findFood99EntityByExtraData('Product', 'code', $code, Product::class);
 
         if (!$product) {
             $unity = $this->entityManager
@@ -1662,7 +2108,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
         }
 
-        return $this->discoveryFoodCode($product, $code);
+        $this->persistLocalFoodCodeByEntity('Product', (int) $product->getId(), (string) $code);
+
+        return $product;
     }
 
     private function discoveryClient(array $address): ?People
@@ -1678,10 +2126,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $address['name']
         );
 
-        return $this->discoveryFoodCode(
-            $client,
-            (string) $address['uid']
-        );
+        $uid = (string) ($address['uid'] ?? '');
+        if ($uid !== '') {
+            $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $uid);
+        }
+
+        return $client;
     }
 
     private function addAddress(Order $order, array $address)
@@ -1742,7 +2192,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     public function changeStatus(Order $order)
     {
-        $orderId = $this->discoveryFoodCodeByEntity($order);
+        $orderId = $this->findLocalFoodIdByEntity('Order', (int) $order->getId())
+            ?: $this->findLocalFoodCodeByEntity('Order', (int) $order->getId());
 
         if (!$orderId) {
             self::$logger->warning('Food99 changeStatus skipped because external order code was not found', [

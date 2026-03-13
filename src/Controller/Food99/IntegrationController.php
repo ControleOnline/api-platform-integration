@@ -189,6 +189,61 @@ class IntegrationController extends AbstractController
         }, $products);
     }
 
+    private function buildLocalIntegrationDetail(People $provider): array
+    {
+        $products = $this->food99Service->listSelectableMenuProducts($provider);
+        $storedState = $this->food99Service->getStoredIntegrationState($provider);
+        $mappedProducts = array_map(static function (array $product) {
+            $product['published_remotely'] = !empty($product['food99_published']);
+
+            return $product;
+        }, $products['products'] ?? []);
+
+        return [
+            'provider' => [
+                'id' => $provider->getId(),
+                'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
+            ],
+            'integration' => [
+                'key' => '99food',
+                'label' => '99Food',
+                'minimum_required_items' => 5,
+                'eligible_product_count' => $products['eligible_product_count'] ?? 0,
+                'connected' => $storedState['connected'],
+                'remote_connected' => $storedState['remote_connected'],
+                'food99_code' => $storedState['food99_code'],
+                'app_shop_id' => $storedState['app_shop_id'],
+                'auth_available' => null,
+                'online' => $storedState['online'],
+                'biz_status' => $storedState['biz_status'],
+                'biz_status_label' => $this->resolveBizStatusLabel($storedState['biz_status']),
+                'sub_biz_status' => $storedState['sub_biz_status'],
+                'sub_biz_status_label' => $this->resolveSubBizStatusLabel($storedState['sub_biz_status']),
+                'store_status' => $storedState['store_status'],
+                'last_sync_at' => $storedState['last_sync_at'],
+                'last_error_code' => $storedState['last_error_code'],
+                'last_error_message' => $storedState['last_error_message'],
+                'menu_count' => $storedState['menu_count'],
+                'menu_item_count' => $storedState['menu_item_count'],
+                'delivery_area_count' => $storedState['delivery_area_count'],
+                'last_menu_task_id' => $storedState['last_menu_task_id'],
+            ],
+            'store' => null,
+            'delivery_areas' => null,
+            'menu' => [
+                'remote_item_ids' => [],
+            ],
+            'products' => array_merge($products, [
+                'products' => $mappedProducts,
+                'published_product_count' => count(array_filter(
+                    $mappedProducts,
+                    static fn(array $product) => !empty($product['published_remotely'])
+                )),
+            ]),
+            'errors' => [],
+        ];
+    }
+
     #[Route('/marketplace/integrations', name: 'marketplace_integrations', methods: ['GET'])]
     public function listIntegrations(Request $request): JsonResponse
     {
@@ -198,18 +253,7 @@ class IntegrationController extends AbstractController
         }
 
         $products = $this->food99Service->listSelectableMenuProducts($provider);
-        $integratedStoreCode = null;
-
-        try {
-            $integratedStoreCode = $this->food99Service->getIntegratedStoreCode($provider);
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 local integration lookup error', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        $connected = !empty($integratedStoreCode);
+        $storedState = $this->food99Service->getStoredIntegrationState($provider);
 
         return new JsonResponse([
             'provider' => [
@@ -221,10 +265,17 @@ class IntegrationController extends AbstractController
                 'label' => '99Food',
                 'minimum_required_items' => 5,
                 'eligible_product_count' => $products['eligible_product_count'] ?? 0,
-                'connected' => $connected,
-                'remote_connected' => null,
-                'food99_code' => $integratedStoreCode,
-                'app_shop_id' => (string) $provider->getId(),
+                'connected' => $storedState['connected'],
+                'remote_connected' => $storedState['remote_connected'],
+                'food99_code' => $storedState['food99_code'],
+                'app_shop_id' => $storedState['app_shop_id'],
+                'biz_status' => $storedState['biz_status'],
+                'sub_biz_status' => $storedState['sub_biz_status'],
+                'store_status' => $storedState['store_status'],
+                'online' => $storedState['online'],
+                'last_sync_at' => $storedState['last_sync_at'],
+                'last_error_code' => $storedState['last_error_code'],
+                'last_error_message' => $storedState['last_error_message'],
                 'store' => null,
                 'store_error' => null,
             ]],
@@ -262,122 +313,27 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
-        $products = $this->food99Service->listSelectableMenuProducts($provider);
-        $food99Code = $this->food99Service->getIntegratedStoreCode($provider);
-        $connected = !empty($food99Code);
+        return new JsonResponse($this->buildLocalIntegrationDetail($provider));
+    }
 
-        $detail = [
-            'provider' => [
-                'id' => $provider->getId(),
-                'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
-            ],
-            'integration' => [
-                'key' => '99food',
-                'label' => '99Food',
-                'minimum_required_items' => 5,
-                'eligible_product_count' => $products['eligible_product_count'] ?? 0,
-                'connected' => $connected,
-                'remote_connected' => false,
-                'food99_code' => $food99Code,
-                'app_shop_id' => (string) $provider->getId(),
-                'auth_available' => false,
-                'online' => false,
-                'biz_status' => null,
-                'biz_status_label' => 'Indefinido',
-                'sub_biz_status' => null,
-                'sub_biz_status_label' => 'Indefinido',
-            ],
-            'store' => null,
-            'delivery_areas' => null,
-            'menu' => [
-                'remote_item_ids' => [],
-            ],
-            'products' => array_merge($products, [
-                'published_product_count' => 0,
-                'products' => $this->mapProductsWithRemoteCatalog($products['products'] ?? [], []),
-            ]),
-            'errors' => [],
-        ];
-
-        if (!$connected) {
-            return new JsonResponse($detail);
-        }
-
+    #[Route('/marketplace/integrations/99food/sync', name: 'marketplace_integrations_food99_sync', methods: ['POST'])]
+    public function syncIntegration(Request $request): JsonResponse
+    {
         try {
-            $authToken = $this->food99Service->resolveIntegrationAccessToken($provider);
-            $detail['integration']['auth_available'] = !empty($authToken);
-
-            if (!$authToken) {
-                $detail['errors']['auth'] = 'Nao foi possivel obter o auth_token da loja na 99Food.';
-                return new JsonResponse($detail);
-            }
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 integration token error', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-            $detail['errors']['auth'] = $e->getMessage();
-
-            return new JsonResponse($detail);
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
         }
 
-        try {
-            $storeDetails = $this->food99Service->getStoreDetails($provider);
-            $detail['store'] = $storeDetails;
-
-            $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
-            $detail['integration']['remote_connected'] = $remoteConnected;
-
-            $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
-            $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
-            $subBizStatus = isset($remoteStore['sub_biz_status']) ? (int) $remoteStore['sub_biz_status'] : null;
-
-            $detail['integration']['online'] = $remoteConnected && $bizStatus === 1;
-            $detail['integration']['biz_status'] = $bizStatus;
-            $detail['integration']['biz_status_label'] = $this->resolveBizStatusLabel($bizStatus);
-            $detail['integration']['sub_biz_status'] = $subBizStatus;
-            $detail['integration']['sub_biz_status_label'] = $this->resolveSubBizStatusLabel($subBizStatus);
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 integration store detail error', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-            $detail['errors']['store'] = $e->getMessage();
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
         }
 
-        try {
-            $deliveryAreas = $this->food99Service->listDeliveryAreas($provider);
-            $detail['delivery_areas'] = $deliveryAreas;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 integration delivery area error', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-            $detail['errors']['delivery_areas'] = $e->getMessage();
-        }
-
-        try {
-            $menuDetails = $this->food99Service->getStoreMenuDetails($provider);
-            $remoteItemIds = $this->resolvePublishedRemoteItemIds($menuDetails);
-            $mappedProducts = $this->mapProductsWithRemoteCatalog($products['products'] ?? [], $remoteItemIds);
-
-            $detail['menu'] = array_merge(is_array($menuDetails) ? $menuDetails : [], [
-                'remote_item_ids' => $remoteItemIds,
-            ]);
-            $detail['products'] = array_merge($products, [
-                'products' => $mappedProducts,
-                'published_product_count' => count(array_filter(
-                    $mappedProducts,
-                    static fn(array $product) => !empty($product['published_remotely'])
-                )),
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 integration menu detail error', [
-                'provider_id' => $provider->getId(),
-                'error' => $e->getMessage(),
-            ]);
-            $detail['errors']['menu'] = $e->getMessage();
-        }
+        $syncResult = $this->food99Service->syncIntegrationState($provider);
+        $detail = $this->buildLocalIntegrationDetail($provider);
+        $detail['integration']['auth_available'] = $syncResult['auth_available'];
+        $detail['errors'] = $syncResult['errors'] ?? [];
 
         return new JsonResponse($detail);
     }
