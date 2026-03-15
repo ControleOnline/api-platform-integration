@@ -319,7 +319,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if (!$client)
             $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerData["name"]);
 
-        $this->peopleService->discoveryClient($provider, $client);
+        $this->peopleService->discoveryLink($provider, $client, 'client');
 
         return $this->discoveryFoodCode($client, $codClienteiFood);
     }
