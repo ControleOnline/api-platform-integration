@@ -14,11 +14,13 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 class Food99Service extends DefaultFoodService implements EventSubscriberInterface
 {
+    private const APP_CONTEXT = 'Food99';
+    private const LEGACY_ORDER_CONTEXT = 'iFood';
     private static array $authTokenCache = [];
 
     private function init()
     {
-        self::$app = 'Food99';
+        self::$app = self::APP_CONTEXT;
         self::$logger = $this->loggerService->getLogger(self::$app);
         self::$foodPeople = $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
@@ -60,6 +62,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'SELECT GET_LOCK(:lockKey, 5)',
                 ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
             );
+
+            if ($acquired !== 1) {
+                self::$logger->warning('Food99 could not acquire order integration lock in time', [
+                    'order_id' => $orderId,
+                    'lock_key' => $this->buildOrderIntegrationLockKey($orderId),
+                ]);
+            }
 
             return $acquired === 1;
         } catch (\Throwable $e) {
@@ -421,8 +430,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function resolveRemoteOrderId(Order $order): ?string
     {
-        return $this->findLocalFoodIdByEntity('Order', (int) $order->getId())
-            ?: $this->findLocalFoodCodeByEntity('Order', (int) $order->getId());
+        return $this->getFood99OrderExtraDataValue((int) $order->getId(), 'id')
+            ?: $this->getFood99OrderExtraDataValue((int) $order->getId(), 'code');
     }
 
     public function performReadyAction(Order $order): array
@@ -704,7 +713,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $connection = $this->entityManager->getConnection();
         $fieldId = $connection->fetchOne($sql, [
-            'context' => self::$app,
+            'context' => self::APP_CONTEXT,
             'fieldName' => $fieldName,
         ]);
 
@@ -716,7 +725,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $connection->insert('extra_fields', [
                 'field_name' => $fieldName,
                 'field_type' => $fieldType,
-                'context' => self::$app,
+                'context' => self::APP_CONTEXT,
                 'required' => 0,
                 'field_configs' => '{}',
             ]);
@@ -728,7 +737,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $fieldId = $connection->fetchOne($sql, [
-            'context' => self::$app,
+            'context' => self::APP_CONTEXT,
             'fieldName' => $fieldName,
         ]);
 
@@ -754,7 +763,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         SQL;
 
         $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::$app,
+            'context' => self::APP_CONTEXT,
             'fieldName' => $fieldName,
             'entityName' => $entityName,
             'entityId' => $entityId,
@@ -818,7 +827,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $payload = [
             'data_value' => $normalizedValue,
-            'source' => self::$app,
+            'source' => self::APP_CONTEXT,
             'dateTime' => date('Y-m-d H:i:s'),
         ];
 
@@ -871,7 +880,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         SQL;
 
         $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::$app,
+            'context' => self::APP_CONTEXT,
             'fieldName' => $fieldName,
             'entityName' => $entityName,
             'value' => $normalizedValue,
@@ -882,6 +891,75 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return $this->entityManager->getRepository($entityClass)->find((int) $entityId);
+    }
+
+    private function findFood99OrderByLegacyAwareExtraData(string $fieldName, mixed $value): ?Order
+    {
+        $normalizedValue = $this->normalizeExtraDataValue($value);
+        if ($normalizedValue === '') {
+            return null;
+        }
+
+        $sql = <<<SQL
+            SELECT ed.entity_id
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            INNER JOIN orders o ON o.id = ed.entity_id
+            WHERE ef.field_name = :fieldName
+              AND LOWER(ed.entity_name) = 'order'
+              AND ed.data_value = :value
+              AND (ef.context = :primaryContext OR ef.context = :legacyContext)
+              AND o.app = :orderApp
+            ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
+            'fieldName' => $fieldName,
+            'value' => $normalizedValue,
+            'primaryContext' => self::APP_CONTEXT,
+            'legacyContext' => self::LEGACY_ORDER_CONTEXT,
+            'orderApp' => self::APP_CONTEXT,
+        ]);
+
+        return is_numeric($entityId)
+            ? $this->entityManager->getRepository(Order::class)->find((int) $entityId)
+            : null;
+    }
+
+    private function getFood99OrderExtraDataValue(int $entityId, string $fieldName): ?string
+    {
+        if ($entityId <= 0) {
+            return null;
+        }
+
+        $sql = <<<SQL
+            SELECT ed.data_value
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            INNER JOIN orders o ON o.id = ed.entity_id
+            WHERE ef.field_name = :fieldName
+              AND LOWER(ed.entity_name) = 'order'
+              AND ed.entity_id = :entityId
+              AND (ef.context = :primaryContext OR ef.context = :legacyContext)
+              AND o.app = :orderApp
+            ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $value = $this->entityManager->getConnection()->fetchOne($sql, [
+            'fieldName' => $fieldName,
+            'entityId' => $entityId,
+            'primaryContext' => self::APP_CONTEXT,
+            'legacyContext' => self::LEGACY_ORDER_CONTEXT,
+            'orderApp' => self::APP_CONTEXT,
+        ]);
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (string) $value;
     }
 
     private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
@@ -907,14 +985,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     private function findExistingIntegratedOrder(string $orderId, string $orderCode): ?Order
     {
         if ($orderId !== '') {
-            $order = $this->findFood99EntityByExtraData('Order', 'id', $orderId, Order::class);
+            $order = $this->findFood99OrderByLegacyAwareExtraData('id', $orderId);
             if ($order instanceof Order) {
                 return $order;
             }
         }
 
         if ($orderCode !== '') {
-            $order = $this->findFood99EntityByExtraData('Order', 'code', $orderCode, Order::class);
+            $order = $this->findFood99OrderByLegacyAwareExtraData('code', $orderCode);
             if ($order instanceof Order) {
                 return $order;
             }
@@ -926,6 +1004,48 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     private function resolveIncomingOrderCode(string $orderId, string $orderIndex): string
     {
         return $orderIndex !== '' ? $orderIndex : $orderId;
+    }
+
+    private function extractIncomingOrderIdentifiers(array $json): array
+    {
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+
+        $orderId = $this->normalizeIncomingFood99Value(
+            $data['order_id']
+                ?? $data['orderId']
+                ?? $info['order_id']
+                ?? $info['orderId']
+                ?? null
+        );
+
+        $orderIndex = $this->normalizeIncomingFood99Value(
+            $info['order_index']
+                ?? $info['orderIndex']
+                ?? $data['order_index']
+                ?? $data['orderIndex']
+                ?? null
+        );
+
+        return [
+            'order_id' => $orderId,
+            'order_index' => $orderIndex,
+            'order_code' => $this->resolveIncomingOrderCode($orderId, $orderIndex),
+        ];
+    }
+
+    private function waitForExistingIntegratedOrder(string $orderId, string $orderCode, int $attempts = 5, int $sleepMicroseconds = 250000): ?Order
+    {
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
+            $existing = $this->findExistingIntegratedOrder($orderId, $orderCode);
+            if ($existing instanceof Order) {
+                return $existing;
+            }
+
+            usleep($sleepMicroseconds);
+        }
+
+        return null;
     }
 
     private function resolveOrderClient(array $address, string $orderId): People
@@ -982,18 +1102,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $orderId = (int) $order->getId();
 
         return [
-            'food99_id' => $this->getFood99ExtraDataValue('Order', $orderId, 'id'),
-            'food99_code' => $this->getFood99ExtraDataValue('Order', $orderId, 'code'),
-            'remote_order_state' => $this->getFood99ExtraDataValue('Order', $orderId, 'remote_order_state'),
-            'remote_delivery_status' => $this->getFood99ExtraDataValue('Order', $orderId, 'remote_delivery_status'),
-            'last_event_type' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_event_type'),
-            'last_event_at' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_event_at'),
-            'cancel_code' => $this->getFood99ExtraDataValue('Order', $orderId, 'cancel_code'),
-            'cancel_reason' => $this->getFood99ExtraDataValue('Order', $orderId, 'cancel_reason'),
-            'last_action' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action'),
-            'last_action_at' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_at'),
-            'last_action_errno' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_errno'),
-            'last_action_message' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_message'),
+            'food99_id' => $this->getFood99OrderExtraDataValue($orderId, 'id'),
+            'food99_code' => $this->getFood99OrderExtraDataValue($orderId, 'code'),
+            'remote_order_state' => $this->getFood99OrderExtraDataValue($orderId, 'remote_order_state'),
+            'remote_delivery_status' => $this->getFood99OrderExtraDataValue($orderId, 'remote_delivery_status'),
+            'last_event_type' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_type'),
+            'last_event_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_at'),
+            'cancel_code' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_code'),
+            'cancel_reason' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_reason'),
+            'last_action' => $this->getFood99OrderExtraDataValue($orderId, 'last_action'),
+            'last_action_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_at'),
+            'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
+            'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
         ];
     }
 
@@ -1096,7 +1216,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $otherInformations = (array) $order->getOtherInformations(true);
         $otherInformations[$entryKey] = $payload;
         $otherInformations['latest_event_type'] = $entryKey;
-        $order->addOtherInformations(self::$app, $otherInformations);
+        $order->addOtherInformations(self::APP_CONTEXT, $otherInformations);
         $this->entityManager->persist($order);
     }
 
@@ -1124,16 +1244,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function findIntegratedOrderFromPayload(array $json): ?Order
     {
-        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
-        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $identifiers = $this->extractIncomingOrderIdentifiers($json);
 
-        $orderId = $this->normalizeIncomingFood99Value($data['order_id'] ?? $data['orderId'] ?? null);
-        $orderIndex = $this->normalizeIncomingFood99Value(
-            $info['order_index'] ?? $data['order_index'] ?? $data['orderIndex'] ?? null
-        );
-        $orderCode = $this->resolveIncomingOrderCode($orderId, $orderIndex);
-
-        return $this->findExistingIntegratedOrder($orderId, $orderCode);
+        return $this->findExistingIntegratedOrder($identifiers['order_id'], $identifiers['order_code']);
     }
 
     private function handleOrderCancelEvent(array $json): ?Order
@@ -1836,7 +1949,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $connection = $this->entityManager->getConnection();
         $params = [
             'providerId' => $provider->getId(),
-            'food99Context' => self::$app,
+            'food99Context' => self::APP_CONTEXT,
             'codeFieldName' => 'code',
             'publishedFieldName' => 'published',
         ];
@@ -2542,9 +2655,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'order_items_count' => is_array($items) ? count($items) : null,
         ]));
 
-        $orderId = $this->normalizeIncomingFood99Value($data['order_id'] ?? null);
-        $orderIndex = $this->normalizeIncomingFood99Value($data['order_info']['order_index'] ?? null);
-        $orderCode = $this->resolveIncomingOrderCode($orderId, $orderIndex);
+        $identifiers = $this->extractIncomingOrderIdentifiers($json);
+        $orderId = $identifiers['order_id'];
+        $orderIndex = $identifiers['order_index'];
+        $orderCode = $identifiers['order_code'];
 
         if ($orderId === '') {
             self::$logger->error('Food99 order ignored because order_id is missing', $this->buildLogContext(null, $json));
@@ -2552,6 +2666,21 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $lockAcquired = $this->acquireOrderIntegrationLock($orderId);
+        if (!$lockAcquired) {
+            $existing = $this->waitForExistingIntegratedOrder($orderId, $orderCode);
+            if ($existing instanceof Order) {
+                self::$logger->info('Food99 duplicate webhook resolved after waiting for in-flight order lock owner', $this->buildLogContext(null, $json, [
+                    'local_order_id' => $existing->getId(),
+                    'order_code' => $orderCode,
+                ]));
+                return $existing;
+            }
+
+            self::$logger->warning('Food99 order processing aborted because the integration lock could not be acquired safely', $this->buildLogContext(null, $json, [
+                'order_code' => $orderCode,
+            ]));
+            return null;
+        }
 
         try {
             $exists = $this->findExistingIntegratedOrder($orderId, $orderCode);
@@ -2884,7 +3013,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return;
 
         $this->init();
-        if ($entity->getApp() !== self::$app)
+        if ($entity->getApp() !== self::APP_CONTEXT)
             return;
 
         if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
