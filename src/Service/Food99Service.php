@@ -471,6 +471,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
         }
 
+        $state = $this->getStoredOrderIntegrationState($order);
+        if (!empty($state['is_platform_delivery'])) {
+            return $this->buildUnavailableOrderActionResponse(
+                'Pedidos com entrega 99 sao finalizados pela plataforma apos o status pronto.'
+            );
+        }
+
         return $this->persistOrderActionResult(
             $order,
             'delivered',
@@ -1029,13 +1036,28 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return [];
         }
 
+        $payload = $this->unwrapStoredOrderPayload($payload);
         $identifiers = $this->extractIncomingOrderIdentifiers($payload);
+        $orderId = $identifiers['order_id'] ?? '';
+        $orderIndex = $identifiers['order_index'] ?? '';
+
+        if ($orderId === '') {
+            $orderId = $this->normalizeIncomingFood99Value(
+                $this->searchPayloadValueByKeys($payload, ['order_id', 'orderId'])
+            );
+        }
+
+        if ($orderIndex === '') {
+            $orderIndex = $this->normalizeIncomingFood99Value(
+                $this->searchPayloadValueByKeys($payload, ['order_index', 'orderIndex'])
+            );
+        }
+
         $deliveryStatus = $this->extractOrderDeliveryStatus($payload);
         $eventAt = $this->extractOrderEventTimestamp($payload);
-
-        return [
-            'food99_id' => $identifiers['order_id'] ?? null,
-            'food99_code' => $identifiers['order_code'] ?? null,
+        $state = [
+            'food99_id' => $orderId !== '' ? $orderId : null,
+            'food99_code' => $this->resolveIncomingOrderCode($orderId, $orderIndex),
             'remote_order_state' => $this->normalizeIncomingFood99Value($payload['type'] ?? null) === 'orderNew' ? 'new' : null,
             'remote_delivery_status' => $deliveryStatus !== '' ? $deliveryStatus : null,
             'last_event_type' => $this->normalizeIncomingFood99Value($payload['type'] ?? null),
@@ -1047,6 +1069,28 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_action_errno' => null,
             'last_action_message' => null,
         ];
+
+        $state = array_merge($state, $this->extractOrderDeliveryStateFields($payload));
+        $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));
+        $state['allows_manual_delivery_completion'] = $state['is_store_delivery'];
+
+        return $state;
+    }
+
+    private function unwrapStoredOrderPayload(array $payload): array
+    {
+        $normalizedPayload = $payload;
+
+        for ($depth = 0; $depth < 5; $depth++) {
+            $candidate = $normalizedPayload[self::APP_CONTEXT] ?? null;
+            if (!is_array($candidate)) {
+                break;
+            }
+
+            $normalizedPayload = $candidate;
+        }
+
+        return $normalizedPayload;
     }
 
     private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
@@ -1200,6 +1244,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_action_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_at'),
             'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
             'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
+            'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
+            'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
+            'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
+            'locator' => $this->getFood99OrderExtraDataValue($orderId, 'locator'),
+            'handover_page_url' => $this->getFood99OrderExtraDataValue($orderId, 'handover_page_url'),
+            'virtual_phone_number' => $this->getFood99OrderExtraDataValue($orderId, 'virtual_phone_number'),
+            'handover_code' => $this->getFood99OrderExtraDataValue($orderId, 'handover_code'),
         ];
 
         $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
@@ -1212,7 +1263,23 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $state[$key] = $fallbackState[$key] ?? $value;
         }
 
+        $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));
+        $state['allows_manual_delivery_completion'] = $state['is_store_delivery'];
+
         return $state;
+    }
+
+    private function extractOrderDeliveryStateFields(array $json): array
+    {
+        return [
+            'delivery_type' => $this->extractOrderDeliveryType($json),
+            'fulfillment_mode' => $this->extractOrderFulfillmentMode($json),
+            'expected_arrived_eta' => $this->extractOrderExpectedArrivedEta($json),
+            'locator' => $this->extractOrderLocator($json),
+            'handover_page_url' => $this->extractOrderHandoverPageUrl($json),
+            'virtual_phone_number' => $this->extractOrderVirtualPhoneNumber($json),
+            'handover_code' => $this->extractOrderHandoverCode($json),
+        ];
     }
 
     private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
@@ -1333,6 +1400,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $locator = trim((string) ($state['locator'] ?? ''));
         $handoverPageUrl = trim((string) ($state['handover_page_url'] ?? ''));
         $virtualPhoneNumber = trim((string) ($state['virtual_phone_number'] ?? ''));
+        $handoverCode = trim((string) ($state['handover_code'] ?? ''));
 
         $isStoreDelivery = false;
         $isPlatformDelivery = false;
@@ -1344,9 +1412,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         } elseif ($deliveryType === '2') {
             $isPlatformDelivery = true;
             $deliveryLabel = 'Entrega 99';
-        } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '') {
-            $isStoreDelivery = true;
-            $deliveryLabel = 'Entrega da loja';
+        } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '' || $handoverCode !== '') {
+            $isPlatformDelivery = true;
+            $deliveryLabel = 'Entrega 99';
         }
 
         return [
@@ -1442,13 +1510,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $this->storeOrderRemoteSnapshot($order, 'orderCancel', $json);
-        $this->persistOrderIntegrationState($order, [
+        $this->persistOrderIntegrationState($order, array_merge([
             'last_event_type' => 'orderCancel',
             'last_event_at' => $this->extractOrderEventTimestamp($json),
             'remote_order_state' => 'cancelled',
             'cancel_code' => $this->extractOrderCancelCode($json),
             'cancel_reason' => $this->extractOrderCancelReason($json),
-        ]);
+        ], $this->extractOrderDeliveryStateFields($json)));
         $this->applyLocalCanceledStatus($order);
         $this->entityManager->flush();
 
@@ -1464,11 +1532,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $this->storeOrderRemoteSnapshot($order, 'orderFinish', $json);
-        $this->persistOrderIntegrationState($order, [
+        $this->persistOrderIntegrationState($order, array_merge([
             'last_event_type' => 'orderFinish',
             'last_event_at' => $this->extractOrderEventTimestamp($json),
             'remote_order_state' => 'finished',
-        ]);
+        ], $this->extractOrderDeliveryStateFields($json)));
         $this->applyLocalClosedStatus($order);
         $this->entityManager->flush();
 
@@ -1486,12 +1554,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $deliveryStatus = $this->extractOrderDeliveryStatus($json);
 
         $this->storeOrderRemoteSnapshot($order, 'deliveryStatus', $json);
-        $this->persistOrderIntegrationState($order, [
+        $this->persistOrderIntegrationState($order, array_merge([
             'last_event_type' => 'deliveryStatus',
             'last_event_at' => $this->extractOrderEventTimestamp($json),
             'remote_delivery_status' => $deliveryStatus,
             'remote_order_state' => $this->isDeliveredRemoteState($deliveryStatus) ? 'delivered' : ($deliveryStatus ?: 'delivery_update'),
-        ]);
+        ], $this->extractOrderDeliveryStateFields($json)));
 
         if ($this->isDeliveredRemoteState($deliveryStatus)) {
             $this->applyLocalClosedStatus($order);
@@ -2905,12 +2973,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
             $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
-            $this->persistOrderIntegrationState($order, [
+            $this->persistOrderIntegrationState($order, array_merge([
                 'last_event_type' => 'orderNew',
                 'last_event_at' => $this->extractOrderEventTimestamp($json),
                 'remote_order_state' => 'new',
                 'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
-            ]);
+            ], $this->extractOrderDeliveryStateFields($json)));
 
             self::$logger->info('Food99 order shell persisted locally before item/address processing', $this->buildLogContext(null, $json, [
                 'provider_id' => $provider?->getId(),

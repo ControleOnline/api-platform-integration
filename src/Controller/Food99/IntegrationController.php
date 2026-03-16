@@ -322,6 +322,20 @@ class IntegrationController extends AbstractController
                 'last_action_errno' => $storedState['last_action_errno'],
                 'last_action_message' => $storedState['last_action_message'],
             ],
+            'delivery' => [
+                'delivery_type' => $storedState['delivery_type'],
+                'delivery_label' => $storedState['delivery_label'],
+                'fulfillment_mode' => $storedState['fulfillment_mode'],
+                'expected_arrived_eta' => $storedState['expected_arrived_eta'],
+                'remote_delivery_status' => $storedState['remote_delivery_status'],
+                'handover_code' => $storedState['handover_code'],
+                'locator' => $storedState['locator'],
+                'handover_page_url' => $storedState['handover_page_url'],
+                'virtual_phone_number' => $storedState['virtual_phone_number'],
+                'is_store_delivery' => $storedState['is_store_delivery'],
+                'is_platform_delivery' => $storedState['is_platform_delivery'],
+                'allows_manual_delivery_completion' => $storedState['allows_manual_delivery_completion'],
+            ],
         ];
     }
 
