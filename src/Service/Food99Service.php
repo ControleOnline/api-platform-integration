@@ -1337,14 +1337,34 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $timestamp = $this->searchPayloadValueByKeys($json, [
             'event_time',
             'eventTime',
+            'event_timestamp',
+            'eventTimestamp',
             'update_time',
             'updateTime',
+            'create_time',
+            'createTime',
             'created_at',
             'createdAt',
+            'timestamp',
             'time',
         ]);
 
-        return $timestamp !== null && $timestamp !== '' ? $timestamp : date('Y-m-d H:i:s');
+        if ($timestamp === null || $timestamp === '') {
+            return date('Y-m-d H:i:s');
+        }
+
+        if (ctype_digit($timestamp)) {
+            $unix = (int) $timestamp;
+            if ($unix > 1000000000000) {
+                $unix = (int) floor($unix / 1000);
+            }
+
+            if ($unix > 0) {
+                return date('Y-m-d H:i:s', $unix);
+            }
+        }
+
+        return $timestamp;
     }
 
     private function extractOrderDeliveryStatus(array $json): ?string
@@ -1495,6 +1515,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function applyLocalCanceledStatus(Order $order): void
     {
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        if (in_array($currentRealStatus, ['canceled', 'cancelled'], true)) {
+            return;
+        }
+
         $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
         if (!$status) {
             return;
@@ -1506,6 +1531,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function applyLocalClosedStatus(Order $order): void
     {
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        if ($currentRealStatus === 'closed') {
+            return;
+        }
+
         $status = $this->statusService->discoveryStatus('closed', 'closed', 'order');
         if (!$status) {
             return;
@@ -1524,71 +1554,224 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function handleOrderCancelEvent(array $json): ?Order
     {
-        $order = $this->findIntegratedOrderFromPayload($json);
-        if (!$order instanceof Order) {
-            self::$logger->warning('Food99 orderCancel received without a matching local order', $this->buildLogContext(null, $json));
-            return null;
-        }
-
-        $this->storeOrderRemoteSnapshot($order, 'orderCancel', $json);
-        $this->persistOrderIntegrationState($order, array_merge([
-            'last_event_type' => 'orderCancel',
-            'last_event_at' => $this->extractOrderEventTimestamp($json),
-            'remote_order_state' => 'cancelled',
-            'cancel_code' => $this->extractOrderCancelCode($json),
-            'cancel_reason' => $this->extractOrderCancelReason($json),
-        ], $this->extractOrderDeliveryStateFields($json)));
-        $this->applyLocalCanceledStatus($order);
-        $this->entityManager->flush();
-
-        return $order;
+        return $this->handleGenericOrderEvent($json, 'orderCancel');
     }
 
     private function handleOrderFinishEvent(array $json): ?Order
     {
-        $order = $this->findIntegratedOrderFromPayload($json);
-        if (!$order instanceof Order) {
-            self::$logger->warning('Food99 orderFinish received without a matching local order', $this->buildLogContext(null, $json));
-            return null;
-        }
-
-        $this->storeOrderRemoteSnapshot($order, 'orderFinish', $json);
-        $this->persistOrderIntegrationState($order, array_merge([
-            'last_event_type' => 'orderFinish',
-            'last_event_at' => $this->extractOrderEventTimestamp($json),
-            'remote_order_state' => 'finished',
-        ], $this->extractOrderDeliveryStateFields($json)));
-        $this->applyLocalClosedStatus($order);
-        $this->entityManager->flush();
-
-        return $order;
+        return $this->handleGenericOrderEvent($json, 'orderFinish');
     }
 
     private function handleDeliveryStatusEvent(array $json): ?Order
     {
+        return $this->handleGenericOrderEvent($json, 'deliveryStatus');
+    }
+
+    private function handleFallbackOrderEvent(Integration $integration, array $json): ?Order
+    {
+        $eventType = $this->normalizeIncomingFood99Value($json['type'] ?? null);
+
+        if ($eventType === '') {
+            self::$logger->warning('Food99 payload ignored because event type is empty', $this->buildLogContext($integration, $json));
+            return null;
+        }
+
+        $updatedOrder = $this->handleGenericOrderEvent($json, $eventType, false);
+        if ($updatedOrder instanceof Order) {
+            return $updatedOrder;
+        }
+
+        if ($this->isCreationLikeOrderEventType($eventType)) {
+            self::$logger->info('Food99 fallback event routed to addOrder flow', $this->buildLogContext($integration, $json, [
+                'event_type' => $eventType,
+            ]));
+
+            return $this->addOrder($json);
+        }
+
+        self::$logger->info('Food99 event ignored because it has no matching local order in current flow', $this->buildLogContext($integration, $json, [
+            'event_type' => $eventType,
+        ]));
+
+        return null;
+    }
+
+    private function handleGenericOrderEvent(array $json, string $eventType, bool $warnWhenOrderMissing = true): ?Order
+    {
         $order = $this->findIntegratedOrderFromPayload($json);
         if (!$order instanceof Order) {
-            self::$logger->warning('Food99 deliveryStatus received without a matching local order', $this->buildLogContext(null, $json));
+            if ($warnWhenOrderMissing) {
+                self::$logger->warning(
+                    sprintf('Food99 %s received without a matching local order', $eventType),
+                    $this->buildLogContext(null, $json, ['event_type' => $eventType])
+                );
+            }
+
             return null;
         }
 
         $deliveryStatus = $this->extractOrderDeliveryStatus($json);
+        $remoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
+        $eventTimestamp = $this->extractOrderEventTimestamp($json);
+        $isCanceled = $this->shouldApplyLocalCanceledStatus($remoteState, $eventType);
+        $isClosed = !$isCanceled && $this->shouldApplyLocalClosedStatus($remoteState, $eventType, $deliveryStatus);
 
-        $this->storeOrderRemoteSnapshot($order, 'deliveryStatus', $json);
-        $this->persistOrderIntegrationState($order, array_merge([
-            'last_event_type' => 'deliveryStatus',
-            'last_event_at' => $this->extractOrderEventTimestamp($json),
-            'remote_delivery_status' => $deliveryStatus,
-            'remote_order_state' => $this->isDeliveredRemoteState($deliveryStatus) ? 'delivered' : ($deliveryStatus ?: 'delivery_update'),
-        ], $this->extractOrderDeliveryStateFields($json)));
+        $this->storeOrderRemoteSnapshot($order, $eventType !== '' ? $eventType : 'unknownEvent', $json);
 
-        if ($this->isDeliveredRemoteState($deliveryStatus)) {
+        $integrationState = [
+            'last_event_type' => $eventType !== '' ? $eventType : 'unknown',
+            'last_event_at' => $eventTimestamp,
+        ];
+
+        if ($deliveryStatus !== null && trim($deliveryStatus) !== '') {
+            $integrationState['remote_delivery_status'] = $deliveryStatus;
+        }
+
+        if ($remoteState !== null && trim($remoteState) !== '') {
+            $integrationState['remote_order_state'] = $remoteState;
+        }
+
+        if ($isCanceled) {
+            $integrationState['cancel_code'] = $this->extractOrderCancelCode($json);
+            $integrationState['cancel_reason'] = $this->extractOrderCancelReason($json);
+        }
+
+        $this->persistOrderIntegrationState($order, array_merge(
+            $integrationState,
+            $this->extractOrderDeliveryStateFields($json)
+        ));
+
+        if ($isCanceled) {
+            $this->applyLocalCanceledStatus($order);
+        } elseif ($isClosed) {
             $this->applyLocalClosedStatus($order);
         }
 
         $this->entityManager->flush();
 
         return $order;
+    }
+
+    private function isCreationLikeOrderEventType(string $eventType): bool
+    {
+        $normalized = strtolower(trim($eventType));
+        if ($normalized === '') {
+            return false;
+        }
+
+        if ($normalized === 'placed' || $normalized === 'orderplaced') {
+            return true;
+        }
+
+        if (!str_contains($normalized, 'order')) {
+            return false;
+        }
+
+        return str_contains($normalized, 'new')
+            || str_contains($normalized, 'create')
+            || str_contains($normalized, 'placed');
+    }
+
+    private function resolveCanonicalRemoteOrderState(string $eventType, ?string $deliveryStatus = null): ?string
+    {
+        $normalizedEventType = strtolower(trim($eventType));
+
+        if ($normalizedEventType === '') {
+            return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus);
+        }
+
+        if (str_contains($normalizedEventType, 'cancel')) {
+            return 'cancelled';
+        }
+
+        if ($normalizedEventType === 'ordernew') {
+            return 'new';
+        }
+
+        if ($normalizedEventType === 'orderfinish' || str_contains($normalizedEventType, 'finish') || str_contains($normalizedEventType, 'complete')) {
+            return 'finished';
+        }
+
+        if ($normalizedEventType === 'deliverystatus') {
+            return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus);
+        }
+
+        if (str_contains($normalizedEventType, 'ready') || str_contains($normalizedEventType, 'prepared')) {
+            return 'ready';
+        }
+
+        if (str_contains($normalizedEventType, 'prepar') || str_contains($normalizedEventType, 'cook') || str_contains($normalizedEventType, 'process')) {
+            return 'preparing';
+        }
+
+        if (str_contains($normalizedEventType, 'accept') || str_contains($normalizedEventType, 'confirm')) {
+            return 'accepted';
+        }
+
+        if (str_contains($normalizedEventType, 'pickup')) {
+            return 'picked_up';
+        }
+
+        if (str_contains($normalizedEventType, 'deliver') || str_contains($normalizedEventType, 'courier') || str_contains($normalizedEventType, 'ship') || str_contains($normalizedEventType, 'dispatch')) {
+            return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus) ?? 'delivering';
+        }
+
+        return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus);
+    }
+
+    private function resolveRemoteOrderStateFromDeliveryStatus(?string $deliveryStatus): ?string
+    {
+        $normalized = strtolower(trim((string) $deliveryStatus));
+        if ($normalized === '') {
+            return null;
+        }
+
+        if ($this->isDeliveredRemoteState($normalized)) {
+            return 'delivered';
+        }
+
+        if (str_contains($normalized, 'cancel')) {
+            return 'cancelled';
+        }
+
+        if (str_contains($normalized, 'pickup') || str_contains($normalized, 'collect')) {
+            return 'picked_up';
+        }
+
+        if (str_contains($normalized, 'arriv')) {
+            return 'arriving';
+        }
+
+        if (str_contains($normalized, 'transit') || str_contains($normalized, 'courier') || str_contains($normalized, 'dispatch') || str_contains($normalized, 'ship') || str_contains($normalized, 'deliver')) {
+            return 'delivering';
+        }
+
+        return null;
+    }
+
+    private function shouldApplyLocalCanceledStatus(?string $remoteState, string $eventType): bool
+    {
+        $normalizedState = strtolower(trim((string) $remoteState));
+        if (in_array($normalizedState, ['cancelled', 'canceled'], true)) {
+            return true;
+        }
+
+        return str_contains(strtolower(trim($eventType)), 'cancel');
+    }
+
+    private function shouldApplyLocalClosedStatus(?string $remoteState, string $eventType, ?string $deliveryStatus): bool
+    {
+        $normalizedState = strtolower(trim((string) $remoteState));
+        if (in_array($normalizedState, ['delivered', 'finished', 'closed', 'complete', 'completed'], true)) {
+            return true;
+        }
+
+        $normalizedEventType = strtolower(trim($eventType));
+        if (str_contains($normalizedEventType, 'finish') || str_contains($normalizedEventType, 'complete')) {
+            return true;
+        }
+
+        return $this->isDeliveredRemoteState($deliveryStatus);
     }
 
     private function persistProviderIntegrationState(People $provider, array $fields): void
@@ -2886,10 +3069,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'orderCancel' => $this->handleOrderCancelEvent($json),
             'orderFinish' => $this->handleOrderFinishEvent($json),
             'deliveryStatus' => $this->handleDeliveryStatusEvent($json),
-            default => (function () use ($integration, $json) {
-                self::$logger->info('Food99 event ignored because it is not implemented in current flow', $this->buildLogContext($integration, $json));
-                return null;
-            })(),
+            default => $this->handleFallbackOrderEvent($integration, $json),
         };
     }
 
