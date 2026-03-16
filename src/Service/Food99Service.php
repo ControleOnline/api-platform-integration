@@ -579,7 +579,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return '';
         }
 
-        return trim((string) $value);
+        $normalizedValue = trim((string) $value);
+
+        if ($normalizedValue === '') {
+            return '';
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($normalizedValue, 0, 255);
+        }
+
+        return substr($normalizedValue, 0, 255);
     }
 
     private function ensureFood99FieldId(string $fieldName, string $fieldType = 'text'): ?int
@@ -943,12 +953,117 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ]);
     }
 
-    private function persistProviderMenuUploadSubmission(People $provider, array $menuPayload, mixed $taskId = null): void
+    private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
     {
+        $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $taskStatus = isset($taskData['status']) ? (string) $taskData['status'] : '0';
+        $taskMessage = trim((string) ($taskData['message'] ?? 'waiting'));
+        $publishState = $this->resolveMenuTaskProgressState($taskData);
+
         $this->persistProviderIntegrationState($provider, [
             'last_menu_task_id' => $taskId,
+            'last_menu_task_status' => $taskStatus,
+            'last_menu_task_message' => $taskMessage,
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_publish_state' => $publishState === 'completed' ? 'submitted' : $publishState,
             'last_error_code' => '',
             'last_error_message' => '',
+        ]);
+    }
+
+    private function extractMenuTaskFailureMessage(array $taskData): ?string
+    {
+        foreach (($taskData['operationList'] ?? []) as $operation) {
+            if (!is_array($operation)) {
+                continue;
+            }
+
+            foreach (($operation['failedList'] ?? []) as $failedItem) {
+                if (!is_array($failedItem)) {
+                    continue;
+                }
+
+                $message = trim((string) ($failedItem['message'] ?? ''));
+                if ($message !== '') {
+                    return $message;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveMenuTaskProgressState(array $taskData): string
+    {
+        if (empty($taskData)) {
+            return 'submitted';
+        }
+
+        $status = isset($taskData['status']) ? (int) $taskData['status'] : null;
+        $message = strtolower(trim((string) ($taskData['message'] ?? '')));
+        $failureMessage = strtolower(trim((string) ($this->extractMenuTaskFailureMessage($taskData) ?? '')));
+
+        if ($failureMessage !== '' || str_contains($message, 'fail') || str_contains($message, 'error')) {
+            return 'failed';
+        }
+
+        if ($message === 'waiting' || str_contains($message, 'wait') || $status === 0) {
+            return 'processing';
+        }
+
+        if (str_contains($message, 'process') || str_contains($message, 'running') || $status === 1) {
+            return 'processing';
+        }
+
+        return 'completed';
+    }
+
+    private function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
+    {
+        $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $taskId = $taskData['taskID'] ?? $taskData['taskId'] ?? $fallbackTaskId;
+        $taskStatus = isset($taskData['status']) ? (string) $taskData['status'] : '';
+        $taskMessage = trim((string) ($this->extractMenuTaskFailureMessage($taskData) ?: ($taskData['message'] ?? $response['errmsg'] ?? '')));
+        $publishState = $this->resolveMenuTaskProgressState($taskData);
+
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_task_id' => $taskId,
+            'last_menu_task_status' => $taskStatus,
+            'last_menu_task_message' => $taskMessage,
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_publish_state' => $publishState,
+        ]);
+
+        if ($publishState === 'failed') {
+            $this->persistProviderLastError(
+                $provider,
+                $taskStatus !== '' ? 'menu_task:' . $taskStatus : 'menu_task:failed',
+                $taskMessage !== '' ? $taskMessage : 'A publicacao do cardapio falhou na 99Food.'
+            );
+        }
+
+        return $publishState;
+    }
+
+    private function markProviderMenuPublished(People $provider, ?string $message = null): void
+    {
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_publish_state' => 'published',
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_task_message' => $message ?: 'Cardapio publicado com sucesso no catalogo remoto.',
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function markProviderMenuSyncError(People $provider, ?string $message = null): void
+    {
+        $syncMessage = trim((string) ($message ?? ''));
+
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_publish_state' => 'sync_error',
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_task_message' => $syncMessage !== '' ? $syncMessage : 'A task concluiu, mas nao foi possivel confirmar o cardapio remoto.',
         ]);
     }
 
@@ -1062,6 +1177,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'online' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'online') === '1',
             'last_sync_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_sync_at'),
             'last_menu_task_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_id'),
+            'last_menu_task_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_status'),
+            'last_menu_task_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_message'),
+            'last_menu_task_checked_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_checked_at'),
+            'last_menu_publish_state' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_publish_state'),
             'menu_count' => is_numeric($menuCount) ? (int) $menuCount : 0,
             'menu_item_count' => is_numeric($menuItemCount) ? (int) $menuItemCount : 0,
             'delivery_area_count' => is_numeric($deliveryAreaCount) ? (int) $deliveryAreaCount : 0,
@@ -1746,7 +1865,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'menus' => [[
                 'app_menu_id' => 'menu_' . $provider->getId() . '_principal',
                 'menu_name' => 'Cardapio Principal',
-                'app_category_ids' => array_keys($categoriesMap),
+                'app_category_ids' => array_values(array_map(
+                    static fn(string|int $categoryId) => (string) $categoryId,
+                    array_keys($categoriesMap)
+                )),
             ]],
             'categories' => array_values($categoriesMap),
             'items' => $items,
@@ -1920,7 +2042,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $taskId = is_array($response['data'] ?? null) ? ($response['data']['taskID'] ?? null) : null;
 
         if (($response['errno'] ?? 1) === 0) {
-            $this->persistProviderMenuUploadSubmission($provider, $payload, $taskId);
+            $this->persistProviderMenuUploadSubmission($provider, $response, $taskId);
             return $response;
         }
 
@@ -1933,9 +2055,27 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        return $this->call99EndpointWithResponse('/v1/item/item/getMenuTaskInfo', [
+        $response = $this->call99EndpointWithResponse('/v1/item/item/getMenuTaskInfo', [
             'task_id' => $taskId,
         ], $provider);
+
+        if (($response['errno'] ?? 1) !== 0) {
+            $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+            return $response;
+        }
+
+        $taskState = $this->persistProviderMenuTaskState($provider, $response, $taskId);
+
+        if ($taskState === 'completed') {
+            $menuResponse = $this->getStoreMenuDetails($provider);
+            if (($menuResponse['errno'] ?? 1) === 0) {
+                $this->markProviderMenuPublished($provider);
+            } else {
+                $this->markProviderMenuSyncError($provider, $menuResponse['errmsg'] ?? null);
+            }
+        }
+
+        return $response;
     }
 
 

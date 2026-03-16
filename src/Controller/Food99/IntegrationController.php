@@ -227,6 +227,10 @@ class IntegrationController extends AbstractController
                 'last_sync_at' => $storedState['last_sync_at'],
                 'last_error_code' => $storedState['last_error_code'],
                 'last_error_message' => $storedState['last_error_message'],
+                'last_menu_task_status' => $storedState['last_menu_task_status'],
+                'last_menu_task_message' => $storedState['last_menu_task_message'],
+                'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'],
+                'last_menu_publish_state' => $storedState['last_menu_publish_state'],
                 'menu_count' => $storedState['menu_count'],
                 'menu_item_count' => $storedState['menu_item_count'],
                 'delivery_area_count' => $storedState['delivery_area_count'],
@@ -281,6 +285,10 @@ class IntegrationController extends AbstractController
                 'store_status' => $storedState['store_status'],
                 'online' => $storedState['online'],
                 'last_sync_at' => $storedState['last_sync_at'],
+                'last_menu_task_status' => $storedState['last_menu_task_status'],
+                'last_menu_task_message' => $storedState['last_menu_task_message'],
+                'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'],
+                'last_menu_publish_state' => $storedState['last_menu_publish_state'],
                 'published_product_count' => $publishedProductCount,
                 'remote_only_item_count' => $storedState['remote_only_item_count'],
                 'last_error_code' => $storedState['last_error_code'],
@@ -457,6 +465,7 @@ class IntegrationController extends AbstractController
 
             $this->food99Service->ensureMenuProductCodes($provider, $productIds);
             $result = $this->food99Service->uploadStoreMenu($provider, $preview['payload']);
+            $detail = $this->buildLocalIntegrationDetail($provider);
 
             return new JsonResponse([
                 'provider_id' => $provider->getId(),
@@ -464,6 +473,8 @@ class IntegrationController extends AbstractController
                 'eligible_product_count' => $preview['eligible_product_count'] ?? 0,
                 'result' => $result,
                 'payload' => $preview['payload'],
+                'integration' => $detail['integration'],
+                'products' => $detail['products'],
             ]);
         } catch (\Throwable $e) {
             self::$logger->error('Food99 menu upload endpoint error', [
@@ -493,7 +504,20 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
-        return new JsonResponse($this->food99Service->getMenuUploadTaskInfo($provider, $taskId));
+        $taskResponse = $this->food99Service->getMenuUploadTaskInfo($provider, $taskId);
+        $detail = $this->buildLocalIntegrationDetail($provider);
+
+        return new JsonResponse(array_merge(
+            is_array($taskResponse) ? $taskResponse : [],
+            [
+                'publish_state' => $detail['integration']['last_menu_publish_state'],
+                'task_message' => $detail['integration']['last_menu_task_message'],
+                'task_status' => $detail['integration']['last_menu_task_status'],
+                'task_checked_at' => $detail['integration']['last_menu_task_checked_at'],
+                'integration' => $detail['integration'],
+                'products' => $detail['products'],
+            ]
+        ));
     }
 
     #[Route('/marketplace/integrations/99food/delivery-areas', name: 'marketplace_integrations_food99_delivery_areas', methods: ['GET'])]
