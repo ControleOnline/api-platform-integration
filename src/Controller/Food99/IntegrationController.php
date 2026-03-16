@@ -296,6 +296,9 @@ class IntegrationController extends AbstractController
     private function buildOrderIntegrationDetail(Order $order): array
     {
         $storedState = $this->food99Service->getStoredOrderIntegrationState($order);
+        $hasActionError = $this->hasErrnoError($storedState['last_action_errno'] ?? null);
+        $hasConfirmError = $this->hasErrnoError($storedState['confirm_errno'] ?? null);
+        $hasReconcileError = $this->hasErrnoError($storedState['reconcile_errno'] ?? null);
 
         return [
             'order' => [
@@ -324,6 +327,10 @@ class IntegrationController extends AbstractController
                 'confirm_at' => $storedState['confirm_at'],
                 'confirm_errno' => $storedState['confirm_errno'],
                 'confirm_message' => $storedState['confirm_message'],
+                'reconcile_at' => $storedState['reconcile_at'],
+                'reconcile_errno' => $storedState['reconcile_errno'],
+                'reconcile_message' => $storedState['reconcile_message'],
+                'reconcile_latency_ms' => $storedState['reconcile_latency_ms'],
             ],
             'delivery' => [
                 'delivery_type' => $storedState['delivery_type'],
@@ -339,7 +346,48 @@ class IntegrationController extends AbstractController
                 'is_platform_delivery' => $storedState['is_platform_delivery'],
                 'allows_manual_delivery_completion' => $storedState['allows_manual_delivery_completion'],
             ],
+            'observability' => [
+                'has_action_error' => $hasActionError,
+                'has_confirm_error' => $hasConfirmError,
+                'has_reconcile_error' => $hasReconcileError,
+                'is_healthy' => !$hasActionError && !$hasConfirmError && !$hasReconcileError,
+                'remote_state_age_minutes' => $this->resolveAgeInMinutes($storedState['last_event_at'] ?? null),
+                'last_action_age_minutes' => $this->resolveAgeInMinutes($storedState['last_action_at'] ?? null),
+                'last_confirm_age_minutes' => $this->resolveAgeInMinutes($storedState['confirm_at'] ?? null),
+                'last_reconcile_age_minutes' => $this->resolveAgeInMinutes($storedState['reconcile_at'] ?? null),
+            ],
         ];
+    }
+
+    private function hasErrnoError(mixed $errno): bool
+    {
+        if ($errno === null) {
+            return false;
+        }
+
+        $normalized = trim((string) $errno);
+        if ($normalized === '') {
+            return false;
+        }
+
+        return $normalized !== '0';
+    }
+
+    private function resolveAgeInMinutes(?string $datetime): ?int
+    {
+        $value = trim((string) $datetime);
+        if ($value === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($value);
+        if ($timestamp === false) {
+            return null;
+        }
+
+        $diff = time() - $timestamp;
+
+        return $diff >= 0 ? (int) floor($diff / 60) : 0;
     }
 
     #[Route('/marketplace/integrations', name: 'marketplace_integrations', methods: ['GET'])]
@@ -686,6 +734,27 @@ class IntegrationController extends AbstractController
 
         return new JsonResponse([
             'action' => 'delivered',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/reconcile', name: 'marketplace_integrations_food99_order_reconcile', methods: ['POST'])]
+    public function reconcileOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $result = $this->food99Service->reconcileOrder($order);
+
+        return new JsonResponse([
+            'action' => 'reconcile',
             'result' => $result,
             'state' => $this->buildOrderIntegrationDetail($order),
         ]);

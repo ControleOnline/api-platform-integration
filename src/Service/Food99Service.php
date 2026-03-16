@@ -443,12 +443,89 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $safeResponse;
     }
 
+    private function isSuccessfulErrno(mixed $errno): bool
+    {
+        if ($errno === null) {
+            return false;
+        }
+
+        if (is_numeric($errno)) {
+            return (int) $errno === 0;
+        }
+
+        return trim((string) $errno) === '0';
+    }
+
+    private function persistOrderReconcileResult(Order $order, ?array $response, ?int $latencyMs = null): array
+    {
+        $safeResponse = is_array($response)
+            ? $response
+            : $this->buildUnavailableOrderActionResponse('Nao foi possivel reconciliar o pedido com a 99Food.');
+
+        $this->persistOrderIntegrationState($order, [
+            'reconcile_at' => date('Y-m-d H:i:s'),
+            'reconcile_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
+            'reconcile_message' => $safeResponse['errmsg'] ?? '',
+            'reconcile_latency_ms' => $latencyMs !== null ? (string) max(0, $latencyMs) : '',
+        ]);
+
+        return $safeResponse;
+    }
+
     private function resolveRemoteOrderId(Order $order): ?string
     {
         $state = $this->getStoredOrderIntegrationState($order);
 
         return $state['food99_id']
             ?: $state['food99_code'];
+    }
+
+    public function reconcileOrder(Order $order): array
+    {
+        $remoteOrderId = $this->resolveRemoteOrderId($order);
+        if (!$remoteOrderId) {
+            $result = $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto para reconciliacao.');
+            $this->persistOrderReconcileResult($order, $result);
+            $this->entityManager->flush();
+
+            return $result;
+        }
+
+        $startedAt = microtime(true);
+        $remoteResponse = $this->getOrderDetails($order->getProvider(), $remoteOrderId);
+        $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+        $safeResponse = $this->persistOrderReconcileResult($order, $remoteResponse, $latencyMs);
+
+        $isSuccess = $this->isSuccessfulErrno($safeResponse['errno'] ?? null);
+
+        if ($isSuccess) {
+            $remoteData = is_array($safeResponse['data'] ?? null) ? $safeResponse['data'] : [];
+            if (!isset($remoteData['order_id'])) {
+                $remoteData['order_id'] = $remoteOrderId;
+            }
+
+            $syncPayload = [
+                'type' => 'orderDetailSync',
+                'event_time' => date('Y-m-d H:i:s'),
+                'data' => $remoteData,
+            ];
+
+            $this->handleGenericOrderEvent($syncPayload, 'orderDetailSync', false);
+        } else {
+            $this->entityManager->flush();
+        }
+
+        self::$logger->info('Food99 order reconciliation finished', [
+            'local_order_id' => $order->getId(),
+            'remote_order_id' => $remoteOrderId,
+            'provider_id' => $order->getProvider()?->getId(),
+            'reconcile_errno' => $safeResponse['errno'] ?? null,
+            'reconcile_message' => $safeResponse['errmsg'] ?? null,
+            'latency_ms' => $latencyMs,
+            'success' => $isSuccess,
+        ]);
+
+        return $safeResponse;
     }
 
     public function performReadyAction(Order $order): array
@@ -518,6 +595,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $payload['auth_token'] = $accessToken;
 
         try {
+            $startedAt = microtime(true);
+
             self::$logger->info('Food99 ACTION REQUEST', [
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
@@ -536,12 +615,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
                 'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'response' => $response->toArray(false),
             ]);
         } catch (\Throwable $e) {
             self::$logger->error('Food99 ACTION ERROR', [
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'error' => $e->getMessage(),
             ]);
         }
@@ -564,6 +645,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $payload['auth_token'] = $accessToken;
 
+        $startedAt = microtime(true);
+
         try {
             self::$logger->info('Food99 ACTION REQUEST', [
                 'uri' => $uri,
@@ -585,6 +668,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
                 'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'response' => $result,
             ]);
 
@@ -593,6 +677,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             self::$logger->error('Food99 ACTION ERROR', [
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'error' => $e->getMessage(),
             ]);
             return null;
@@ -616,6 +701,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         try {
+            $startedAt = microtime(true);
+
             self::$logger->info('Food99 ACTION REQUEST', array_merge([
                 'method' => $method,
                 'uri' => $uri,
@@ -631,6 +718,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
                 'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'response' => $result,
             ], $logContext));
 
@@ -640,6 +728,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'method' => $method,
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'error' => $e->getMessage(),
             ], $logContext));
 
@@ -1086,6 +1175,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'confirm_at' => null,
             'confirm_errno' => null,
             'confirm_message' => null,
+            'reconcile_at' => null,
+            'reconcile_errno' => null,
+            'reconcile_message' => null,
+            'reconcile_latency_ms' => null,
         ];
 
         $state = array_merge($state, $this->extractOrderDeliveryStateFields($payload));
@@ -1265,6 +1358,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'confirm_at' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_at'),
             'confirm_errno' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_errno'),
             'confirm_message' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_message'),
+            'reconcile_at' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_at'),
+            'reconcile_errno' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_errno'),
+            'reconcile_message' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_message'),
+            'reconcile_latency_ms' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_latency_ms'),
             'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
             'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
             'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
@@ -3250,6 +3347,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'order_id' => $orderId,
         ];
 
+        $startedAt = microtime(true);
+
         try {
             self::$logger->info('Food99 ORDER CONFIRM REQUEST', [
                 'order_id' => $orderId,
@@ -3270,6 +3369,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             self::$logger->info('Food99 ORDER CONFIRM RESPONSE', [
                 'order_id' => $orderId,
                 'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'response' => $result,
             ]);
 
@@ -3284,6 +3384,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'order_id' => $orderId,
                 'payload' => $this->sanitizePayloadForLog($payload),
                 'error_code' => $errorCode,
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'error' => $e->getMessage(),
             ]);
 
