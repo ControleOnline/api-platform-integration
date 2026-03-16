@@ -993,6 +993,37 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return null;
     }
 
+    private function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
+    {
+        if (!is_array($response['data'] ?? null)) {
+            return $response;
+        }
+
+        $taskData = $response['data'];
+
+        if (array_key_exists('taskID', $taskData) && $taskData['taskID'] !== null && $taskData['taskID'] !== '') {
+            $taskData['taskID'] = (string) $taskData['taskID'];
+        } elseif ($fallbackTaskId !== null && $fallbackTaskId !== '') {
+            $taskData['taskID'] = (string) $fallbackTaskId;
+        }
+
+        if (array_key_exists('taskId', $taskData) && $taskData['taskId'] !== null && $taskData['taskId'] !== '') {
+            $taskData['taskId'] = (string) $taskData['taskId'];
+        }
+
+        if (array_key_exists('appShopID', $taskData) && $taskData['appShopID'] !== null && $taskData['appShopID'] !== '') {
+            $taskData['appShopID'] = (string) $taskData['appShopID'];
+        }
+
+        if (array_key_exists('app_shop_id', $taskData) && $taskData['app_shop_id'] !== null && $taskData['app_shop_id'] !== '') {
+            $taskData['app_shop_id'] = (string) $taskData['app_shop_id'];
+        }
+
+        $response['data'] = $taskData;
+
+        return $response;
+    }
+
     private function resolveMenuTaskProgressState(array $taskData): string
     {
         if (empty($taskData)) {
@@ -1003,15 +1034,24 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $message = strtolower(trim((string) ($taskData['message'] ?? '')));
         $failureMessage = strtolower(trim((string) ($this->extractMenuTaskFailureMessage($taskData) ?? '')));
 
-        if ($failureMessage !== '' || str_contains($message, 'fail') || str_contains($message, 'error')) {
+        if ($status === 2 || $failureMessage !== '' || str_contains($message, 'fail') || str_contains($message, 'error')) {
             return 'failed';
+        }
+
+        if (
+            $status === 1
+            || str_contains($message, 'success')
+            || str_contains($message, 'complete')
+            || str_contains($message, 'done')
+        ) {
+            return 'completed';
         }
 
         if ($message === 'waiting' || str_contains($message, 'wait') || $status === 0) {
             return 'processing';
         }
 
-        if (str_contains($message, 'process') || str_contains($message, 'running') || $status === 1) {
+        if (str_contains($message, 'process') || str_contains($message, 'running')) {
             return 'processing';
         }
 
@@ -2040,6 +2080,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $response = $this->call99EndpointWithResponse('/v3/item/item/upload', $payload, $provider);
         $taskId = is_array($response['data'] ?? null) ? ($response['data']['taskID'] ?? null) : null;
+        $response = is_array($response) ? $this->normalizeMenuTaskResponse($response, $taskId) : $response;
 
         if (($response['errno'] ?? 1) === 0) {
             $this->persistProviderMenuUploadSubmission($provider, $response, $taskId);
@@ -2058,6 +2099,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $response = $this->call99EndpointWithResponse('/v1/item/item/getMenuTaskInfo', [
             'task_id' => $taskId,
         ], $provider);
+        $response = is_array($response) ? $this->normalizeMenuTaskResponse($response, $taskId) : $response;
 
         if (($response['errno'] ?? 1) !== 0) {
             $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
