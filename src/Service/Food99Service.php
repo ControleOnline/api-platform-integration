@@ -1270,6 +1270,92 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ]);
     }
 
+    private function extractOrderDeliveryType(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'delivery_type',
+            'deliveryType',
+        ]);
+    }
+
+    private function extractOrderFulfillmentMode(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'fulfillment_mode',
+            'fulfillmentMode',
+        ]);
+    }
+
+    private function extractOrderExpectedArrivedEta(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'expected_arrived_eta',
+            'expectedArrivedEta',
+            'delivery_eta',
+            'deliveryEta',
+        ]);
+    }
+
+    private function extractOrderLocator(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'locator',
+        ]);
+    }
+
+    private function extractOrderHandoverPageUrl(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'handover_page_url',
+            'handoverPageUrl',
+        ]);
+    }
+
+    private function extractOrderVirtualPhoneNumber(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'virtual_phone_number',
+            'virtualPhoneNumber',
+        ]);
+    }
+
+    private function extractOrderHandoverCode(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'handover_code',
+            'handoverCode',
+        ]);
+    }
+
+    private function resolveOrderDeliveryFlags(array $state): array
+    {
+        $deliveryType = trim((string) ($state['delivery_type'] ?? ''));
+        $locator = trim((string) ($state['locator'] ?? ''));
+        $handoverPageUrl = trim((string) ($state['handover_page_url'] ?? ''));
+        $virtualPhoneNumber = trim((string) ($state['virtual_phone_number'] ?? ''));
+
+        $isStoreDelivery = false;
+        $isPlatformDelivery = false;
+        $deliveryLabel = 'Indefinido';
+
+        if ($deliveryType === '1') {
+            $isStoreDelivery = true;
+            $deliveryLabel = 'Entrega da loja';
+        } elseif ($deliveryType === '2') {
+            $isPlatformDelivery = true;
+            $deliveryLabel = 'Entrega 99';
+        } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '') {
+            $isStoreDelivery = true;
+            $deliveryLabel = 'Entrega da loja';
+        }
+
+        return [
+            'is_store_delivery' => $isStoreDelivery,
+            'is_platform_delivery' => $isPlatformDelivery,
+            'delivery_label' => $deliveryLabel,
+        ];
+    }
+
     private function extractOrderCancelReason(array $json): ?string
     {
         return $this->searchPayloadValueByKeys($json, [
@@ -2774,10 +2860,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 return $existing;
             }
 
-            self::$logger->warning('Food99 order processing aborted because the integration lock could not be acquired safely', $this->buildLogContext(null, $json, [
+            self::$logger->warning('Food99 order integration lock unavailable; continuing with duplicate checks only', $this->buildLogContext(null, $json, [
                 'order_code' => $orderCode,
+                'lock_required' => false,
             ]));
-            return null;
         }
 
         try {
