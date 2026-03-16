@@ -430,8 +430,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function resolveRemoteOrderId(Order $order): ?string
     {
-        return $this->getFood99OrderExtraDataValue((int) $order->getId(), 'id')
-            ?: $this->getFood99OrderExtraDataValue((int) $order->getId(), 'code');
+        $state = $this->getStoredOrderIntegrationState($order);
+
+        return $state['food99_id']
+            ?: $state['food99_code'];
     }
 
     public function performReadyAction(Order $order): array
@@ -962,6 +964,91 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return (string) $value;
     }
 
+    private function decodeOrderOtherInformationsValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($value)) {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+
+            if (is_string($decoded)) {
+                $decodedAgain = json_decode($decoded, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($decodedAgain)) {
+                    return $decodedAgain;
+                }
+            }
+        }
+
+        return [];
+    }
+
+    private function getDecodedOrderOtherInformations(Order $order): array
+    {
+        $otherInformations = [];
+
+        try {
+            $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));
+        } catch (\Throwable) {
+            $otherInformations = [];
+        }
+
+        return $otherInformations;
+    }
+
+    private function extractOrderIntegrationStateFromOtherInformations(Order $order): array
+    {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        $payload = null;
+
+        foreach ([self::APP_CONTEXT, self::LEGACY_ORDER_CONTEXT] as $contextKey) {
+            $candidate = $otherInformations[$contextKey] ?? null;
+            if (is_array($candidate)) {
+                $payload = $candidate;
+                break;
+            }
+
+            if (is_string($candidate)) {
+                $decodedCandidate = $this->decodeOrderOtherInformationsValue($candidate);
+                if (!empty($decodedCandidate)) {
+                    $payload = $decodedCandidate;
+                    break;
+                }
+            }
+        }
+
+        if (!is_array($payload)) {
+            return [];
+        }
+
+        $identifiers = $this->extractIncomingOrderIdentifiers($payload);
+        $deliveryStatus = $this->extractOrderDeliveryStatus($payload);
+        $eventAt = $this->extractOrderEventTimestamp($payload);
+
+        return [
+            'food99_id' => $identifiers['order_id'] ?? null,
+            'food99_code' => $identifiers['order_code'] ?? null,
+            'remote_order_state' => $this->normalizeIncomingFood99Value($payload['type'] ?? null) === 'orderNew' ? 'new' : null,
+            'remote_delivery_status' => $deliveryStatus !== '' ? $deliveryStatus : null,
+            'last_event_type' => $this->normalizeIncomingFood99Value($payload['type'] ?? null),
+            'last_event_at' => $eventAt !== '' ? $eventAt : null,
+            'cancel_code' => null,
+            'cancel_reason' => null,
+            'last_action' => null,
+            'last_action_at' => null,
+            'last_action_errno' => null,
+            'last_action_message' => null,
+        ];
+    }
+
     private function findLocalFoodCodeByEntity(string $entityName, int $entityId): ?string
     {
         return $this->getFood99ExtraDataValue($entityName, $entityId, 'code');
@@ -1100,8 +1187,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->init();
 
         $orderId = (int) $order->getId();
-
-        return [
+        $state = [
             'food99_id' => $this->getFood99OrderExtraDataValue($orderId, 'id'),
             'food99_code' => $this->getFood99OrderExtraDataValue($orderId, 'code'),
             'remote_order_state' => $this->getFood99OrderExtraDataValue($orderId, 'remote_order_state'),
@@ -1115,6 +1201,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
             'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
         ];
+
+        $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
+
+        foreach ($state as $key => $value) {
+            if ($value !== null && $value !== '') {
+                continue;
+            }
+
+            $state[$key] = $fallbackState[$key] ?? $value;
+        }
+
+        return $state;
     }
 
     private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
