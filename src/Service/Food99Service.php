@@ -345,27 +345,126 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     }
 
 
-    public function readyOrder(string $orderId, ?People $provider = null): void
+    public function readyOrder(string $orderId, ?People $provider = null): ?array
     {
-        $this->call99Endpoint('/v1/order/order/ready', [
+        return $this->call99EndpointWithResponse('/v1/order/order/ready', [
             'order_id' => $orderId,
         ], $provider);
     }
 
-    public function deliveredOrder(string $orderId, ?People $provider = null): void
+    public function deliveredOrder(string $orderId, ?People $provider = null): ?array
     {
-        $this->call99Endpoint('/v1/order/order/delivered', [
+        return $this->call99EndpointWithResponse('/v1/order/order/delivered', [
             'order_id' => $orderId,
         ], $provider);
     }
 
-    public function cancelByShop(string $orderId, ?People $provider = null): void
+    public function cancelByShop(string $orderId, ?People $provider = null): ?array
     {
-        $this->call99Endpoint('/v1/order/order/cancel', [
+        return $this->call99EndpointWithResponse('/v1/order/order/cancel', [
             'order_id' => $orderId,
             'reason_id' => 1080,
             'reason' => 'Cancelled by merchant system',
         ], $provider);
+    }
+
+    private function buildUnavailableOrderActionResponse(string $message): array
+    {
+        return [
+            'errno' => 10001,
+            'errmsg' => $message,
+            'data' => [],
+        ];
+    }
+
+    private function persistOrderActionResult(Order $order, string $action, ?array $response): array
+    {
+        $safeResponse = is_array($response)
+            ? $response
+            : $this->buildUnavailableOrderActionResponse('Nao foi possivel executar a acao no pedido da 99Food.');
+
+        $success = ($safeResponse['errno'] ?? 1) === 0;
+
+        $this->persistOrderIntegrationState($order, [
+            'last_action' => $action,
+            'last_action_at' => date('Y-m-d H:i:s'),
+            'last_action_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
+            'last_action_message' => $safeResponse['errmsg'] ?? '',
+        ]);
+
+        $this->storeOrderRemoteSnapshot($order, 'last_action_' . $action, $safeResponse);
+
+        if ($success) {
+            if ($action === 'cancel') {
+                $this->persistOrderIntegrationState($order, [
+                    'remote_order_state' => 'cancelled',
+                    'cancel_code' => '1080',
+                    'cancel_reason' => 'Cancelled by merchant system',
+                ]);
+                $this->applyLocalCanceledStatus($order);
+            } elseif ($action === 'ready') {
+                $this->persistOrderIntegrationState($order, [
+                    'remote_order_state' => 'ready',
+                ]);
+            } elseif ($action === 'delivered') {
+                $this->persistOrderIntegrationState($order, [
+                    'remote_order_state' => 'delivered',
+                ]);
+                $this->applyLocalClosedStatus($order);
+            }
+        }
+
+        $this->entityManager->flush();
+
+        return $safeResponse;
+    }
+
+    private function resolveRemoteOrderId(Order $order): ?string
+    {
+        return $this->findLocalFoodIdByEntity('Order', (int) $order->getId())
+            ?: $this->findLocalFoodCodeByEntity('Order', (int) $order->getId());
+    }
+
+    public function performReadyAction(Order $order): array
+    {
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
+        }
+
+        return $this->persistOrderActionResult(
+            $order,
+            'ready',
+            $this->readyOrder($orderId, $order->getProvider())
+        );
+    }
+
+    public function performCancelAction(Order $order): array
+    {
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
+        }
+
+        return $this->persistOrderActionResult(
+            $order,
+            'cancel',
+            $this->cancelByShop($orderId, $order->getProvider())
+        );
+    }
+
+    public function performDeliveredAction(Order $order): array
+    {
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
+        }
+
+        return $this->persistOrderActionResult(
+            $order,
+            'delivered',
+            $this->deliveredOrder($orderId, $order->getProvider())
+        );
     }
 
     private function call99Endpoint(string $uri, array $payload, ?People $provider = null): void
@@ -867,6 +966,243 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $clientCode);
 
         return $client;
+    }
+
+    private function persistOrderIntegrationState(Order $order, array $fields): void
+    {
+        foreach ($fields as $fieldName => $value) {
+            $this->upsertFood99ExtraDataValue('Order', (int) $order->getId(), (string) $fieldName, $value);
+        }
+    }
+
+    public function getStoredOrderIntegrationState(Order $order): array
+    {
+        $this->init();
+
+        $orderId = (int) $order->getId();
+
+        return [
+            'food99_id' => $this->getFood99ExtraDataValue('Order', $orderId, 'id'),
+            'food99_code' => $this->getFood99ExtraDataValue('Order', $orderId, 'code'),
+            'remote_order_state' => $this->getFood99ExtraDataValue('Order', $orderId, 'remote_order_state'),
+            'remote_delivery_status' => $this->getFood99ExtraDataValue('Order', $orderId, 'remote_delivery_status'),
+            'last_event_type' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_event_type'),
+            'last_event_at' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_event_at'),
+            'cancel_code' => $this->getFood99ExtraDataValue('Order', $orderId, 'cancel_code'),
+            'cancel_reason' => $this->getFood99ExtraDataValue('Order', $orderId, 'cancel_reason'),
+            'last_action' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action'),
+            'last_action_at' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_at'),
+            'last_action_errno' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_errno'),
+            'last_action_message' => $this->getFood99ExtraDataValue('Order', $orderId, 'last_action_message'),
+        ];
+    }
+
+    private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $payload) && !is_array($payload[$key])) {
+                $value = $this->normalizeIncomingFood99Value($payload[$key]);
+                if ($value !== '') {
+                    return $value;
+                }
+            }
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $resolved = $this->searchPayloadValueByKeys($value, $keys);
+            if ($resolved !== null && $resolved !== '') {
+                return $resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractOrderEventTimestamp(array $json): string
+    {
+        $timestamp = $this->searchPayloadValueByKeys($json, [
+            'event_time',
+            'eventTime',
+            'update_time',
+            'updateTime',
+            'created_at',
+            'createdAt',
+            'time',
+        ]);
+
+        return $timestamp !== null && $timestamp !== '' ? $timestamp : date('Y-m-d H:i:s');
+    }
+
+    private function extractOrderDeliveryStatus(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'delivery_status',
+            'deliveryStatus',
+            'status_desc',
+            'statusDesc',
+            'status',
+        ]);
+    }
+
+    private function extractOrderCancelReason(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'reason',
+            'cancel_reason',
+            'cancelReason',
+            'reason_desc',
+            'reasonDesc',
+            'message',
+        ]);
+    }
+
+    private function extractOrderCancelCode(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'reason_id',
+            'reasonId',
+            'cancel_code',
+            'cancelCode',
+            'code',
+        ]);
+    }
+
+    private function isDeliveredRemoteState(?string $value): bool
+    {
+        $normalizedValue = strtolower(trim((string) $value));
+        if ($normalizedValue === '') {
+            return false;
+        }
+
+        foreach (['deliver', 'finish', 'complete', 'done', 'success'] as $terminalToken) {
+            if (str_contains($normalizedValue, $terminalToken)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function storeOrderRemoteSnapshot(Order $order, string $entryKey, array $payload): void
+    {
+        $otherInformations = (array) $order->getOtherInformations(true);
+        $otherInformations[$entryKey] = $payload;
+        $otherInformations['latest_event_type'] = $entryKey;
+        $order->addOtherInformations(self::$app, $otherInformations);
+        $this->entityManager->persist($order);
+    }
+
+    private function applyLocalCanceledStatus(Order $order): void
+    {
+        $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
+        if (!$status) {
+            return;
+        }
+
+        $order->setStatus($status);
+        $this->entityManager->persist($order);
+    }
+
+    private function applyLocalClosedStatus(Order $order): void
+    {
+        $status = $this->statusService->discoveryStatus('closed', 'closed', 'order');
+        if (!$status) {
+            return;
+        }
+
+        $order->setStatus($status);
+        $this->entityManager->persist($order);
+    }
+
+    private function findIntegratedOrderFromPayload(array $json): ?Order
+    {
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+
+        $orderId = $this->normalizeIncomingFood99Value($data['order_id'] ?? $data['orderId'] ?? null);
+        $orderIndex = $this->normalizeIncomingFood99Value(
+            $info['order_index'] ?? $data['order_index'] ?? $data['orderIndex'] ?? null
+        );
+        $orderCode = $this->resolveIncomingOrderCode($orderId, $orderIndex);
+
+        return $this->findExistingIntegratedOrder($orderId, $orderCode);
+    }
+
+    private function handleOrderCancelEvent(array $json): ?Order
+    {
+        $order = $this->findIntegratedOrderFromPayload($json);
+        if (!$order instanceof Order) {
+            self::$logger->warning('Food99 orderCancel received without a matching local order', $this->buildLogContext(null, $json));
+            return null;
+        }
+
+        $this->storeOrderRemoteSnapshot($order, 'orderCancel', $json);
+        $this->persistOrderIntegrationState($order, [
+            'last_event_type' => 'orderCancel',
+            'last_event_at' => $this->extractOrderEventTimestamp($json),
+            'remote_order_state' => 'cancelled',
+            'cancel_code' => $this->extractOrderCancelCode($json),
+            'cancel_reason' => $this->extractOrderCancelReason($json),
+        ]);
+        $this->applyLocalCanceledStatus($order);
+        $this->entityManager->flush();
+
+        return $order;
+    }
+
+    private function handleOrderFinishEvent(array $json): ?Order
+    {
+        $order = $this->findIntegratedOrderFromPayload($json);
+        if (!$order instanceof Order) {
+            self::$logger->warning('Food99 orderFinish received without a matching local order', $this->buildLogContext(null, $json));
+            return null;
+        }
+
+        $this->storeOrderRemoteSnapshot($order, 'orderFinish', $json);
+        $this->persistOrderIntegrationState($order, [
+            'last_event_type' => 'orderFinish',
+            'last_event_at' => $this->extractOrderEventTimestamp($json),
+            'remote_order_state' => 'finished',
+        ]);
+        $this->applyLocalClosedStatus($order);
+        $this->entityManager->flush();
+
+        return $order;
+    }
+
+    private function handleDeliveryStatusEvent(array $json): ?Order
+    {
+        $order = $this->findIntegratedOrderFromPayload($json);
+        if (!$order instanceof Order) {
+            self::$logger->warning('Food99 deliveryStatus received without a matching local order', $this->buildLogContext(null, $json));
+            return null;
+        }
+
+        $deliveryStatus = $this->extractOrderDeliveryStatus($json);
+
+        $this->storeOrderRemoteSnapshot($order, 'deliveryStatus', $json);
+        $this->persistOrderIntegrationState($order, [
+            'last_event_type' => 'deliveryStatus',
+            'last_event_at' => $this->extractOrderEventTimestamp($json),
+            'remote_delivery_status' => $deliveryStatus,
+            'remote_order_state' => $this->isDeliveredRemoteState($deliveryStatus) ? 'delivered' : ($deliveryStatus ?: 'delivery_update'),
+        ]);
+
+        if ($this->isDeliveredRemoteState($deliveryStatus)) {
+            $this->applyLocalClosedStatus($order);
+        }
+
+        $this->entityManager->flush();
+
+        return $order;
     }
 
     private function persistProviderIntegrationState(People $provider, array $fields): void
@@ -2159,12 +2495,16 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return null;
         }
 
-        if (($json['type'] ?? null) !== 'orderNew') {
-            self::$logger->info('Food99 event ignored because it is not implemented in current flow', $this->buildLogContext($integration, $json));
-            return null;
-        }
-
-        return $this->addOrder($json);
+        return match ($json['type'] ?? null) {
+            'orderNew' => $this->addOrder($json),
+            'orderCancel' => $this->handleOrderCancelEvent($json),
+            'orderFinish' => $this->handleOrderFinishEvent($json),
+            'deliveryStatus' => $this->handleDeliveryStatusEvent($json),
+            default => (function () use ($integration, $json) {
+                self::$logger->info('Food99 event ignored because it is not implemented in current flow', $this->buildLogContext($integration, $json));
+                return null;
+            })(),
+        };
     }
 
     private function addOrder(array $json): ?Order
@@ -2252,6 +2592,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
             $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
+            $this->persistOrderIntegrationState($order, [
+                'last_event_type' => 'orderNew',
+                'last_event_at' => $this->extractOrderEventTimestamp($json),
+                'remote_order_state' => 'new',
+                'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
+            ]);
 
             self::$logger->info('Food99 order shell persisted locally before item/address processing', $this->buildLogContext(null, $json, [
                 'provider_id' => $provider?->getId(),

@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Controller\Food99;
 
+use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\LoggerService;
@@ -131,6 +132,47 @@ class IntegrationController extends AbstractController
         ], Response::HTTP_FORBIDDEN);
     }
 
+    private function resolveOrder(string|int $orderId): ?Order
+    {
+        $normalizedOrderId = (int) preg_replace('/\D+/', '', (string) $orderId);
+        if ($normalizedOrderId <= 0) {
+            return null;
+        }
+
+        $order = $this->manager->getRepository(Order::class)->find($normalizedOrderId);
+        if (!$order instanceof Order) {
+            return null;
+        }
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return null;
+        }
+
+        $userPeople = $this->getAuthenticatedPeople();
+        if (!$userPeople && !$this->isAdminUser()) {
+            return null;
+        }
+
+        if ($userPeople && !$this->canAccessProvider($userPeople, $provider)) {
+            return null;
+        }
+
+        return $order;
+    }
+
+    private function orderErrorResponse(string $message = 'Order not found or access denied'): JsonResponse
+    {
+        return new JsonResponse([
+            'error' => $message,
+        ], Response::HTTP_FORBIDDEN);
+    }
+
+    private function isFood99Order(Order $order): bool
+    {
+        return strcasecmp((string) $order->getApp(), 'Food99') === 0;
+    }
+
     private function extractProductIds(array $payload): array
     {
         $productIds = $payload['product_ids'] ?? $payload['products'] ?? [];
@@ -248,6 +290,38 @@ class IntegrationController extends AbstractController
                 'published_product_count' => $publishedProductCount,
             ]),
             'errors' => [],
+        ];
+    }
+
+    private function buildOrderIntegrationDetail(Order $order): array
+    {
+        $storedState = $this->food99Service->getStoredOrderIntegrationState($order);
+
+        return [
+            'order' => [
+                'id' => $order->getId(),
+                'app' => $order->getApp(),
+                'status' => [
+                    'id' => $order->getStatus()?->getId(),
+                    'status' => $order->getStatus()?->getStatus(),
+                    'real_status' => $order->getStatus()?->getRealStatus(),
+                ],
+            ],
+            'integration' => [
+                'key' => '99food',
+                'food99_id' => $storedState['food99_id'],
+                'food99_code' => $storedState['food99_code'],
+                'remote_order_state' => $storedState['remote_order_state'],
+                'remote_delivery_status' => $storedState['remote_delivery_status'],
+                'last_event_type' => $storedState['last_event_type'],
+                'last_event_at' => $storedState['last_event_at'],
+                'cancel_code' => $storedState['cancel_code'],
+                'cancel_reason' => $storedState['cancel_reason'],
+                'last_action' => $storedState['last_action'],
+                'last_action_at' => $storedState['last_action_at'],
+                'last_action_errno' => $storedState['last_action_errno'],
+                'last_action_message' => $storedState['last_action_message'],
+            ],
         ];
     }
 
@@ -518,6 +592,86 @@ class IntegrationController extends AbstractController
                 'products' => $detail['products'],
             ]
         ));
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/state', name: 'marketplace_integrations_food99_order_state', methods: ['GET'])]
+    public function getOrderState(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse([
+                'error' => 'Order is not linked to Food99',
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        return new JsonResponse($this->buildOrderIntegrationDetail($order));
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/ready', name: 'marketplace_integrations_food99_order_ready', methods: ['POST'])]
+    public function readyOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $result = $this->food99Service->performReadyAction($order);
+
+        return new JsonResponse([
+            'action' => 'ready',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/cancel', name: 'marketplace_integrations_food99_order_cancel', methods: ['POST'])]
+    public function cancelOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $result = $this->food99Service->performCancelAction($order);
+
+        return new JsonResponse([
+            'action' => 'cancel',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/delivered', name: 'marketplace_integrations_food99_order_delivered', methods: ['POST'])]
+    public function deliveredOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $result = $this->food99Service->performDeliveredAction($order);
+
+        return new JsonResponse([
+            'action' => 'delivered',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
     }
 
     #[Route('/marketplace/integrations/99food/delivery-areas', name: 'marketplace_integrations_food99_delivery_areas', methods: ['GET'])]
