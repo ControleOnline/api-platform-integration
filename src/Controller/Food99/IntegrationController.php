@@ -321,6 +321,9 @@ class IntegrationController extends AbstractController
                 'last_action_at' => $storedState['last_action_at'],
                 'last_action_errno' => $storedState['last_action_errno'],
                 'last_action_message' => $storedState['last_action_message'],
+                'confirm_at' => $storedState['confirm_at'],
+                'confirm_errno' => $storedState['confirm_errno'],
+                'confirm_message' => $storedState['confirm_message'],
             ],
             'delivery' => [
                 'delivery_type' => $storedState['delivery_type'],

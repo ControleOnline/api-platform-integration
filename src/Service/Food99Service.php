@@ -428,6 +428,21 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $safeResponse;
     }
 
+    private function persistOrderConfirmResult(Order $order, ?array $response): array
+    {
+        $safeResponse = is_array($response)
+            ? $response
+            : $this->buildUnavailableOrderActionResponse('Nao foi possivel confirmar o pedido na 99Food.');
+
+        $this->persistOrderIntegrationState($order, [
+            'confirm_at' => date('Y-m-d H:i:s'),
+            'confirm_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
+            'confirm_message' => $safeResponse['errmsg'] ?? '',
+        ]);
+
+        return $safeResponse;
+    }
+
     private function resolveRemoteOrderId(Order $order): ?string
     {
         $state = $this->getStoredOrderIntegrationState($order);
@@ -1068,6 +1083,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_action_at' => null,
             'last_action_errno' => null,
             'last_action_message' => null,
+            'confirm_at' => null,
+            'confirm_errno' => null,
+            'confirm_message' => null,
         ];
 
         $state = array_merge($state, $this->extractOrderDeliveryStateFields($payload));
@@ -1244,6 +1262,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_action_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_at'),
             'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
             'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
+            'confirm_at' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_at'),
+            'confirm_errno' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_errno'),
+            'confirm_message' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_message'),
             'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
             'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
             'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
@@ -3013,7 +3034,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'local_order_id' => $order->getId(),
             ]));
 
-            $this->confirmOrder($orderId, $provider);
+            $this->confirmOrder($order, $orderId, $provider);
             $this->printOrder($order);
 
             return $order;
@@ -3024,18 +3045,24 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
     }
 
-    private function confirmOrder(string $orderId, ?People $provider = null): void
+    private function confirmOrder(Order $order, string $orderId, ?People $provider = null): array
     {
         $url = $this->getFood99BaseUrl() . '/v1/order/order/confirm';
         $accessToken = $this->resolveAccessToken($provider);
 
         if (!$accessToken) {
+            $message = 'Token de acesso indisponivel para confirmar pedido na 99Food.';
             self::$logger->warning('Food99 confirm skipped because access token is unavailable', [
                 'order_id' => $orderId,
                 'provider_id' => $provider?->getId(),
                 'api_base_url' => $this->getFood99BaseUrl(),
+                'message' => $message,
             ]);
-            return;
+
+            return $this->persistOrderConfirmResult(
+                $order,
+                $this->buildUnavailableOrderActionResponse($message)
+            );
         }
 
         $payload = [
@@ -3065,11 +3092,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'status_code' => $response->getStatusCode(),
                 'response' => $result,
             ]);
+
+            return $this->persistOrderConfirmResult($order, is_array($result) ? $result : null);
         } catch (\Throwable $e) {
+            $errorCode = (int) $e->getCode();
+            if ($errorCode === 0) {
+                $errorCode = 10002;
+            }
+
             self::$logger->error('Food99 ORDER CONFIRM ERROR', [
                 'order_id' => $orderId,
                 'payload' => $this->sanitizePayloadForLog($payload),
+                'error_code' => $errorCode,
                 'error' => $e->getMessage(),
+            ]);
+
+            return $this->persistOrderConfirmResult($order, [
+                'errno' => $errorCode,
+                'errmsg' => $e->getMessage(),
+                'data' => [],
             ]);
         }
     }
