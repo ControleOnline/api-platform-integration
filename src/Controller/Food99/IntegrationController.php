@@ -203,6 +203,157 @@ class IntegrationController extends AbstractController
         };
     }
 
+    private function isSuccessfulErrno(mixed $errno): bool
+    {
+        if ($errno === null) {
+            return false;
+        }
+
+        if (is_numeric($errno)) {
+            return (int) $errno === 0;
+        }
+
+        return trim((string) $errno) === '0';
+    }
+
+    private function normalizeTimeInput(mixed $value): ?string
+    {
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $normalized)) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    private function normalizePositiveFloat(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $normalized = str_replace(',', '.', trim((string) $value));
+        if (!is_numeric($normalized)) {
+            return null;
+        }
+
+        $floatValue = (float) $normalized;
+
+        return $floatValue > 0 ? $floatValue : null;
+    }
+
+    private function firstNonEmptyValue(array $source, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $source) || is_array($source[$key])) {
+                continue;
+            }
+
+            $value = trim((string) $source[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveFirstDeliveryArea(array $deliveryAreasResponse): ?array
+    {
+        $groups = is_array($deliveryAreasResponse['data']['area_group'] ?? null)
+            ? $deliveryAreasResponse['data']['area_group']
+            : [];
+
+        foreach ($groups as $group) {
+            if (is_array($group)) {
+                return $group;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveDeliveryAreaId(array $deliveryAreasResponse, array $payload): ?string
+    {
+        $requested = trim((string) ($payload['delivery_area_id'] ?? ''));
+        if ($requested !== '') {
+            return $requested;
+        }
+
+        $firstArea = $this->resolveFirstDeliveryArea($deliveryAreasResponse);
+        if (!is_array($firstArea)) {
+            return null;
+        }
+
+        foreach (['area_id', 'id', 'delivery_area_id'] as $key) {
+            if (!array_key_exists($key, $firstArea) || is_array($firstArea[$key])) {
+                continue;
+            }
+
+            $value = trim((string) $firstArea[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractStoreSettingsSnapshot(array $storeDetails, array $deliveryAreas): array
+    {
+        $storeData = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : [];
+        $firstArea = $this->resolveFirstDeliveryArea($deliveryAreas) ?? [];
+
+        $openTime = $this->firstNonEmptyValue($storeData, ['open_time', 'openTime', 'start_time', 'startTime']);
+        $closeTime = $this->firstNonEmptyValue($storeData, ['close_time', 'closeTime', 'end_time', 'endTime']);
+
+        if (($openTime === null || $closeTime === null) && is_array($storeData['business_hours'] ?? null)) {
+            $firstBusinessWindow = $storeData['business_hours'][0] ?? null;
+            if (is_array($firstBusinessWindow)) {
+                $openTime = $openTime ?? $this->firstNonEmptyValue($firstBusinessWindow, ['open_time', 'openTime', 'start_time', 'startTime']);
+                $closeTime = $closeTime ?? $this->firstNonEmptyValue($firstBusinessWindow, ['close_time', 'closeTime', 'end_time', 'endTime']);
+            }
+        }
+
+        $deliveryMethod = $this->firstNonEmptyValue($storeData, ['delivery_type', 'deliveryType', 'delivery_mode', 'deliveryMode', 'fulfillment_mode']);
+        $confirmMethod = $this->firstNonEmptyValue($storeData, ['confirm_method', 'confirmMethod', 'order_confirm_method', 'orderConfirmMethod']);
+        $radius = $this->firstNonEmptyValue($firstArea, ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']);
+
+        return [
+            'delivery_radius' => $radius,
+            'open_time' => $openTime,
+            'close_time' => $closeTime,
+            'delivery_method' => $deliveryMethod,
+            'confirm_method' => $confirmMethod,
+            'delivery_area_id' => $this->resolveDeliveryAreaId($deliveryAreas, []),
+        ];
+    }
+
+    private function buildStoreSettingsDetail(People $provider, ?array $storeDetails = null, ?array $deliveryAreas = null, array $extra = []): array
+    {
+        $resolvedStoreDetails = is_array($storeDetails) ? $storeDetails : ($this->food99Service->getStoreDetails($provider) ?? []);
+        $resolvedDeliveryAreas = is_array($deliveryAreas) ? $deliveryAreas : ($this->food99Service->listDeliveryAreas($provider) ?? []);
+        $local = $this->buildLocalIntegrationDetail($provider);
+
+        return array_merge([
+            'provider' => [
+                'id' => $provider->getId(),
+                'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
+            ],
+            'integration' => $local['integration'],
+            'store' => $resolvedStoreDetails,
+            'delivery_areas' => $resolvedDeliveryAreas,
+            'settings' => $this->extractStoreSettingsSnapshot(
+                is_array($resolvedStoreDetails) ? $resolvedStoreDetails : [],
+                is_array($resolvedDeliveryAreas) ? $resolvedDeliveryAreas : []
+            ),
+        ], $extra);
+    }
+
     private function resolvePublishedRemoteItemIds(?array $menuDetails): array
     {
         $items = is_array($menuDetails['data']['items'] ?? null) ? $menuDetails['data']['items'] : [];
@@ -548,6 +699,167 @@ class IntegrationController extends AbstractController
         $autoSwitch = isset($payload['auto_switch']) ? (int) $payload['auto_switch'] : null;
 
         return new JsonResponse($this->food99Service->setStoreStatus($provider, $bizStatus, $autoSwitch));
+    }
+
+    #[Route('/marketplace/integrations/99food/store/settings', name: 'marketplace_integrations_food99_store_settings', methods: ['GET'])]
+    public function getStoreSettings(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        return new JsonResponse($this->buildStoreSettingsDetail($provider));
+    }
+
+    #[Route('/marketplace/integrations/99food/store/connect', name: 'marketplace_integrations_food99_store_connect', methods: ['POST'])]
+    public function connectStore(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
+        $result = $this->food99Service->bindStore($payload);
+
+        if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
+            $shopId = trim((string) ($payload['shop_id'] ?? $payload['food99_code'] ?? $payload['store_code'] ?? ''));
+            $this->food99Service->markProviderConnected($provider, $shopId !== '' ? $shopId : null);
+        }
+
+        return new JsonResponse($this->buildStoreSettingsDetail($provider, null, null, [
+            'action' => 'connect',
+            'result' => $result,
+        ]));
+    }
+
+    #[Route('/marketplace/integrations/99food/store/disconnect', name: 'marketplace_integrations_food99_store_disconnect', methods: ['POST'])]
+    public function disconnectStore(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $result = $this->food99Service->unbindStore($provider, $payload);
+
+        if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
+            $this->food99Service->clearProviderBindingState($provider);
+        }
+
+        return new JsonResponse($this->buildStoreSettingsDetail($provider, null, null, [
+            'action' => 'disconnect',
+            'result' => $result,
+        ]));
+    }
+
+    #[Route('/marketplace/integrations/99food/store/settings', name: 'marketplace_integrations_food99_store_settings_update', methods: ['POST'])]
+    public function updateStoreSettings(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $operations = [];
+
+        $storeUpdatePayload = is_array($payload['store_update_payload'] ?? null) ? $payload['store_update_payload'] : [];
+        $openTime = $this->normalizeTimeInput($payload['open_time'] ?? null);
+        $closeTime = $this->normalizeTimeInput($payload['close_time'] ?? null);
+        $deliveryMethod = trim((string) ($payload['delivery_method'] ?? ''));
+
+        if (($payload['open_time'] ?? null) !== null && $openTime === null) {
+            return new JsonResponse(['error' => 'open_time must be HH:mm'], Response::HTTP_BAD_REQUEST);
+        }
+
+        if (($payload['close_time'] ?? null) !== null && $closeTime === null) {
+            return new JsonResponse(['error' => 'close_time must be HH:mm'], Response::HTTP_BAD_REQUEST);
+        }
+
+        if ($openTime !== null) {
+            $storeUpdatePayload['open_time'] = $openTime;
+        }
+        if ($closeTime !== null) {
+            $storeUpdatePayload['close_time'] = $closeTime;
+        }
+        if ($deliveryMethod !== '') {
+            $storeUpdatePayload['delivery_type'] = $deliveryMethod;
+        }
+
+        if (!empty($storeUpdatePayload)) {
+            $operations['store_update'] = $this->food99Service->updateStoreInformation($provider, $storeUpdatePayload);
+        }
+
+        $confirmPayload = is_array($payload['confirm_method_payload'] ?? null) ? $payload['confirm_method_payload'] : [];
+        $confirmMethod = trim((string) ($payload['confirm_method'] ?? ''));
+        if ($confirmMethod !== '') {
+            $confirmPayload['confirm_method'] = $confirmMethod;
+        }
+
+        if (!empty($confirmPayload)) {
+            $operations['confirm_method_update'] = $this->food99Service->setStoreOrderConfirmationMethod($provider, $confirmPayload);
+        }
+
+        $deliveryAreaPayload = is_array($payload['delivery_area_payload'] ?? null) ? $payload['delivery_area_payload'] : [];
+        $deliveryRadiusKm = $this->normalizePositiveFloat($payload['delivery_radius_km'] ?? $payload['delivery_radius'] ?? null);
+        if (($payload['delivery_radius_km'] ?? $payload['delivery_radius'] ?? null) !== null && $deliveryRadiusKm === null) {
+            return new JsonResponse(['error' => 'delivery_radius_km must be a positive number'], Response::HTTP_BAD_REQUEST);
+        }
+
+        if ($deliveryRadiusKm !== null || !empty($deliveryAreaPayload)) {
+            $deliveryAreasSnapshot = $this->food99Service->listDeliveryAreas($provider) ?? [];
+            $resolvedAreaId = $this->resolveDeliveryAreaId(
+                is_array($deliveryAreasSnapshot) ? $deliveryAreasSnapshot : [],
+                $payload
+            );
+
+            if ($resolvedAreaId === null && !isset($deliveryAreaPayload['area_id'])) {
+                return new JsonResponse([
+                    'error' => 'delivery_area_id is required when no delivery area is available',
+                ], Response::HTTP_BAD_REQUEST);
+            }
+
+            if ($resolvedAreaId !== null && !isset($deliveryAreaPayload['area_id'])) {
+                $deliveryAreaPayload['area_id'] = $resolvedAreaId;
+            }
+
+            if ($deliveryRadiusKm !== null) {
+                $deliveryAreaPayload['radius'] = $deliveryRadiusKm;
+                $deliveryAreaPayload['delivery_distance'] = $deliveryRadiusKm;
+            }
+
+            $operations['delivery_area_update'] = $this->food99Service->updateDeliveryArea($provider, $deliveryAreaPayload);
+        }
+
+        if (empty($operations)) {
+            return new JsonResponse([
+                'error' => 'No settings to update',
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        return new JsonResponse($this->buildStoreSettingsDetail($provider, null, null, [
+            'action' => 'update_settings',
+            'operations' => $operations,
+        ]));
     }
 
     #[Route('/marketplace/integrations/99food/products', name: 'marketplace_integrations_food99_products', methods: ['GET'])]

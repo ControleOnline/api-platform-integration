@@ -252,7 +252,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ]);
 
             $payload = $response->toArray(false);
-            $success = ($payload['errno'] ?? 1) === 0;
+            $success = $this->isSuccessfulErrno($payload['errno'] ?? null);
 
             self::$logger->info('Food99 auth token refresh response', [
                 'app_shop_id' => $appShopId,
@@ -392,7 +392,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ? $response
             : $this->buildUnavailableOrderActionResponse('Nao foi possivel executar a acao no pedido da 99Food.');
 
-        $success = ($safeResponse['errno'] ?? 1) === 0;
+        $success = $this->isSuccessfulErrno($safeResponse['errno'] ?? null);
 
         $this->persistOrderIntegrationState($order, [
             'last_action' => $action,
@@ -1592,6 +1592,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return false;
         }
 
+        if (is_numeric($normalizedValue)) {
+            // 99Food logistics: 160 is terminal delivery completed.
+            return (int) $normalizedValue === 160;
+        }
+
         foreach (['deliver', 'finish', 'complete', 'done', 'success'] as $terminalToken) {
             if (str_contains($normalizedValue, $terminalToken)) {
                 return true;
@@ -1769,15 +1774,78 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             || str_contains($normalized, 'placed');
     }
 
+    private function normalizeEventType(string $eventType): string
+    {
+        return strtolower(trim($eventType));
+    }
+
+    private function isPartialCancellationEventType(string $eventType): bool
+    {
+        $normalized = $this->normalizeEventType($eventType);
+
+        return in_array($normalized, [
+            'orderpartialcancel',
+            'partialcancel',
+            'itempartialcancel',
+            'orderitemcancel',
+        ], true);
+    }
+
+    private function isCancellationRequestEventType(string $eventType): bool
+    {
+        $normalized = $this->normalizeEventType($eventType);
+
+        return in_array($normalized, [
+            'ordercancelapply',
+            'ordercancelrequest',
+            'cancelapply',
+            'cancelrequest',
+        ], true);
+    }
+
+    private function isFinalCancellationEventType(string $eventType): bool
+    {
+        $normalized = $this->normalizeEventType($eventType);
+        if ($normalized === '') {
+            return false;
+        }
+
+        if ($this->isPartialCancellationEventType($normalized) || $this->isCancellationRequestEventType($normalized)) {
+            return false;
+        }
+
+        if (in_array($normalized, ['ordercancel', 'cancel', 'ordercancelled', 'ordercanceled'], true)) {
+            return true;
+        }
+
+        if (!str_contains($normalized, 'cancel')) {
+            return false;
+        }
+
+        return str_contains($normalized, 'confirm')
+            || str_contains($normalized, 'success')
+            || str_contains($normalized, 'finish')
+            || str_contains($normalized, 'complete')
+            || str_contains($normalized, 'done');
+    }
+
     private function resolveCanonicalRemoteOrderState(string $eventType, ?string $deliveryStatus = null): ?string
     {
-        $normalizedEventType = strtolower(trim($eventType));
+        $normalizedEventType = $this->normalizeEventType($eventType);
 
         if ($normalizedEventType === '') {
             return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus);
         }
 
-        if (str_contains($normalizedEventType, 'cancel')) {
+        if ($this->isPartialCancellationEventType($normalizedEventType)) {
+            return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus) ?? 'partial_cancel';
+        }
+
+        if ($this->isCancellationRequestEventType($normalizedEventType)) {
+            return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus) ?? 'cancel_requested';
+        }
+
+        if ($this->isFinalCancellationEventType($normalizedEventType)) {
             return 'cancelled';
         }
 
@@ -1823,6 +1891,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return null;
         }
 
+        if (is_numeric($normalized) && (int) $normalized === 160) {
+            return 'delivered';
+        }
+
         if ($this->isDeliveredRemoteState($normalized)) {
             return 'delivered';
         }
@@ -1853,7 +1925,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return true;
         }
 
-        return str_contains(strtolower(trim($eventType)), 'cancel');
+        return $this->isFinalCancellationEventType($eventType);
     }
 
     private function shouldApplyLocalClosedStatus(?string $remoteState, string $eventType, ?string $deliveryStatus): bool
@@ -2172,26 +2244,41 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function syncStoreStatusWebhook(array $json): void
     {
-        $appShopId = isset($json['app_shop_id'])
-            ? (int) preg_replace('/\D+/', '', (string) $json['app_shop_id'])
-            : 0;
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $candidateShopIds = array_values(array_unique(array_filter([
+            $this->normalizeIncomingFood99Value($json['app_shop_id'] ?? null),
+            $this->normalizeIncomingFood99Value($data['shop_id'] ?? null),
+        ], static fn(string $value): bool => $value !== '')));
 
-        if ($appShopId <= 0) {
-            self::$logger->warning('Food99 shopStatus webhook ignored because app_shop_id is missing', [
+        if ($candidateShopIds === []) {
+            self::$logger->warning('Food99 shopStatus webhook ignored because no shop identifier was provided', [
                 'payload' => $json,
             ]);
             return;
         }
 
-        $provider = $this->entityManager->getRepository(People::class)->find($appShopId);
+        $provider = null;
+        foreach ($candidateShopIds as $candidateShopId) {
+            $provider = $this->findFood99EntityByExtraData('People', 'code', $candidateShopId, People::class);
+            if ($provider instanceof People) {
+                break;
+            }
+
+            if (ctype_digit($candidateShopId)) {
+                $provider = $this->entityManager->getRepository(People::class)->find((int) $candidateShopId);
+                if ($provider instanceof People) {
+                    break;
+                }
+            }
+        }
+
         if (!$provider instanceof People) {
             self::$logger->warning('Food99 shopStatus webhook ignored because provider was not found', [
-                'app_shop_id' => $appShopId,
+                'candidate_shop_ids' => $candidateShopIds,
             ]);
             return;
         }
 
-        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
         $this->persistProviderStoreState($provider, $data);
     }
 
@@ -2311,7 +2398,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $response = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
-        if (($response['errno'] ?? 1) === 0) {
+        if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderIntegrationState($provider, [
                 'biz_status' => $bizStatus,
                 'online' => $bizStatus === 1 ? 1 : 0,
@@ -2332,6 +2419,40 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->init();
 
         return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/apply/set', $payload, $provider);
+    }
+
+    public function markProviderConnected(People $provider, ?string $shopId = null): void
+    {
+        $this->init();
+
+        $normalizedShopId = $this->normalizeIncomingFood99Value($shopId);
+        $fields = [
+            'remote_connected' => 1,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ];
+
+        if ($normalizedShopId !== '') {
+            $fields['code'] = $normalizedShopId;
+        }
+
+        $this->persistProviderIntegrationState($provider, $fields);
+    }
+
+    public function clearProviderBindingState(People $provider): void
+    {
+        $this->init();
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => null,
+            'remote_connected' => 0,
+            'online' => 0,
+            'biz_status' => null,
+            'sub_biz_status' => null,
+            'store_status' => null,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+        ]);
     }
 
     public function getStoreMenuDetails(People $provider): ?array
@@ -2735,7 +2856,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $storeDetails = $this->getStoreDetails($provider);
             $detail['store'] = $storeDetails;
 
-            $remoteConnected = is_array($storeDetails) && (($storeDetails['errno'] ?? 1) === 0);
+            $remoteConnected = is_array($storeDetails) && $this->isSuccessfulErrno($storeDetails['errno'] ?? null);
             $detail['integration']['remote_connected'] = $remoteConnected;
 
             $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
@@ -2806,19 +2927,19 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $storeDetails = $this->getStoreDetails($provider);
         $sync['store'] = $storeDetails;
-        if (($storeDetails['errno'] ?? 1) !== 0) {
+        if (!$this->isSuccessfulErrno($storeDetails['errno'] ?? null)) {
             $sync['errors']['store'] = $storeDetails['errmsg'] ?? 'Nao foi possivel sincronizar os detalhes da loja.';
         }
 
         $deliveryAreas = $this->listDeliveryAreas($provider);
         $sync['delivery_areas'] = $deliveryAreas;
-        if (($deliveryAreas['errno'] ?? 1) !== 0) {
+        if (!$this->isSuccessfulErrno($deliveryAreas['errno'] ?? null)) {
             $sync['errors']['delivery_areas'] = $deliveryAreas['errmsg'] ?? 'Nao foi possivel sincronizar as areas de entrega.';
         }
 
         $menuDetails = $this->getStoreMenuDetails($provider);
         $sync['menu'] = $menuDetails;
-        if (($menuDetails['errno'] ?? 1) !== 0) {
+        if (!$this->isSuccessfulErrno($menuDetails['errno'] ?? null)) {
             $sync['errors']['menu'] = $menuDetails['errmsg'] ?? 'Nao foi possivel sincronizar o menu remoto.';
         }
 
@@ -3084,7 +3205,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $taskId = is_array($response['data'] ?? null) ? ($response['data']['taskID'] ?? null) : null;
         $response = is_array($response) ? $this->normalizeMenuTaskResponse($response, $taskId) : $response;
 
-        if (($response['errno'] ?? 1) === 0) {
+        if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderMenuUploadSubmission($provider, $response, $taskId);
             return $response;
         }
@@ -3103,7 +3224,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $provider);
         $response = is_array($response) ? $this->normalizeMenuTaskResponse($response, $taskId) : $response;
 
-        if (($response['errno'] ?? 1) !== 0) {
+        if (!$this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
             return $response;
         }
@@ -3112,7 +3233,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         if ($taskState === 'completed') {
             $menuResponse = $this->getStoreMenuDetails($provider);
-            if (($menuResponse['errno'] ?? 1) === 0) {
+            if ($this->isSuccessfulErrno($menuResponse['errno'] ?? null)) {
                 $this->markProviderMenuPublished($provider);
             } else {
                 $this->markProviderMenuSyncError($provider, $menuResponse['errmsg'] ?? null);
@@ -3156,16 +3277,19 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return null;
         }
 
-        if (($json['type'] ?? null) === 'shopStatus') {
+        $rawEventType = $this->normalizeIncomingFood99Value($json['type'] ?? null);
+        $eventType = strtolower($rawEventType);
+
+        if ($eventType === 'shopstatus') {
             $this->syncStoreStatusWebhook($json);
             return null;
         }
 
-        return match ($json['type'] ?? null) {
-            'orderNew' => $this->addOrder($json),
-            'orderCancel' => $this->handleOrderCancelEvent($json),
-            'orderFinish' => $this->handleOrderFinishEvent($json),
-            'deliveryStatus' => $this->handleDeliveryStatusEvent($json),
+        return match ($eventType) {
+            'ordernew' => $this->addOrder($json),
+            'ordercancel' => $this->handleOrderCancelEvent($json),
+            'orderfinish' => $this->handleOrderFinishEvent($json),
+            'deliverystatus' => $this->handleDeliveryStatusEvent($json),
             default => $this->handleFallbackOrderEvent($integration, $json),
         };
     }

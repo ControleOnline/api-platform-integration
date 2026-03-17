@@ -48,15 +48,20 @@ class IntegrationService
     {
         $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
         $method = 'integrate';
-        $return = null;
+        $handled = false;
         if ($this->container->has($serviceName)) {
             $service = $this->container->get($serviceName);
-            if (method_exists($service, $method))
-                $return = $service->$method($integration);
+            if (method_exists($service, $method)) {
+                $handled = true;
+                $service->$method($integration);
+            }
         }
 
-        if ($return) $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
-        else $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+        if (!$handled) {
+            $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+        } else {
+            $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
+        }
 
         $this->manager->persist($integration);
         $this->manager->flush();

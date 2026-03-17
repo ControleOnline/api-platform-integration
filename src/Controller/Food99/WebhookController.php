@@ -3,6 +3,7 @@
 namespace ControleOnline\Controller\Food99;
 
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -65,6 +66,9 @@ class WebhookController extends AbstractController
         ]);
 
 
-        return new Response('[accepted]', Response::HTTP_ACCEPTED);
+        return new JsonResponse([
+            'errno' => 0,
+            'errmsg' => 'ok',
+        ], Response::HTTP_OK);
     }
 }
