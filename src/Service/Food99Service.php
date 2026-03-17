@@ -2601,6 +2601,23 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setconfirmmethod', $payload, $provider);
     }
 
+    public function getStoreOrderConfirmationMethod(People $provider): ?array
+    {
+        $this->init();
+
+        $postResponse = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($postResponse['errno'] ?? null)) {
+            return $postResponse;
+        }
+
+        $getResponse = $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($getResponse['errno'] ?? null)) {
+            return $getResponse;
+        }
+
+        return $postResponse ?: $getResponse;
+    }
+
     public function getStoreDetails(People $provider): ?array
     {
         $this->init();

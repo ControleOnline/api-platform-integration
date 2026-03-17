@@ -248,13 +248,23 @@ class IntegrationController extends AbstractController
 
     private function normalizeTimeCandidate(mixed $value): ?string
     {
-        if ($value === null || is_array($value)) {
+        if ($value === null) {
             return null;
         }
 
-        $normalized = trim((string) $value);
+        $normalized = $this->extractFirstScalarString($value) ?? '';
         if ($normalized === '') {
             return null;
+        }
+
+        if (preg_match('/^\d{3,4}$/', $normalized)) {
+            $padded = str_pad($normalized, 4, '0', STR_PAD_LEFT);
+            $hour = (int) substr($padded, 0, 2);
+            $minute = (int) substr($padded, 2, 2);
+
+            if ($hour >= 0 && $hour <= 23 && $minute >= 0 && $minute <= 59) {
+                return sprintf('%02d:%02d', $hour, $minute);
+            }
         }
 
         if (preg_match('/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/', $normalized, $matches)) {
@@ -292,11 +302,11 @@ class IntegrationController extends AbstractController
 
     private function normalizeDeliveryMethodValue(mixed $value): ?string
     {
-        if ($value === null || is_array($value)) {
+        if ($value === null) {
             return null;
         }
 
-        $normalized = trim((string) $value);
+        $normalized = $this->extractFirstScalarString($value) ?? '';
         if ($normalized === '') {
             return null;
         }
@@ -329,21 +339,26 @@ class IntegrationController extends AbstractController
 
     private function normalizeConfirmMethodValue(mixed $value): ?string
     {
-        if ($value === null || is_array($value)) {
+        if ($value === null) {
             return null;
         }
 
-        $normalized = trim((string) $value);
+        $normalized = $this->extractFirstScalarString($value) ?? '';
         return $normalized === '' ? null : $normalized;
     }
 
     private function normalizeRadiusValue(mixed $value): ?string
     {
-        if ($value === null || is_array($value)) {
+        if ($value === null) {
             return null;
         }
 
-        $normalized = str_replace(',', '.', trim((string) $value));
+        $normalizedValue = $this->extractFirstScalarString($value);
+        if ($normalizedValue === null) {
+            return null;
+        }
+
+        $normalized = str_replace(',', '.', trim($normalizedValue));
         if ($normalized === '' || !is_numeric($normalized)) {
             return null;
         }
@@ -428,15 +443,36 @@ class IntegrationController extends AbstractController
         return 'unavailable';
     }
 
+    private function extractFirstScalarString(mixed $value): ?string
+    {
+        if (is_array($value)) {
+            foreach ($value as $nestedValue) {
+                $resolved = $this->extractFirstScalarString($nestedValue);
+                if ($resolved !== null) {
+                    return $resolved;
+                }
+            }
+
+            return null;
+        }
+
+        if ($value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized === '' ? null : $normalized;
+    }
+
     private function firstNonEmptyValue(array $source, array $keys): ?string
     {
         foreach ($keys as $key) {
-            if (!array_key_exists($key, $source) || is_array($source[$key])) {
+            if (!array_key_exists($key, $source)) {
                 continue;
             }
 
-            $value = trim((string) $source[$key]);
-            if ($value !== '') {
+            $value = $this->extractFirstScalarString($source[$key]);
+            if ($value !== null) {
                 return $value;
             }
         }
@@ -510,6 +546,71 @@ class IntegrationController extends AbstractController
         foreach ($groups as $group) {
             if (is_array($group)) {
                 return $group;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeIdentifierValue(mixed $value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function normalizeIdentifierSet(array $candidateIds): array
+    {
+        $normalized = [];
+        foreach ($candidateIds as $candidateId) {
+            $value = $this->normalizeIdentifierValue($candidateId);
+            if ($value === null) {
+                continue;
+            }
+
+            $normalized[$value] = true;
+        }
+
+        return array_keys($normalized);
+    }
+
+    private function matchesAnyIdentifier(mixed $value, array $candidateIds): bool
+    {
+        $normalized = $this->normalizeIdentifierValue($value);
+        if ($normalized === null) {
+            return false;
+        }
+
+        return in_array($normalized, $candidateIds, true);
+    }
+
+    private function findBoundStoreCandidateInPayload(mixed $payload, array $candidateIds): ?array
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $shopId = $this->firstNonEmptyValue($payload, ['shop_id', 'shopId', 'id']);
+        $appShopId = $this->firstNonEmptyValue($payload, ['app_shop_id', 'appShopId']);
+
+        if (
+            ($shopId !== null && $this->matchesAnyIdentifier($shopId, $candidateIds))
+            || ($appShopId !== null && $this->matchesAnyIdentifier($appShopId, $candidateIds))
+        ) {
+            return $payload;
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $candidate = $this->findBoundStoreCandidateInPayload($value, $candidateIds);
+            if (is_array($candidate)) {
+                return $candidate;
             }
         }
 
@@ -686,6 +787,36 @@ class IntegrationController extends AbstractController
             is_array($resolvedStoreDetails) ? $resolvedStoreDetails : [],
             is_array($resolvedDeliveryAreas) ? $resolvedDeliveryAreas : []
         );
+
+        $candidateShopIds = $this->normalizeIdentifierSet([
+            $local['integration']['food99_code'] ?? null,
+            $local['integration']['app_shop_id'] ?? null,
+            $provider->getId(),
+        ]);
+
+        $boundStoresResponse = $this->food99Service->listBindStores([]) ?? [];
+        $boundStoreCandidate = $this->findBoundStoreCandidateInPayload($boundStoresResponse['data'] ?? $boundStoresResponse, $candidateShopIds);
+        $boundStoreMatched = is_array($boundStoreCandidate);
+        if (is_array($boundStoreCandidate)) {
+            $boundStoreSettings = $this->extractStoreSettingsSnapshot([
+                'data' => $boundStoreCandidate,
+            ], []);
+            $remoteSettings = $this->mergeStoreSettingsWithFallback($remoteSettings, $boundStoreSettings);
+        }
+
+        $confirmMethodResponse = $this->food99Service->getStoreOrderConfirmationMethod($provider) ?? [];
+        $confirmMethodFromEndpoint = $this->normalizeConfirmMethodValue(
+            $this->findFirstScalarByKeysRecursive(
+                is_array($confirmMethodResponse['data'] ?? null) ? $confirmMethodResponse['data'] : [],
+                ['confirm_method', 'confirmMethod', 'order_confirm_method', 'orderConfirmMethod', 'confirm_type', 'confirmType', 'method']
+            )
+        );
+        if ($confirmMethodFromEndpoint !== null) {
+            $remoteSettings = $this->mergeStoreSettingsWithFallback($remoteSettings, [
+                'confirm_method' => $confirmMethodFromEndpoint,
+            ]);
+        }
+
         $this->food99Service->persistOperationalSettings($provider, $remoteSettings);
         $fallbackSettings = $this->food99Service->getStoredOperationalSettings($provider);
         $settings = $this->mergeStoreSettingsWithFallback($remoteSettings, $fallbackSettings);
@@ -701,6 +832,14 @@ class IntegrationController extends AbstractController
             'delivery_areas' => $resolvedDeliveryAreas,
             'settings' => $settings,
             'settings_source' => $settingsSource,
+            'settings_debug' => [
+                'bound_store_lookup_errno' => $boundStoresResponse['errno'] ?? null,
+                'bound_store_lookup_msg' => $boundStoresResponse['errmsg'] ?? null,
+                'bound_store_matched' => $boundStoreMatched,
+                'confirm_method_lookup_errno' => $confirmMethodResponse['errno'] ?? null,
+                'confirm_method_lookup_msg' => $confirmMethodResponse['errmsg'] ?? null,
+                'confirm_method_found' => $confirmMethodFromEndpoint !== null,
+            ],
         ], $extra);
     }
 
