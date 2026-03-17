@@ -2510,6 +2510,47 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
     }
 
+    public function getLatestProviderOrderDeliveryType(People $provider): ?string
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        if ($providerId <= 0) {
+            return null;
+        }
+
+        $sql = <<<SQL
+            SELECT ed.data_value
+            FROM orders o
+            INNER JOIN extra_data ed
+                ON ed.entity_id = o.id
+               AND LOWER(ed.entity_name) = 'order'
+            INNER JOIN extra_fields ef
+                ON ef.id = ed.extra_fields_id
+            WHERE o.provider_id = :providerId
+              AND ef.context = :context
+              AND ef.field_name = 'delivery_type'
+            ORDER BY o.order_date DESC, o.id DESC, ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $value = $this->entityManager->getConnection()->fetchOne($sql, [
+            'providerId' => $providerId,
+            'context' => self::APP_CONTEXT,
+        ]);
+
+        if ($value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if (!in_array($normalized, ['1', '2'], true)) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
     public function getStoredIntegrationState(People $provider): array
     {
         $this->init();

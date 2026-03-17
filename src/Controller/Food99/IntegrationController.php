@@ -822,6 +822,22 @@ class IntegrationController extends AbstractController
         $settings = $this->mergeStoreSettingsWithFallback($remoteSettings, $fallbackSettings);
         $settingsSource = $this->resolveStoreSettingsSource($remoteSettings, $settings);
 
+        if (!$this->hasMeaningfulScalar($settings['delivery_method'] ?? null)) {
+            $deliveryMethodFromOrders = $this->food99Service->getLatestProviderOrderDeliveryType($provider);
+            if ($deliveryMethodFromOrders !== null) {
+                $settings['delivery_method'] = $deliveryMethodFromOrders;
+                $this->food99Service->persistOperationalSettings($provider, [
+                    'delivery_method' => $deliveryMethodFromOrders,
+                ]);
+
+                if ($settingsSource === 'unavailable') {
+                    $settingsSource = 'fallback';
+                } elseif ($settingsSource === 'remote') {
+                    $settingsSource = 'mixed';
+                }
+            }
+        }
+
         return array_merge([
             'provider' => [
                 'id' => $provider->getId(),
