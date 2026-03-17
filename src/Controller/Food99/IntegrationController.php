@@ -262,11 +262,68 @@ class IntegrationController extends AbstractController
         return null;
     }
 
+    private function findFirstScalarByKeysRecursive(mixed $payload, array $keys): ?string
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $direct = $this->firstNonEmptyValue($payload, $keys);
+        if ($direct !== null) {
+            return $direct;
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $nested = $this->findFirstScalarByKeysRecursive($value, $keys);
+            if ($nested !== null) {
+                return $nested;
+            }
+        }
+
+        return null;
+    }
+
+    private function findFirstAreaCandidate(mixed $payload): ?array
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $hasAreaId = $this->firstNonEmptyValue($payload, ['area_id', 'delivery_area_id']) !== null;
+        $hasAreaShape = $hasAreaId
+            || $this->firstNonEmptyValue($payload, ['radius', 'delivery_distance', 'distance', 'range', 'max_distance']) !== null;
+
+        if ($hasAreaShape) {
+            return $payload;
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $candidate = $this->findFirstAreaCandidate($value);
+            if (is_array($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     private function resolveFirstDeliveryArea(array $deliveryAreasResponse): ?array
     {
-        $groups = is_array($deliveryAreasResponse['data']['area_group'] ?? null)
-            ? $deliveryAreasResponse['data']['area_group']
-            : [];
+        $data = is_array($deliveryAreasResponse['data'] ?? null) ? $deliveryAreasResponse['data'] : [];
+        $candidate = $this->findFirstAreaCandidate($data);
+        if (is_array($candidate)) {
+            return $candidate;
+        }
+
+        $groups = is_array($data['area_group'] ?? null) ? $data['area_group'] : [];
 
         foreach ($groups as $group) {
             if (is_array($group)) {
@@ -308,20 +365,26 @@ class IntegrationController extends AbstractController
         $storeData = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : [];
         $firstArea = $this->resolveFirstDeliveryArea($deliveryAreas) ?? [];
 
-        $openTime = $this->firstNonEmptyValue($storeData, ['open_time', 'openTime', 'start_time', 'startTime']);
-        $closeTime = $this->firstNonEmptyValue($storeData, ['close_time', 'closeTime', 'end_time', 'endTime']);
+        $openTime = $this->findFirstScalarByKeysRecursive($storeData, ['open_time', 'openTime', 'start_time', 'startTime']);
+        $closeTime = $this->findFirstScalarByKeysRecursive($storeData, ['close_time', 'closeTime', 'end_time', 'endTime']);
 
         if (($openTime === null || $closeTime === null) && is_array($storeData['business_hours'] ?? null)) {
             $firstBusinessWindow = $storeData['business_hours'][0] ?? null;
             if (is_array($firstBusinessWindow)) {
-                $openTime = $openTime ?? $this->firstNonEmptyValue($firstBusinessWindow, ['open_time', 'openTime', 'start_time', 'startTime']);
-                $closeTime = $closeTime ?? $this->firstNonEmptyValue($firstBusinessWindow, ['close_time', 'closeTime', 'end_time', 'endTime']);
+                $openTime = $openTime ?? $this->findFirstScalarByKeysRecursive($firstBusinessWindow, ['open_time', 'openTime', 'start_time', 'startTime']);
+                $closeTime = $closeTime ?? $this->findFirstScalarByKeysRecursive($firstBusinessWindow, ['close_time', 'closeTime', 'end_time', 'endTime']);
             }
         }
 
-        $deliveryMethod = $this->firstNonEmptyValue($storeData, ['delivery_type', 'deliveryType', 'delivery_mode', 'deliveryMode', 'fulfillment_mode']);
-        $confirmMethod = $this->firstNonEmptyValue($storeData, ['confirm_method', 'confirmMethod', 'order_confirm_method', 'orderConfirmMethod']);
-        $radius = $this->firstNonEmptyValue($firstArea, ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']);
+        $deliveryMethod = $this->findFirstScalarByKeysRecursive($storeData, ['delivery_type', 'deliveryType', 'delivery_mode', 'deliveryMode', 'fulfillment_mode']);
+        $confirmMethod = $this->findFirstScalarByKeysRecursive($storeData, ['confirm_method', 'confirmMethod', 'order_confirm_method', 'orderConfirmMethod']);
+        $radius = $this->findFirstScalarByKeysRecursive($firstArea, ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']);
+        if ($radius === null) {
+            $radius = $this->findFirstScalarByKeysRecursive(
+                is_array($deliveryAreas['data'] ?? null) ? $deliveryAreas['data'] : [],
+                ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']
+            );
+        }
 
         return [
             'delivery_radius' => $radius,
@@ -430,6 +493,18 @@ class IntegrationController extends AbstractController
                 'remote_only_item_count' => $storedState['remote_only_item_count'],
                 'published_product_count' => $publishedProductCount,
                 'last_menu_task_id' => $storedState['last_menu_task_id'],
+                'last_webhook_event_id' => $storedState['last_webhook_event_id'],
+                'last_webhook_event_type' => $storedState['last_webhook_event_type'],
+                'last_webhook_event_at' => $storedState['last_webhook_event_at'],
+                'last_webhook_received_at' => $storedState['last_webhook_received_at'],
+                'last_webhook_processed_at' => $storedState['last_webhook_processed_at'],
+                'last_webhook_order_id' => $storedState['last_webhook_order_id'],
+                'last_webhook_shop_id' => $storedState['last_webhook_shop_id'],
+                'last_reconcile_at' => $storedState['last_reconcile_at'],
+                'last_reconcile_status' => $storedState['last_reconcile_status'],
+                'last_reconcile_message' => $storedState['last_reconcile_message'],
+                'last_reconcile_source' => $storedState['last_reconcile_source'],
+                'last_reconcile_duration_ms' => $storedState['last_reconcile_duration_ms'],
             ],
             'store' => null,
             'delivery_areas' => null,
@@ -620,6 +695,11 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
+        $refreshRemote = filter_var((string) $request->query->get('refresh_remote', ''), FILTER_VALIDATE_BOOLEAN);
+        if ($refreshRemote) {
+            $this->food99Service->reconcileProviderState($provider, 'detail');
+        }
+
         return new JsonResponse($this->buildLocalIntegrationDetail($provider));
     }
 
@@ -643,6 +723,33 @@ class IntegrationController extends AbstractController
         $detail['errors'] = $syncResult['errors'] ?? [];
 
         return new JsonResponse($detail);
+    }
+
+    #[Route('/marketplace/integrations/99food/reconcile', name: 'marketplace_integrations_food99_reconcile', methods: ['POST'])]
+    public function reconcileIntegrationNow(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $source = trim((string) ($payload['source'] ?? 'manual'));
+        if ($source === '') {
+            $source = 'manual';
+        }
+
+        $reconcile = $this->food99Service->reconcileProviderState($provider, $source);
+        $detail = $this->buildLocalIntegrationDetail($provider);
+
+        return new JsonResponse(array_merge($detail, [
+            'reconcile' => $reconcile,
+        ]));
     }
 
     #[Route('/marketplace/integrations/99food/store/authorization-page', name: 'marketplace_integrations_food99_authorization_page', methods: ['POST'])]

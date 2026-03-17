@@ -1276,6 +1276,108 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function extractWebhookMeta(array $json): array
+    {
+        $meta = is_array($json['__webhook'] ?? null) ? $json['__webhook'] : [];
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $shop = is_array($info['shop'] ?? null)
+            ? $info['shop']
+            : (is_array($data['shop'] ?? null) ? $data['shop'] : []);
+
+        $eventId = $this->normalizeIncomingFood99Value(
+            $meta['event_id']
+                ?? $json['event_id']
+                ?? $json['eventId']
+                ?? $json['id']
+                ?? $json['requestId']
+                ?? null
+        );
+        $eventType = $this->normalizeIncomingFood99Value($meta['event_type'] ?? $json['type'] ?? null);
+        $orderIdentifiers = $this->extractIncomingOrderIdentifiers($json);
+        $orderId = $orderIdentifiers['order_id'];
+        $shopId = $this->normalizeIncomingFood99Value(
+            $meta['shop_id']
+                ?? $shop['shop_id']
+                ?? $data['shop_id']
+                ?? $json['app_shop_id']
+                ?? null
+        );
+        $receivedAt = $this->normalizeIncomingFood99Value($meta['received_at'] ?? null);
+        if ($receivedAt === '') {
+            $receivedAt = date('Y-m-d H:i:s');
+        }
+
+        return [
+            'event_id' => $eventId,
+            'event_type' => $eventType,
+            'event_at' => $this->extractOrderEventTimestamp($json),
+            'received_at' => $receivedAt,
+            'order_id' => $orderId,
+            'shop_id' => $shopId,
+        ];
+    }
+
+    private function resolveProviderFromWebhookPayload(array $json): ?People
+    {
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $shop = is_array($info['shop'] ?? null)
+            ? $info['shop']
+            : (is_array($data['shop'] ?? null) ? $data['shop'] : []);
+
+        $candidateShopIds = array_values(array_unique(array_filter([
+            $this->normalizeIncomingFood99Value($shop['shop_id'] ?? null),
+            $this->normalizeIncomingFood99Value($data['shop_id'] ?? null),
+            $this->normalizeIncomingFood99Value($json['app_shop_id'] ?? null),
+            $this->normalizeIncomingFood99Value($this->extractWebhookMeta($json)['shop_id'] ?? null),
+        ], static fn(string $value): bool => $value !== '')));
+
+        foreach ($candidateShopIds as $candidateShopId) {
+            $provider = $this->findFood99EntityByExtraData('People', 'code', $candidateShopId, People::class);
+            if ($provider instanceof People) {
+                return $provider;
+            }
+
+            if (ctype_digit($candidateShopId)) {
+                $provider = $this->entityManager->getRepository(People::class)->find((int) $candidateShopId);
+                if ($provider instanceof People) {
+                    return $provider;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function syncProviderWebhookReceiptState(array $json): void
+    {
+        $provider = $this->resolveProviderFromWebhookPayload($json);
+        if (!$provider instanceof People) {
+            return;
+        }
+
+        $meta = $this->extractWebhookMeta($json);
+        $fields = [
+            'last_webhook_event_type' => $meta['event_type'],
+            'last_webhook_event_at' => $meta['event_at'],
+            'last_webhook_received_at' => $meta['received_at'],
+            'last_webhook_processed_at' => date('Y-m-d H:i:s'),
+        ];
+
+        if ($meta['event_id'] !== '') {
+            $fields['last_webhook_event_id'] = $meta['event_id'];
+        }
+        if ($meta['order_id'] !== '') {
+            $fields['last_webhook_order_id'] = $meta['order_id'];
+        }
+        if ($meta['shop_id'] !== '') {
+            $fields['last_webhook_shop_id'] = $meta['shop_id'];
+        }
+
+        $this->persistProviderIntegrationState($provider, $fields);
+    }
+
     private function waitForExistingIntegratedOrder(string $orderId, string $orderCode, int $attempts = 5, int $sleepMicroseconds = 250000): ?Order
     {
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -2282,6 +2384,75 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->persistProviderStoreState($provider, $data);
     }
 
+    public function listProvidersWithFood99Binding(int $limit = 100): array
+    {
+        $this->init();
+
+        $safeLimit = max(1, min($limit, 1000));
+        $sql = <<<SQL
+            SELECT DISTINCT ed.entity_id
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND LOWER(ed.entity_name) = 'people'
+              AND (
+                    (ef.field_name = 'code' AND ed.data_value <> '')
+                    OR (ef.field_name = 'remote_connected' AND ed.data_value = '1')
+              )
+            ORDER BY ed.entity_id ASC
+            LIMIT {$safeLimit}
+        SQL;
+
+        $rows = $this->entityManager->getConnection()->fetchFirstColumn($sql, [
+            'context' => self::APP_CONTEXT,
+        ]);
+
+        $providers = [];
+        foreach ($rows as $row) {
+            if (!is_numeric($row)) {
+                continue;
+            }
+
+            $provider = $this->entityManager->getRepository(People::class)->find((int) $row);
+            if ($provider instanceof People) {
+                $providers[] = $provider;
+            }
+        }
+
+        return $providers;
+    }
+
+    public function reconcileProviderState(People $provider, string $source = 'manual'): array
+    {
+        $this->init();
+
+        $startedAt = microtime(true);
+        $sync = $this->syncIntegrationState($provider);
+        $errors = is_array($sync['errors'] ?? null) ? $sync['errors'] : [];
+        $status = empty($errors) ? 'ok' : 'partial_error';
+        $message = empty($errors)
+            ? 'Reconciliacao concluida com sucesso.'
+            : 'Reconciliacao concluida com inconsistencias em: ' . implode(', ', array_keys($errors));
+
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        $this->persistProviderIntegrationState($provider, [
+            'last_reconcile_at' => date('Y-m-d H:i:s'),
+            'last_reconcile_status' => $status,
+            'last_reconcile_message' => $message,
+            'last_reconcile_source' => $source,
+            'last_reconcile_duration_ms' => $durationMs,
+        ]);
+
+        return [
+            'provider_id' => $provider->getId(),
+            'status' => $status,
+            'message' => $message,
+            'duration_ms' => $durationMs,
+            'errors' => $errors,
+            'sync' => $sync,
+        ];
+    }
+
     public function getStoredIntegrationState(People $provider): array
     {
         $this->init();
@@ -2316,6 +2487,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'remote_only_item_count' => is_numeric($remoteOnlyItemCount) ? (int) $remoteOnlyItemCount : 0,
             'last_error_code' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
             'last_error_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
+            'last_webhook_event_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_id'),
+            'last_webhook_event_type' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_type'),
+            'last_webhook_event_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_at'),
+            'last_webhook_received_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_received_at'),
+            'last_webhook_processed_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_processed_at'),
+            'last_webhook_order_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_order_id'),
+            'last_webhook_shop_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_shop_id'),
+            'last_reconcile_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_at'),
+            'last_reconcile_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_status'),
+            'last_reconcile_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_message'),
+            'last_reconcile_source' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
+            'last_reconcile_duration_ms' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
         ];
     }
 
@@ -3276,6 +3459,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ]);
             return null;
         }
+
+        $this->syncProviderWebhookReceiptState($json);
 
         $rawEventType = $this->normalizeIncomingFood99Value($json['type'] ?? null);
         $eventType = strtolower($rawEventType);

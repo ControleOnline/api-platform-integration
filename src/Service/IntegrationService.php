@@ -130,4 +130,86 @@ class IntegrationService
 
         return $integration;
     }
+
+    public function addIntegrationWithHeaders(
+        string $message,
+        string $queueNane,
+        ?array $headers = null,
+        ?Device $device = null,
+        ?User $user = null,
+        ?People $people = null
+    ): Integration {
+        $status = $this->statusService->discoveryStatus('open', 'open', 'integration');
+        if (is_array($message) && isset($message['destination'])) {
+            unset($message['destination']);
+        }
+
+        $integration = new Integration();
+        $integration->setDevice($device);
+        $integration->setStatus($status);
+        $integration->setQueueName($queueNane);
+        $integration->setBody($message);
+        $integration->setHeaders($headers ? json_encode($headers, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null);
+        $integration->setUser($user);
+        $integration->setPeople($people);
+
+        $this->manager->persist($integration);
+        $this->manager->flush();
+
+        return $integration;
+    }
+
+    public function findRecentIntegrationIdByWebhookEvent(
+        string $queueName,
+        string $eventId,
+        int $lookbackHours = 72
+    ): ?int {
+        $normalizedEventId = trim((string) $eventId);
+        if ($normalizedEventId === '') {
+            return null;
+        }
+
+        $hours = max(1, min($lookbackHours, 24 * 30));
+        $sql = <<<SQL
+            SELECT id
+            FROM integration
+            WHERE queue_name = :queueName
+              AND created_at >= DATE_SUB(NOW(), INTERVAL {$hours} HOUR)
+              AND (
+                    JSON_UNQUOTE(JSON_EXTRACT(headers, '$.webhook.event_id')) = :eventId
+                    OR JSON_UNQUOTE(JSON_EXTRACT(body, '$.__webhook.event_id')) = :eventId
+              )
+            ORDER BY id DESC
+            LIMIT 1
+        SQL;
+
+        try {
+            $existingId = $this->manager->getConnection()->fetchOne($sql, [
+                'queueName' => $queueName,
+                'eventId' => $normalizedEventId,
+            ]);
+        } catch (\Throwable $e) {
+            // Fallback for environments without JSON path support.
+            $fallbackSql = <<<SQL
+                SELECT id
+                FROM integration
+                WHERE queue_name = :queueName
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL {$hours} HOUR)
+                  AND (
+                        headers LIKE :needle
+                        OR body LIKE :bodyNeedle
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+            SQL;
+
+            $existingId = $this->manager->getConnection()->fetchOne($fallbackSql, [
+                'queueName' => $queueName,
+                'needle' => '%"event_id":"' . str_replace('"', '\"', $normalizedEventId) . '"%',
+                'bodyNeedle' => '%"__webhook":{"event_id":"' . str_replace('"', '\"', $normalizedEventId) . '"%',
+            ]);
+        }
+
+        return is_numeric($existingId) ? (int) $existingId : null;
+    }
 }

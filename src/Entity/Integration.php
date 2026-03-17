@@ -43,6 +43,10 @@ class Integration
     #[Groups(['integration:read', 'integration:write'])]
     private string $body = '';
 
+    #[ORM\Column(name: 'headers', type: 'text', nullable: true)]
+    #[Groups(['integration:read', 'integration:write'])]
+    private ?string $headers = null;
+
     #[ORM\Column(type: 'string', length: 190, nullable: false)]
     #[Groups(['integration:read', 'integration:write'])]
     private string $queueName = '';
@@ -86,6 +90,17 @@ class Integration
     public function setBody(string $body): self
     {
         $this->body = $body;
+        return $this;
+    }
+
+    public function getHeaders(): ?string
+    {
+        return $this->headers;
+    }
+
+    public function setHeaders(?string $headers): self
+    {
+        $this->headers = $headers;
         return $this;
     }
 
