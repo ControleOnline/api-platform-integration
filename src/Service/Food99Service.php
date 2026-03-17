@@ -2453,6 +2453,63 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    public function getStoredOperationalSettings(People $provider): array
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        $normalize = static fn(mixed $value): ?string => (trim((string) $value) === '' ? null : trim((string) $value));
+
+        return [
+            'delivery_radius' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_radius')),
+            'open_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_open_time')),
+            'close_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_close_time')),
+            'delivery_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_method')),
+            'confirm_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_confirm_method')),
+            'delivery_area_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_area_id')),
+            'settings_synced_at' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at')),
+        ];
+    }
+
+    public function persistOperationalSettings(People $provider, array $settings, bool $allowEmpty = false): void
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        $fieldMap = [
+            'delivery_radius' => 'store_delivery_radius',
+            'open_time' => 'store_open_time',
+            'close_time' => 'store_close_time',
+            'delivery_method' => 'store_delivery_method',
+            'confirm_method' => 'store_confirm_method',
+            'delivery_area_id' => 'store_delivery_area_id',
+        ];
+
+        $persisted = false;
+        foreach ($fieldMap as $settingKey => $fieldName) {
+            if (!array_key_exists($settingKey, $settings)) {
+                continue;
+            }
+
+            $normalized = trim((string) $settings[$settingKey]);
+            if ($normalized === '' && !$allowEmpty) {
+                continue;
+            }
+
+            $existing = trim((string) ($this->getFood99ExtraDataValue('People', $providerId, $fieldName) ?? ''));
+            if ($existing === $normalized) {
+                continue;
+            }
+
+            $this->upsertFood99ExtraDataValue('People', $providerId, $fieldName, $normalized);
+            $persisted = true;
+        }
+
+        if ($persisted) {
+            $this->upsertFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at', date('Y-m-d H:i:s'));
+        }
+    }
+
     public function getStoredIntegrationState(People $provider): array
     {
         $this->init();

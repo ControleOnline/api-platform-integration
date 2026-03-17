@@ -246,6 +246,188 @@ class IntegrationController extends AbstractController
         return $floatValue > 0 ? $floatValue : null;
     }
 
+    private function normalizeTimeCandidate(mixed $value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (preg_match('/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/', $normalized, $matches)) {
+            return sprintf('%02d:%02d', (int) $matches[1], (int) $matches[2]);
+        }
+
+        if (preg_match('/\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b/', $normalized, $matches)) {
+            return sprintf('%02d:%02d', (int) $matches[1], (int) $matches[2]);
+        }
+
+        return null;
+    }
+
+    private function extractTimeRangeFromString(mixed $value): array
+    {
+        if ($value === null || is_array($value)) {
+            return [null, null];
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return [null, null];
+        }
+
+        preg_match_all('/([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?/', $normalized, $matches, PREG_SET_ORDER);
+        if (count($matches) < 2) {
+            return [null, null];
+        }
+
+        $openTime = sprintf('%02d:%02d', (int) $matches[0][1], (int) $matches[0][2]);
+        $closeTime = sprintf('%02d:%02d', (int) $matches[1][1], (int) $matches[1][2]);
+
+        return [$openTime, $closeTime];
+    }
+
+    private function normalizeDeliveryMethodValue(mixed $value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (in_array($normalized, ['1', '2'], true)) {
+            return $normalized;
+        }
+
+        $normalizedLower = strtolower($normalized);
+        if (
+            str_contains($normalizedLower, '99')
+            || str_contains($normalizedLower, 'platform')
+            || str_contains($normalizedLower, 'didi')
+        ) {
+            return '2';
+        }
+
+        if (
+            str_contains($normalizedLower, 'store')
+            || str_contains($normalizedLower, 'shop')
+            || str_contains($normalizedLower, 'merchant')
+            || str_contains($normalizedLower, 'self')
+            || str_contains($normalizedLower, 'loja')
+        ) {
+            return '1';
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeConfirmMethodValue(mixed $value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function normalizeRadiusValue(mixed $value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return null;
+        }
+
+        $normalized = str_replace(',', '.', trim((string) $value));
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return null;
+        }
+
+        $floatValue = (float) $normalized;
+        if ((float) ((int) $floatValue) === $floatValue) {
+            return (string) ((int) $floatValue);
+        }
+
+        return rtrim(rtrim(number_format($floatValue, 3, '.', ''), '0'), '.');
+    }
+
+    private function hasMeaningfulScalar(mixed $value): bool
+    {
+        if ($value === null || is_array($value)) {
+            return false;
+        }
+
+        return trim((string) $value) !== '';
+    }
+
+    private function mergeStoreSettingsWithFallback(array $remoteSettings, array $fallbackSettings): array
+    {
+        $keys = [
+            'delivery_radius',
+            'open_time',
+            'close_time',
+            'delivery_method',
+            'confirm_method',
+            'delivery_area_id',
+        ];
+
+        $merged = $remoteSettings;
+        foreach ($keys as $key) {
+            if ($this->hasMeaningfulScalar($merged[$key] ?? null)) {
+                continue;
+            }
+
+            if ($this->hasMeaningfulScalar($fallbackSettings[$key] ?? null)) {
+                $merged[$key] = trim((string) $fallbackSettings[$key]);
+            }
+        }
+
+        return $merged;
+    }
+
+    private function resolveStoreSettingsSource(array $remoteSettings, array $mergedSettings): string
+    {
+        $keys = [
+            'delivery_radius',
+            'open_time',
+            'close_time',
+            'delivery_method',
+            'confirm_method',
+            'delivery_area_id',
+        ];
+
+        $remoteCount = 0;
+        $mergedCount = 0;
+        foreach ($keys as $key) {
+            if ($this->hasMeaningfulScalar($remoteSettings[$key] ?? null)) {
+                $remoteCount++;
+            }
+
+            if ($this->hasMeaningfulScalar($mergedSettings[$key] ?? null)) {
+                $mergedCount++;
+            }
+        }
+
+        if ($remoteCount > 0 && $remoteCount === $mergedCount) {
+            return 'remote';
+        }
+
+        if ($remoteCount > 0 && $mergedCount > $remoteCount) {
+            return 'mixed';
+        }
+
+        if ($remoteCount === 0 && $mergedCount > 0) {
+            return 'fallback';
+        }
+
+        return 'unavailable';
+    }
+
     private function firstNonEmptyValue(array $source, array $keys): ?string
     {
         foreach ($keys as $key) {
@@ -365,25 +547,124 @@ class IntegrationController extends AbstractController
         $storeData = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : [];
         $firstArea = $this->resolveFirstDeliveryArea($deliveryAreas) ?? [];
 
-        $openTime = $this->findFirstScalarByKeysRecursive($storeData, ['open_time', 'openTime', 'start_time', 'startTime']);
-        $closeTime = $this->findFirstScalarByKeysRecursive($storeData, ['close_time', 'closeTime', 'end_time', 'endTime']);
+        $openTime = $this->normalizeTimeCandidate($this->findFirstScalarByKeysRecursive($storeData, [
+            'open_time',
+            'openTime',
+            'start_time',
+            'startTime',
+            'business_open_time',
+            'businessOpenTime',
+            'open_at',
+            'openAt',
+            'opening_time',
+            'openingTime',
+        ]));
+        $closeTime = $this->normalizeTimeCandidate($this->findFirstScalarByKeysRecursive($storeData, [
+            'close_time',
+            'closeTime',
+            'end_time',
+            'endTime',
+            'business_close_time',
+            'businessCloseTime',
+            'close_at',
+            'closeAt',
+            'closing_time',
+            'closingTime',
+        ]));
+
+        if ($openTime === null || $closeTime === null) {
+            [$rangeOpenTime, $rangeCloseTime] = $this->extractTimeRangeFromString(
+                $this->findFirstScalarByKeysRecursive($storeData, [
+                    'business_hours',
+                    'businessHours',
+                    'business_time',
+                    'businessTime',
+                    'opening_hours',
+                    'openingHours',
+                    'open_close_time',
+                    'openCloseTime',
+                ])
+            );
+            $openTime = $openTime ?? $rangeOpenTime;
+            $closeTime = $closeTime ?? $rangeCloseTime;
+        }
 
         if (($openTime === null || $closeTime === null) && is_array($storeData['business_hours'] ?? null)) {
             $firstBusinessWindow = $storeData['business_hours'][0] ?? null;
             if (is_array($firstBusinessWindow)) {
-                $openTime = $openTime ?? $this->findFirstScalarByKeysRecursive($firstBusinessWindow, ['open_time', 'openTime', 'start_time', 'startTime']);
-                $closeTime = $closeTime ?? $this->findFirstScalarByKeysRecursive($firstBusinessWindow, ['close_time', 'closeTime', 'end_time', 'endTime']);
+                $openTime = $openTime ?? $this->normalizeTimeCandidate(
+                    $this->findFirstScalarByKeysRecursive($firstBusinessWindow, [
+                        'open_time',
+                        'openTime',
+                        'start_time',
+                        'startTime',
+                        'business_open_time',
+                        'businessOpenTime',
+                    ])
+                );
+                $closeTime = $closeTime ?? $this->normalizeTimeCandidate(
+                    $this->findFirstScalarByKeysRecursive($firstBusinessWindow, [
+                        'close_time',
+                        'closeTime',
+                        'end_time',
+                        'endTime',
+                        'business_close_time',
+                        'businessCloseTime',
+                    ])
+                );
+                if ($openTime === null || $closeTime === null) {
+                    [$nestedRangeOpen, $nestedRangeClose] = $this->extractTimeRangeFromString(
+                        $this->findFirstScalarByKeysRecursive($firstBusinessWindow, [
+                            'business_hours',
+                            'businessHours',
+                            'business_time',
+                            'businessTime',
+                            'open_close_time',
+                            'openCloseTime',
+                        ])
+                    );
+                    $openTime = $openTime ?? $nestedRangeOpen;
+                    $closeTime = $closeTime ?? $nestedRangeClose;
+                }
             }
         }
 
-        $deliveryMethod = $this->findFirstScalarByKeysRecursive($storeData, ['delivery_type', 'deliveryType', 'delivery_mode', 'deliveryMode', 'fulfillment_mode']);
-        $confirmMethod = $this->findFirstScalarByKeysRecursive($storeData, ['confirm_method', 'confirmMethod', 'order_confirm_method', 'orderConfirmMethod']);
-        $radius = $this->findFirstScalarByKeysRecursive($firstArea, ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']);
+        $deliveryMethod = $this->normalizeDeliveryMethodValue($this->findFirstScalarByKeysRecursive($storeData, [
+            'delivery_type',
+            'deliveryType',
+            'delivery_mode',
+            'deliveryMode',
+            'delivery_method',
+            'deliveryMethod',
+            'fulfillment_mode',
+            'fulfillmentMode',
+        ]));
+        $confirmMethod = $this->normalizeConfirmMethodValue($this->findFirstScalarByKeysRecursive($storeData, [
+            'confirm_method',
+            'confirmMethod',
+            'order_confirm_method',
+            'orderConfirmMethod',
+            'confirmation_method',
+            'confirmationMethod',
+            'confirm_type',
+            'confirmType',
+        ]));
+        $radius = $this->normalizeRadiusValue($this->findFirstScalarByKeysRecursive($firstArea, [
+            'radius',
+            'delivery_distance',
+            'deliveryDistance',
+            'distance',
+            'range',
+            'max_distance',
+            'max_delivery_distance',
+            'delivery_radius',
+            'deliveryRadius',
+        ]));
         if ($radius === null) {
-            $radius = $this->findFirstScalarByKeysRecursive(
+            $radius = $this->normalizeRadiusValue($this->findFirstScalarByKeysRecursive(
                 is_array($deliveryAreas['data'] ?? null) ? $deliveryAreas['data'] : [],
-                ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance']
-            );
+                ['radius', 'delivery_distance', 'deliveryDistance', 'distance', 'range', 'max_distance', 'max_delivery_distance', 'delivery_radius', 'deliveryRadius']
+            ));
         }
 
         return [
@@ -401,6 +682,14 @@ class IntegrationController extends AbstractController
         $resolvedStoreDetails = is_array($storeDetails) ? $storeDetails : ($this->food99Service->getStoreDetails($provider) ?? []);
         $resolvedDeliveryAreas = is_array($deliveryAreas) ? $deliveryAreas : ($this->food99Service->listDeliveryAreas($provider) ?? []);
         $local = $this->buildLocalIntegrationDetail($provider);
+        $remoteSettings = $this->extractStoreSettingsSnapshot(
+            is_array($resolvedStoreDetails) ? $resolvedStoreDetails : [],
+            is_array($resolvedDeliveryAreas) ? $resolvedDeliveryAreas : []
+        );
+        $this->food99Service->persistOperationalSettings($provider, $remoteSettings);
+        $fallbackSettings = $this->food99Service->getStoredOperationalSettings($provider);
+        $settings = $this->mergeStoreSettingsWithFallback($remoteSettings, $fallbackSettings);
+        $settingsSource = $this->resolveStoreSettingsSource($remoteSettings, $settings);
 
         return array_merge([
             'provider' => [
@@ -410,10 +699,8 @@ class IntegrationController extends AbstractController
             'integration' => $local['integration'],
             'store' => $resolvedStoreDetails,
             'delivery_areas' => $resolvedDeliveryAreas,
-            'settings' => $this->extractStoreSettingsSnapshot(
-                is_array($resolvedStoreDetails) ? $resolvedStoreDetails : [],
-                is_array($resolvedDeliveryAreas) ? $resolvedDeliveryAreas : []
-            ),
+            'settings' => $settings,
+            'settings_source' => $settingsSource,
         ], $extra);
     }
 
@@ -888,6 +1175,7 @@ class IntegrationController extends AbstractController
         }
 
         $operations = [];
+        $persistedOperationalSettings = [];
 
         $storeUpdatePayload = is_array($payload['store_update_payload'] ?? null) ? $payload['store_update_payload'] : [];
         $openTime = $this->normalizeTimeInput($payload['open_time'] ?? null);
@@ -902,6 +1190,10 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'close_time must be HH:mm'], Response::HTTP_BAD_REQUEST);
         }
 
+        if (($payload['delivery_method'] ?? null) !== null && $deliveryMethod !== '' && !in_array($deliveryMethod, ['1', '2'], true)) {
+            return new JsonResponse(['error' => 'delivery_method must be 1 (loja) or 2 (99)'], Response::HTTP_BAD_REQUEST);
+        }
+
         if ($openTime !== null) {
             $storeUpdatePayload['open_time'] = $openTime;
         }
@@ -914,16 +1206,34 @@ class IntegrationController extends AbstractController
 
         if (!empty($storeUpdatePayload)) {
             $operations['store_update'] = $this->food99Service->updateStoreInformation($provider, $storeUpdatePayload);
+            if ($this->isSuccessfulErrno($operations['store_update']['errno'] ?? null)) {
+                if ($openTime !== null) {
+                    $persistedOperationalSettings['open_time'] = $openTime;
+                }
+                if ($closeTime !== null) {
+                    $persistedOperationalSettings['close_time'] = $closeTime;
+                }
+                if ($deliveryMethod !== '') {
+                    $persistedOperationalSettings['delivery_method'] = $deliveryMethod;
+                }
+            }
         }
 
         $confirmPayload = is_array($payload['confirm_method_payload'] ?? null) ? $payload['confirm_method_payload'] : [];
         $confirmMethod = trim((string) ($payload['confirm_method'] ?? ''));
+        if (($payload['confirm_method'] ?? null) !== null && $confirmMethod !== '' && !preg_match('/^\d{1,3}$/', $confirmMethod)) {
+            return new JsonResponse(['error' => 'confirm_method must be numeric'], Response::HTTP_BAD_REQUEST);
+        }
+
         if ($confirmMethod !== '') {
             $confirmPayload['confirm_method'] = $confirmMethod;
         }
 
         if (!empty($confirmPayload)) {
             $operations['confirm_method_update'] = $this->food99Service->setStoreOrderConfirmationMethod($provider, $confirmPayload);
+            if ($this->isSuccessfulErrno($operations['confirm_method_update']['errno'] ?? null) && $confirmMethod !== '') {
+                $persistedOperationalSettings['confirm_method'] = $confirmMethod;
+            }
         }
 
         $deliveryAreaPayload = is_array($payload['delivery_area_payload'] ?? null) ? $payload['delivery_area_payload'] : [];
@@ -955,12 +1265,26 @@ class IntegrationController extends AbstractController
             }
 
             $operations['delivery_area_update'] = $this->food99Service->updateDeliveryArea($provider, $deliveryAreaPayload);
+            if ($this->isSuccessfulErrno($operations['delivery_area_update']['errno'] ?? null)) {
+                if ($deliveryRadiusKm !== null) {
+                    $persistedOperationalSettings['delivery_radius'] = (string) $deliveryRadiusKm;
+                }
+
+                $updatedAreaId = trim((string) ($deliveryAreaPayload['area_id'] ?? ''));
+                if ($updatedAreaId !== '') {
+                    $persistedOperationalSettings['delivery_area_id'] = $updatedAreaId;
+                }
+            }
         }
 
         if (empty($operations)) {
             return new JsonResponse([
                 'error' => 'No settings to update',
             ], Response::HTTP_BAD_REQUEST);
+        }
+
+        if (!empty($persistedOperationalSettings)) {
+            $this->food99Service->persistOperationalSettings($provider, $persistedOperationalSettings);
         }
 
         return new JsonResponse($this->buildStoreSettingsDetail($provider, null, null, [
