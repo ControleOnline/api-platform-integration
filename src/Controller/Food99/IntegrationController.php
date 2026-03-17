@@ -794,7 +794,7 @@ class IntegrationController extends AbstractController
             $provider->getId(),
         ]);
 
-        $boundStoresResponse = $this->food99Service->listBindStores([]) ?? [];
+        $boundStoresResponse = $this->food99Service->listAuthorizedStores([]) ?? [];
         $boundStoreCandidate = $this->findBoundStoreCandidateInPayload($boundStoresResponse['data'] ?? $boundStoresResponse, $candidateShopIds);
         $boundStoreMatched = is_array($boundStoreCandidate);
         if (is_array($boundStoreCandidate)) {
