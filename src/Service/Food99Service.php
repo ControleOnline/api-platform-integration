@@ -1224,12 +1224,20 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $this->upsertFood99ExtraDataValue($entityName, $entityId, 'id', $id);
     }
 
-    private function findExistingIntegratedOrder(string $orderId, string $orderCode): ?Order
+    private function findExistingIntegratedOrder(
+        string $orderId,
+        string $orderCode,
+        bool $allowCodeFallback = true
+    ): ?Order
     {
         if ($orderId !== '') {
             $order = $this->findFood99OrderByLegacyAwareExtraData('id', $orderId);
             if ($order instanceof Order) {
                 return $order;
+            }
+
+            if (!$allowCodeFallback) {
+                return null;
             }
         }
 
@@ -1378,10 +1386,16 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->persistProviderIntegrationState($provider, $fields);
     }
 
-    private function waitForExistingIntegratedOrder(string $orderId, string $orderCode, int $attempts = 5, int $sleepMicroseconds = 250000): ?Order
+    private function waitForExistingIntegratedOrder(
+        string $orderId,
+        string $orderCode,
+        int $attempts = 5,
+        int $sleepMicroseconds = 250000,
+        bool $allowCodeFallback = true
+    ): ?Order
     {
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
-            $existing = $this->findExistingIntegratedOrder($orderId, $orderCode);
+            $existing = $this->findExistingIntegratedOrder($orderId, $orderCode, $allowCodeFallback);
             if ($existing instanceof Order) {
                 return $existing;
             }
@@ -3689,8 +3703,15 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $lockAcquired = $this->acquireOrderIntegrationLock($orderId);
+        $allowCodeFallback = ($orderId === '');
         if (!$lockAcquired) {
-            $existing = $this->waitForExistingIntegratedOrder($orderId, $orderCode);
+            $existing = $this->waitForExistingIntegratedOrder(
+                $orderId,
+                $orderCode,
+                5,
+                250000,
+                $allowCodeFallback
+            );
             if ($existing instanceof Order) {
                 self::$logger->info('Food99 duplicate webhook resolved after waiting for in-flight order lock owner', $this->buildLogContext(null, $json, [
                     'local_order_id' => $existing->getId(),
@@ -3706,10 +3727,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         try {
-            $exists = $this->findExistingIntegratedOrder($orderId, $orderCode);
+            $exists = $this->findExistingIntegratedOrder($orderId, $orderCode, $allowCodeFallback);
             if ($exists instanceof Order) {
                 self::$logger->info('Food99 order already integrated, skipping duplicate creation', $this->buildLogContext(null, $json, [
                     'local_order_id' => $exists->getId(),
+                    'dedupe_by' => $orderId !== '' ? 'order_id' : 'order_code',
                 ]));
                 return $exists;
             }
