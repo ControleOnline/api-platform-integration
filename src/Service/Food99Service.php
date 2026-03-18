@@ -1502,6 +1502,50 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function mergeMissingDeliveryStateWithStoredValues(Order $order, array $deliveryState): array
+    {
+        $trackedFields = [
+            'delivery_type',
+            'fulfillment_mode',
+            'expected_arrived_eta',
+            'locator',
+            'handover_page_url',
+            'virtual_phone_number',
+            'handover_code',
+        ];
+
+        $requiresFallback = false;
+        foreach ($trackedFields as $fieldName) {
+            if ($this->normalizeIncomingFood99Value($deliveryState[$fieldName] ?? null) !== '') {
+                continue;
+            }
+
+            $requiresFallback = true;
+            break;
+        }
+
+        if (!$requiresFallback) {
+            return $deliveryState;
+        }
+
+        $storedState = $this->getStoredOrderIntegrationState($order);
+
+        foreach ($trackedFields as $fieldName) {
+            if ($this->normalizeIncomingFood99Value($deliveryState[$fieldName] ?? null) !== '') {
+                continue;
+            }
+
+            $storedValue = $this->normalizeIncomingFood99Value($storedState[$fieldName] ?? null);
+            if ($storedValue === '') {
+                continue;
+            }
+
+            $deliveryState[$fieldName] = $storedValue;
+        }
+
+        return $deliveryState;
+    }
+
     private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
     {
         if (!is_array($payload)) {
@@ -1840,9 +1884,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $integrationState['cancel_reason'] = $this->extractOrderCancelReason($json);
         }
 
+        $deliveryState = $this->mergeMissingDeliveryStateWithStoredValues(
+            $order,
+            $this->extractOrderDeliveryStateFields($json)
+        );
+
         $this->persistOrderIntegrationState($order, array_merge(
             $integrationState,
-            $this->extractOrderDeliveryStateFields($json)
+            $deliveryState
         ));
 
         if ($isCanceled) {
