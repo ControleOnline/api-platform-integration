@@ -1183,7 +1183,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $state = array_merge($state, $this->extractOrderDeliveryStateFields($payload));
         $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));
-        $state['allows_manual_delivery_completion'] = $state['is_store_delivery'];
+        $state['allows_manual_delivery_completion'] = $this->resolveAllowsManualDeliveryCompletion($state);
 
         return $state;
     }
@@ -1498,7 +1498,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));
-        $state['allows_manual_delivery_completion'] = $state['is_store_delivery'];
+        $state['allows_manual_delivery_completion'] = $this->resolveAllowsManualDeliveryCompletion($state);
 
         return $state;
     }
@@ -1704,15 +1704,20 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $isPlatformDelivery = false;
         $deliveryLabel = 'Indefinido';
 
-        if ($deliveryType === '1') {
+        // 99Food: delivery_type=2 is store/self delivery, delivery_type=1 is platform delivery.
+        if ($deliveryType === '2') {
             $isStoreDelivery = true;
             $deliveryLabel = 'Entrega da loja';
-        } elseif ($deliveryType === '2') {
+        } elseif ($deliveryType === '1') {
             $isPlatformDelivery = true;
             $deliveryLabel = 'Entrega 99';
-        } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '' || $handoverCode !== '') {
+        } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '') {
             $isPlatformDelivery = true;
             $deliveryLabel = 'Entrega 99';
+        } elseif ($handoverCode !== '') {
+            // Store delivery frequently carries verification codes without courier tracking fields.
+            $isStoreDelivery = true;
+            $deliveryLabel = 'Entrega da loja';
         }
 
         return [
@@ -1720,6 +1725,35 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'is_platform_delivery' => $isPlatformDelivery,
             'delivery_label' => $deliveryLabel,
         ];
+    }
+
+    private function resolveAllowsManualDeliveryCompletion(array $state): bool
+    {
+        if (empty($state['is_store_delivery'])) {
+            return false;
+        }
+
+        $remoteOrderState = strtolower(trim((string) ($state['remote_order_state'] ?? '')));
+        if (in_array($remoteOrderState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true)) {
+            return false;
+        }
+
+        if ($remoteOrderState !== '') {
+            return in_array($remoteOrderState, ['ready', 'picked_up', 'delivering', 'arriving'], true);
+        }
+
+        $deliveryStatus = trim((string) ($state['remote_delivery_status'] ?? ''));
+        if ($deliveryStatus === '') {
+            return false;
+        }
+
+        if (is_numeric($deliveryStatus)) {
+            $statusCode = (int) $deliveryStatus;
+            return $statusCode >= 400 && $statusCode < 600;
+        }
+
+        return !$this->isDeliveredRemoteState($deliveryStatus)
+            && (str_contains(strtolower($deliveryStatus), 'deliver') || str_contains(strtolower($deliveryStatus), 'arriv'));
     }
 
     private function extractOrderCancelReason(array $json): ?string
@@ -1873,10 +1907,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $deliveryStatus = $this->extractOrderDeliveryStatus($json);
-        $remoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
+        $incomingRemoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
+        $currentRemoteState = $this->getFood99OrderExtraDataValue((int) $order->getId(), 'remote_order_state');
+        $remoteState = $this->mergeRemoteOrderStateWithCurrent($currentRemoteState, $incomingRemoteState);
         $eventTimestamp = $this->extractOrderEventTimestamp($json);
-        $isCanceled = $this->shouldApplyLocalCanceledStatus($remoteState, $eventType);
-        $isClosed = !$isCanceled && $this->shouldApplyLocalClosedStatus($remoteState, $eventType, $deliveryStatus);
+        $incomingIsCanceled = $this->shouldApplyLocalCanceledStatus($incomingRemoteState, $eventType);
+        $incomingIsClosed = !$incomingIsCanceled && $this->shouldApplyLocalClosedStatus($incomingRemoteState, $eventType, $deliveryStatus);
+        $isCanceled = $incomingIsCanceled || $this->isCancellationRemoteOrderState($remoteState);
+        $isClosed = !$isCanceled && ($incomingIsClosed || $this->isClosedRemoteOrderState($remoteState));
 
         $this->storeOrderRemoteSnapshot($order, $eventType !== '' ? $eventType : 'unknownEvent', $json);
 
@@ -1893,7 +1931,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $integrationState['remote_order_state'] = $remoteState;
         }
 
-        if ($isCanceled) {
+        if ($incomingIsCanceled) {
             $integrationState['cancel_code'] = $this->extractOrderCancelCode($json);
             $integrationState['cancel_reason'] = $this->extractOrderCancelReason($json);
         }
@@ -2056,8 +2094,23 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return null;
         }
 
-        if (is_numeric($normalized) && (int) $normalized === 160) {
-            return 'delivered';
+        if (is_numeric($normalized)) {
+            $statusCode = (int) $normalized;
+            if ($statusCode === 160 || $statusCode >= 600) {
+                return 'delivered';
+            }
+            if ($statusCode >= 400) {
+                return 'delivering';
+            }
+            if ($statusCode >= 300) {
+                return 'ready';
+            }
+            if ($statusCode >= 200) {
+                return 'accepted';
+            }
+            if ($statusCode >= 100) {
+                return 'new';
+            }
         }
 
         if ($this->isDeliveredRemoteState($normalized)) {
@@ -2081,6 +2134,91 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return null;
+    }
+
+    private function normalizeRemoteOrderState(?string $state): string
+    {
+        return strtolower(trim((string) $state));
+    }
+
+    private function isCancellationRemoteOrderState(?string $state): bool
+    {
+        $normalized = $this->normalizeRemoteOrderState($state);
+        if ($normalized === '') {
+            return false;
+        }
+
+        return in_array($normalized, ['cancelled', 'canceled', 'cancel_requested', 'partial_cancel'], true);
+    }
+
+    private function isClosedRemoteOrderState(?string $state): bool
+    {
+        $normalized = $this->normalizeRemoteOrderState($state);
+        if ($normalized === '') {
+            return false;
+        }
+
+        return in_array($normalized, ['delivered', 'finished', 'closed', 'complete', 'completed'], true);
+    }
+
+    private function isTerminalRemoteOrderState(?string $state): bool
+    {
+        return $this->isClosedRemoteOrderState($state) || $this->isCancellationRemoteOrderState($state);
+    }
+
+    private function getRemoteOrderStatePriority(string $normalizedState): int
+    {
+        return match ($normalizedState) {
+            'new' => 10,
+            'accepted' => 20,
+            'preparing' => 30,
+            'ready' => 40,
+            'partial_cancel', 'cancel_requested' => 45,
+            'picked_up' => 50,
+            'delivering' => 60,
+            'arriving' => 70,
+            'delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled' => 100,
+            default => 0,
+        };
+    }
+
+    private function mergeRemoteOrderStateWithCurrent(?string $currentState, ?string $incomingState): ?string
+    {
+        $current = $this->normalizeRemoteOrderState($currentState);
+        $incoming = $this->normalizeRemoteOrderState($incomingState);
+
+        if ($incoming === '') {
+            return $current !== '' ? $current : null;
+        }
+
+        if ($current === '') {
+            return $incoming;
+        }
+
+        if ($this->isCancellationRemoteOrderState($incoming)) {
+            return $incoming;
+        }
+
+        if ($this->isCancellationRemoteOrderState($current)) {
+            return $current;
+        }
+
+        if ($this->isTerminalRemoteOrderState($current) && !$this->isTerminalRemoteOrderState($incoming)) {
+            return $current;
+        }
+
+        if ($this->isTerminalRemoteOrderState($incoming)) {
+            return $incoming;
+        }
+
+        $currentPriority = $this->getRemoteOrderStatePriority($current);
+        $incomingPriority = $this->getRemoteOrderStatePriority($incoming);
+
+        if ($incomingPriority === 0 || $incomingPriority < $currentPriority) {
+            return $current;
+        }
+
+        return $incoming;
     }
 
     private function shouldApplyLocalCanceledStatus(?string $remoteState, string $eventType): bool

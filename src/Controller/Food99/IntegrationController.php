@@ -321,7 +321,7 @@ class IntegrationController extends AbstractController
             || str_contains($normalizedLower, 'platform')
             || str_contains($normalizedLower, 'didi')
         ) {
-            return '2';
+            return '1';
         }
 
         if (
@@ -331,7 +331,7 @@ class IntegrationController extends AbstractController
             || str_contains($normalizedLower, 'self')
             || str_contains($normalizedLower, 'loja')
         ) {
-            return '1';
+            return '2';
         }
 
         return $normalized;
@@ -964,6 +964,7 @@ class IntegrationController extends AbstractController
     private function buildOrderIntegrationDetail(Order $order): array
     {
         $storedState = $this->food99Service->getStoredOrderIntegrationState($order);
+        $actionCapabilities = $this->resolveOrderActionCapabilities($order, $storedState);
         $hasActionError = $this->hasErrnoError($storedState['last_action_errno'] ?? null);
         $hasConfirmError = $this->hasErrnoError($storedState['confirm_errno'] ?? null);
         $hasReconcileError = $this->hasErrnoError($storedState['reconcile_errno'] ?? null);
@@ -983,6 +984,7 @@ class IntegrationController extends AbstractController
                 'food99_id' => $storedState['food99_id'],
                 'food99_code' => $storedState['food99_code'],
                 'remote_order_state' => $storedState['remote_order_state'],
+                'remote_order_state_label' => $this->resolveRemoteOrderStateLabel($storedState['remote_order_state'] ?? null),
                 'remote_delivery_status' => $storedState['remote_delivery_status'],
                 'last_event_type' => $storedState['last_event_type'],
                 'last_event_at' => $storedState['last_event_at'],
@@ -1024,6 +1026,70 @@ class IntegrationController extends AbstractController
                 'last_confirm_age_minutes' => $this->resolveAgeInMinutes($storedState['confirm_at'] ?? null),
                 'last_reconcile_age_minutes' => $this->resolveAgeInMinutes($storedState['reconcile_at'] ?? null),
             ],
+            'capabilities' => $actionCapabilities,
+        ];
+    }
+
+    private function normalizeOrderStateValue(mixed $value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    private function resolveRemoteOrderStateLabel(?string $state): string
+    {
+        return match ($this->normalizeOrderStateValue($state)) {
+            'new' => 'Novo',
+            'accepted' => 'Aceito',
+            'preparing' => 'Preparando',
+            'ready' => 'Pronto',
+            'picked_up' => 'Coletado',
+            'arriving' => 'Chegando',
+            'delivering' => 'Entregando',
+            'delivered', 'finished', 'closed', 'complete', 'completed' => 'Entregue',
+            'cancel_requested' => 'Cancelamento solicitado',
+            'partial_cancel' => 'Cancelamento parcial',
+            'cancelled', 'canceled' => 'Cancelado',
+            default => 'Indefinido',
+        };
+    }
+
+    private function isTerminalOrderState(string $realStatus, string $remoteState): bool
+    {
+        if (in_array($realStatus, ['closed', 'cancelled', 'canceled'], true)) {
+            return true;
+        }
+
+        return in_array($remoteState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true);
+    }
+
+    private function resolveOrderActionCapabilities(Order $order, array $storedState): array
+    {
+        $realStatus = $this->normalizeOrderStateValue($order->getStatus()?->getRealStatus());
+        $remoteState = $this->normalizeOrderStateValue($storedState['remote_order_state'] ?? null);
+
+        $isTerminal = $this->isTerminalOrderState($realStatus, $remoteState);
+        $isReadyOrBeyond = in_array($remoteState, ['ready', 'picked_up', 'delivering', 'arriving', 'delivered', 'finished', 'closed', 'complete', 'completed'], true);
+        $isDeliveredOrCancelled = in_array($remoteState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true);
+        $isDelivering = in_array($remoteState, ['picked_up', 'delivering', 'arriving'], true);
+
+        $canCancel = !$isTerminal;
+        $canReady = !$isTerminal && !$isReadyOrBeyond;
+
+        if (!empty($storedState['is_platform_delivery']) && $isReadyOrBeyond) {
+            $canReady = false;
+        }
+
+        $canDelivered = !$isTerminal
+            && !$isDeliveredOrCancelled
+            && !empty($storedState['allows_manual_delivery_completion']);
+
+        return [
+            'can_ready' => $canReady,
+            'can_cancel' => $canCancel,
+            'can_delivered' => $canDelivered,
+            'is_terminal' => $isTerminal,
+            'is_delivering' => $isDelivering,
+            'remote_state' => $remoteState,
         ];
     }
 
@@ -1346,7 +1412,7 @@ class IntegrationController extends AbstractController
         }
 
         if (($payload['delivery_method'] ?? null) !== null && $deliveryMethod !== '' && !in_array($deliveryMethod, ['1', '2'], true)) {
-            return new JsonResponse(['error' => 'delivery_method must be 1 (loja) or 2 (99)'], Response::HTTP_BAD_REQUEST);
+            return new JsonResponse(['error' => 'delivery_method must be 1 (Entrega 99) or 2 (loja)'], Response::HTTP_BAD_REQUEST);
         }
 
         if ($openTime !== null) {
