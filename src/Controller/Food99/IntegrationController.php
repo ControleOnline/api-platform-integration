@@ -1011,6 +1011,7 @@ class IntegrationController extends AbstractController
                 'handover_code' => $storedState['handover_code'],
                 'locator' => $storedState['locator'],
                 'handover_page_url' => $storedState['handover_page_url'],
+                'handover_confirmation_url' => $this->resolveFood99HandoverConfirmationUrl($storedState),
                 'virtual_phone_number' => $storedState['virtual_phone_number'],
                 'is_store_delivery' => $storedState['is_store_delivery'],
                 'is_platform_delivery' => $storedState['is_platform_delivery'],
@@ -1053,6 +1054,21 @@ class IntegrationController extends AbstractController
         };
     }
 
+    private function resolveFood99HandoverConfirmationUrl(array $storedState): ?string
+    {
+        $handoverPageUrl = trim((string) ($storedState['handover_page_url'] ?? ''));
+        if ($handoverPageUrl !== '') {
+            return $handoverPageUrl;
+        }
+
+        $locator = trim((string) ($storedState['locator'] ?? ''));
+        if ($locator !== '') {
+            return 'https://food-b-h5.99app.com/pt-BR/v2/confirmation-entrega';
+        }
+
+        return null;
+    }
+
     private function isTerminalOrderState(string $realStatus, string $remoteState): bool
     {
         if (in_array($realStatus, ['closed', 'cancelled', 'canceled'], true)) {
@@ -1073,6 +1089,11 @@ class IntegrationController extends AbstractController
         $isDelivering = in_array($remoteState, ['picked_up', 'delivering', 'arriving'], true);
         $requiresDeliveryCode = !empty($storedState['is_store_delivery'])
             && trim((string) ($storedState['handover_code'] ?? '')) !== '';
+        $hasHandoverFlow = !empty($storedState['is_store_delivery'])
+            && (
+                trim((string) ($storedState['handover_page_url'] ?? '')) !== ''
+                || trim((string) ($storedState['locator'] ?? '')) !== ''
+            );
 
         $canCancel = !$isTerminal;
         $canReady = !$isTerminal && !$isReadyOrBeyond;
@@ -1085,12 +1106,18 @@ class IntegrationController extends AbstractController
             && !$isDeliveredOrCancelled
             && !empty($storedState['allows_manual_delivery_completion']);
 
+        if ($hasHandoverFlow) {
+            $canDelivered = false;
+        }
+
         return [
             'can_ready' => $canReady,
             'can_cancel' => $canCancel,
             'can_delivered' => $canDelivered,
             'requires_delivery_code' => $canDelivered && $requiresDeliveryCode,
             'delivery_code_length' => 4,
+            'requires_handover_confirmation' => $requiresDeliveryCode,
+            'can_open_handover_flow' => $hasHandoverFlow,
             'is_terminal' => $isTerminal,
             'is_delivering' => $isDelivering,
             'remote_state' => $remoteState,

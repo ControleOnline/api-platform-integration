@@ -1801,8 +1801,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $isPlatformDelivery = true;
             $deliveryLabel = 'Entrega 99';
         } elseif ($locator !== '' || $handoverPageUrl !== '' || $virtualPhoneNumber !== '') {
-            $isPlatformDelivery = true;
-            $deliveryLabel = 'Entrega 99';
+            // Locator and handover confirmation data belong to store/self delivery flow.
+            $isStoreDelivery = true;
+            $deliveryLabel = 'Entrega da loja';
         } elseif ($handoverCode !== '') {
             // Store delivery frequently carries verification codes without courier tracking fields.
             $isStoreDelivery = true;
