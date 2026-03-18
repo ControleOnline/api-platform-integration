@@ -964,6 +964,7 @@ class IntegrationController extends AbstractController
     private function buildOrderIntegrationDetail(Order $order): array
     {
         $storedState = $this->food99Service->getStoredOrderIntegrationState($order);
+        $homologationSnapshot = $this->food99Service->getOrderHomologationSnapshot($order);
         $actionCapabilities = $this->resolveOrderActionCapabilities($order, $storedState);
         $hasActionError = $this->hasErrnoError($storedState['last_action_errno'] ?? null);
         $hasConfirmError = $this->hasErrnoError($storedState['confirm_errno'] ?? null);
@@ -1008,6 +1009,7 @@ class IntegrationController extends AbstractController
                 'fulfillment_mode' => $storedState['fulfillment_mode'],
                 'expected_arrived_eta' => $storedState['expected_arrived_eta'],
                 'remote_delivery_status' => $storedState['remote_delivery_status'],
+                'pickup_code' => $storedState['pickup_code'],
                 'handover_code' => $storedState['handover_code'],
                 'locator' => $storedState['locator'],
                 'handover_page_url' => $storedState['handover_page_url'],
@@ -1027,6 +1029,13 @@ class IntegrationController extends AbstractController
                 'last_confirm_age_minutes' => $this->resolveAgeInMinutes($storedState['confirm_at'] ?? null),
                 'last_reconcile_age_minutes' => $this->resolveAgeInMinutes($storedState['reconcile_at'] ?? null),
             ],
+            'financial' => $homologationSnapshot['financial'] ?? null,
+            'payment' => $homologationSnapshot['payment'] ?? null,
+            'customer' => $homologationSnapshot['customer'] ?? null,
+            'address' => $homologationSnapshot['address'] ?? null,
+            'notes' => $homologationSnapshot['notes'] ?? null,
+            'identifiers' => $homologationSnapshot['identifiers'] ?? null,
+            'raw_payload_available' => !empty($homologationSnapshot['raw_payload_available']),
             'capabilities' => $actionCapabilities,
         ];
     }
@@ -1062,7 +1071,12 @@ class IntegrationController extends AbstractController
         }
 
         $locator = trim((string) ($storedState['locator'] ?? ''));
-        if ($locator !== '') {
+        if (
+            $locator !== ''
+            || !empty($storedState['is_store_delivery'])
+            || trim((string) ($storedState['pickup_code'] ?? '')) !== ''
+            || trim((string) ($storedState['handover_code'] ?? '')) !== ''
+        ) {
             return 'https://food-b-h5.99app.com/pt-BR/v2/confirmation-entrega';
         }
 
@@ -1087,13 +1101,10 @@ class IntegrationController extends AbstractController
         $isReadyOrBeyond = in_array($remoteState, ['ready', 'picked_up', 'delivering', 'arriving', 'delivered', 'finished', 'closed', 'complete', 'completed'], true);
         $isDeliveredOrCancelled = in_array($remoteState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true);
         $isDelivering = in_array($remoteState, ['picked_up', 'delivering', 'arriving'], true);
-        $requiresDeliveryCode = !empty($storedState['is_store_delivery'])
-            && trim((string) ($storedState['handover_code'] ?? '')) !== '';
-        $hasHandoverFlow = !empty($storedState['is_store_delivery'])
-            && (
-                trim((string) ($storedState['handover_page_url'] ?? '')) !== ''
-                || trim((string) ($storedState['locator'] ?? '')) !== ''
-            );
+        $requiresDeliveryLocator = !empty($storedState['is_store_delivery'])
+            && !empty($storedState['allows_manual_delivery_completion']);
+        $requiresDeliveryCode = $requiresDeliveryLocator;
+        $hasHandoverFlow = $this->resolveFood99HandoverConfirmationUrl($storedState) !== null;
 
         $canCancel = !$isTerminal;
         $canReady = !$isTerminal && !$isReadyOrBeyond;
@@ -1106,17 +1117,15 @@ class IntegrationController extends AbstractController
             && !$isDeliveredOrCancelled
             && !empty($storedState['allows_manual_delivery_completion']);
 
-        if ($hasHandoverFlow) {
-            $canDelivered = false;
-        }
-
         return [
             'can_ready' => $canReady,
             'can_cancel' => $canCancel,
             'can_delivered' => $canDelivered,
+            'requires_delivery_locator' => $canDelivered && $requiresDeliveryLocator,
+            'delivery_locator_length' => 8,
             'requires_delivery_code' => $canDelivered && $requiresDeliveryCode,
-            'delivery_code_length' => 4,
-            'requires_handover_confirmation' => $requiresDeliveryCode,
+            'delivery_code_length' => $requiresDeliveryCode ? 4 : 0,
+            'requires_handover_confirmation' => $canDelivered && $requiresDeliveryLocator,
             'can_open_handover_flow' => $hasHandoverFlow,
             'is_terminal' => $isTerminal,
             'is_delivering' => $isDelivering,
@@ -1713,6 +1722,38 @@ class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/delivery-locator/verify', name: 'marketplace_integrations_food99_order_delivery_locator_verify', methods: ['POST'])]
+    public function verifyDeliveredLocatorAction(string $orderId, Request $request): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $locator = trim((string) ($payload['locator'] ?? ''));
+        $verification = $this->food99Service->performDeliveredLocatorVerification(
+            $order,
+            $locator !== '' ? $locator : null
+        );
+
+        return new JsonResponse([
+            'action' => 'locator_verify',
+            'result' => $verification['result'] ?? [],
+            'flow' => $verification['flow'] ?? [],
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
     #[Route('/marketplace/integrations/99food/orders/{orderId}/delivered', name: 'marketplace_integrations_food99_order_delivered', methods: ['POST'])]
     public function deliveredOrderAction(string $orderId, Request $request): JsonResponse
     {
@@ -1732,10 +1773,12 @@ class IntegrationController extends AbstractController
         }
 
         $deliveryCode = trim((string) ($payload['delivery_code'] ?? $payload['deliveryCode'] ?? ''));
+        $locator = trim((string) ($payload['locator'] ?? ''));
 
         $result = $this->food99Service->performDeliveredAction(
             $order,
-            $deliveryCode !== '' ? $deliveryCode : null
+            $deliveryCode !== '' ? $deliveryCode : null,
+            $locator !== '' ? $locator : null
         );
 
         return new JsonResponse([

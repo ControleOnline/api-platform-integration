@@ -120,6 +120,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return 'https://openapi.didi-food.com';
     }
 
+    private function getFood99BorderBaseUrl(): string
+    {
+        return 'https://b.99app.com';
+    }
+
     private function resolveAppId(): ?string
     {
         $appId = $_ENV['OAUTH_99FOOD_CLIENT_ID']
@@ -463,29 +468,353 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return trim((string) $normalized);
     }
 
+    private function normalizeDeliveryLocator(?string $locator): string
+    {
+        $normalized = preg_replace('/\D+/', '', (string) $locator);
+
+        return trim((string) $normalized);
+    }
+
     private function requiresStoreDeliveryCode(array $state): bool
     {
         if (empty($state['is_store_delivery'])) {
             return false;
         }
 
-        return trim((string) ($state['handover_code'] ?? '')) !== '';
+        if (!empty($state['allows_manual_delivery_completion'])) {
+            return true;
+        }
+
+        return trim((string) ($state['pickup_code'] ?? '')) !== ''
+            || trim((string) ($state['handover_code'] ?? '')) !== '';
     }
 
-    private function persistDeliveredCodeResult(Order $order, string $deliveryCode): void
+    private function requiresStoreDeliveryLocator(array $state): bool
+    {
+        if (empty($state['is_store_delivery'])) {
+            return false;
+        }
+
+        return !empty($state['allows_manual_delivery_completion']);
+    }
+
+    private function persistDeliveredLocatorResult(Order $order, string $locator, array $response, array $flow = []): void
     {
         $this->persistOrderIntegrationState($order, [
+            'delivery_locator_at' => date('Y-m-d H:i:s'),
+            'delivery_locator_errno' => isset($response['errno']) ? (string) $response['errno'] : '',
+            'delivery_locator_message' => $response['errmsg'] ?? '',
+            'delivery_locator_last8' => substr($locator, -8),
+            'delivery_locator_step' => $flow['step'] ?? '',
+            'delivery_locator_remote_order_id' => $flow['remote_order_id'] ?? '',
+            'delivery_locator_shop_id' => $flow['shop_id'] ?? '',
+        ]);
+    }
+
+    private function persistDeliveredCodeResult(Order $order, string $deliveryCode, ?array $response = null): void
+    {
+        $safeResponse = $response ?? [
+            'errno' => 0,
+            'errmsg' => 'Codigo de entrega informado no PPC.',
+        ];
+
+        $this->persistOrderIntegrationState($order, [
             'delivery_validate_at' => date('Y-m-d H:i:s'),
-            'delivery_validate_errno' => '0',
-            'delivery_validate_message' => 'Codigo de entrega informado no PPC.',
+            'delivery_validate_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
+            'delivery_validate_message' => $safeResponse['errmsg'] ?? '',
             'delivery_code_last4' => substr($deliveryCode, -4),
         ]);
     }
 
-    private function completeStoreDeliveryOrder(Order $order, string $orderId, ?string $deliveryCode = null): array
+    private function call99BorderEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
-        $payload = [];
+        $url = $this->getFood99BorderBaseUrl() . $uri;
+        $method = strtoupper($method);
+        $requestOptions = [
+            'headers' => [
+                'Content-Type' => 'application/json',
+            ],
+        ];
+
+        if ($method === 'GET') {
+            $requestOptions['query'] = $payload;
+        } else {
+            $requestOptions['json'] = $payload;
+        }
+
+        try {
+            $startedAt = microtime(true);
+
+            self::$logger->info('Food99 BORDER REQUEST', [
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'api_base_url' => $this->getFood99BorderBaseUrl(),
+            ]);
+
+            $response = $this->httpClient->request($method, $url, $requestOptions);
+            $result = $response->toArray(false);
+
+            self::$logger->info('Food99 BORDER RESPONSE', [
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                'response' => $result,
+                'api_base_url' => $this->getFood99BorderBaseUrl(),
+            ]);
+
+            return $result;
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 BORDER ERROR', [
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'error' => $e->getMessage(),
+                'api_base_url' => $this->getFood99BorderBaseUrl(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function verifyStoreDeliveryLocatorRequest(string $locator): ?array
+    {
+        return $this->call99BorderEndpointWithResponse('POST', '/order/border/locatorVerify', [
+            'locator' => $locator,
+        ]);
+    }
+
+    private function completeStoreDeliveryOrderRequest(string $orderId, string $locator, string $deliveryCode): ?array
+    {
+        return $this->call99BorderEndpointWithResponse('POST', '/order/border/locatorOrderComplete', [
+            'orderId' => $orderId,
+            'DCPickupCode' => $deliveryCode,
+            'locator' => $locator,
+        ]);
+    }
+
+    private function buildStoreDeliveryLocatorFlowResult(array $response, string $locator, string $expectedRemoteOrderId = '', string $expectedShopId = ''): array
+    {
+        $safeResponse = $this->normalizeOrderActionResponse(
+            $response,
+            'Nao foi possivel validar o localizador na 99Food.'
+        );
+
+        $data = is_array($safeResponse['data'] ?? null) ? $safeResponse['data'] : [];
+        $flowCode = (int) ($data['code'] ?? -1);
+        $flowMessage = trim((string) ($data['msg'] ?? $safeResponse['errmsg'] ?? ''));
+        $verifiedRemoteOrderId = trim((string) ($data['orderId'] ?? ''));
+        $verifiedShopId = trim((string) ($data['shopId'] ?? ''));
+
+        if (!$this->isSuccessfulErrno($safeResponse['errno'] ?? null)) {
+            return [
+                'result' => $safeResponse,
+                'flow' => [
+                    'step' => 'error',
+                    'locator' => $locator,
+                ],
+            ];
+        }
+
+        if ($expectedRemoteOrderId !== '' && $verifiedRemoteOrderId !== '' && $verifiedRemoteOrderId !== $expectedRemoteOrderId) {
+            return [
+                'result' => $this->buildUnavailableOrderActionResponse('O localizador informado pertence a outro pedido da 99Food.'),
+                'flow' => [
+                    'step' => 'error',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ];
+        }
+
+        if ($expectedShopId !== '' && $verifiedShopId !== '' && $verifiedShopId !== $expectedShopId) {
+            return [
+                'result' => $this->buildUnavailableOrderActionResponse('O localizador informado pertence a outra loja da 99Food.'),
+                'flow' => [
+                    'step' => 'error',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ];
+        }
+
+        return match ($flowCode) {
+            1 => [
+                'result' => [
+                    'errno' => 0,
+                    'errmsg' => $flowMessage !== '' ? $flowMessage : 'Localizador validado com sucesso.',
+                    'data' => $data,
+                ],
+                'flow' => [
+                    'step' => 'delivery_code',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ],
+            2 => [
+                'result' => [
+                    'errno' => 0,
+                    'errmsg' => $flowMessage !== '' ? $flowMessage : 'Entrega concluida com sucesso.',
+                    'data' => $data,
+                ],
+                'flow' => [
+                    'step' => 'completed',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ],
+            3 => [
+                'result' => [
+                    'errno' => 10003,
+                    'errmsg' => $flowMessage !== '' ? $flowMessage : 'O localizador informado nao foi reconhecido.',
+                    'data' => $data,
+                ],
+                'flow' => [
+                    'step' => 'invalid_locator',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ],
+            default => [
+                'result' => [
+                    'errno' => 10004,
+                    'errmsg' => $flowMessage !== '' ? $flowMessage : 'A 99Food retornou um estado inesperado na validacao do localizador.',
+                    'data' => $data,
+                ],
+                'flow' => [
+                    'step' => 'error',
+                    'locator' => $locator,
+                    'remote_order_id' => $verifiedRemoteOrderId,
+                    'shop_id' => $verifiedShopId,
+                ],
+            ],
+        };
+    }
+
+    public function performDeliveredLocatorVerification(Order $order, ?string $locator = null): array
+    {
+        $state = $this->getStoredOrderIntegrationState($order);
+
+        if (empty($state['is_store_delivery']) || empty($state['allows_manual_delivery_completion'])) {
+            return [
+                'result' => $this->buildUnavailableOrderActionResponse(
+                    'Esse pedido nao usa o fluxo de entrega da loja com localizador da 99Food.'
+                ),
+                'flow' => [
+                    'step' => 'error',
+                ],
+            ];
+        }
+
+        $normalizedLocator = $this->normalizeDeliveryLocator($locator ?: (string) ($state['locator'] ?? ''));
+        if (strlen($normalizedLocator) !== 8) {
+            return [
+                'result' => $this->buildUnavailableOrderActionResponse(
+                    'Informe o localizador de 8 digitos para validar a entrega da 99Food.'
+                ),
+                'flow' => [
+                    'step' => 'error',
+                    'locator' => $normalizedLocator,
+                ],
+            ];
+        }
+
+        $expectedRemoteOrderId = trim((string) ($state['food99_id'] ?? ''));
+        $expectedShopId = trim((string) ($this->getIntegratedStoreCode($order->getProvider()) ?? ''));
+        $rawResponse = $this->verifyStoreDeliveryLocatorRequest($normalizedLocator);
+        $verification = $this->buildStoreDeliveryLocatorFlowResult(
+            $rawResponse ?? [],
+            $normalizedLocator,
+            $expectedRemoteOrderId,
+            $expectedShopId
+        );
+
+        $this->persistDeliveredLocatorResult(
+            $order,
+            $normalizedLocator,
+            $verification['result'],
+            $verification['flow']
+        );
+
+        if ($this->isSuccessfulErrno($verification['result']['errno'] ?? null)) {
+            $this->persistOrderIntegrationState($order, [
+                'locator' => $normalizedLocator,
+            ]);
+        }
+
+        $this->storeOrderRemoteSnapshot($order, 'delivery_locator_verify', $rawResponse ?? []);
+
+        if (($verification['flow']['step'] ?? '') === 'completed') {
+            $verification['result'] = $this->persistOrderActionResult(
+                $order,
+                'delivered',
+                $verification['result']
+            );
+        } else {
+            $this->entityManager->flush();
+        }
+
+        return $verification;
+    }
+
+    private function completeStoreDeliveryOrder(Order $order, string $orderId, ?string $deliveryCode = null, ?string $locator = null): array
+    {
+        $state = $this->getStoredOrderIntegrationState($order);
+        $normalizedLocator = $this->normalizeDeliveryLocator($locator ?: (string) ($state['locator'] ?? ''));
         $normalizedDeliveryCode = $this->normalizeDeliveryCode($deliveryCode);
+
+        if ($this->requiresStoreDeliveryLocator($state)) {
+            if (strlen($normalizedLocator) !== 8) {
+                return $this->buildUnavailableOrderActionResponse(
+                    'Informe o localizador de 8 digitos para concluir a entrega da 99Food.'
+                );
+            }
+
+            if (strlen($normalizedDeliveryCode) !== 4) {
+                return $this->buildUnavailableOrderActionResponse(
+                    'Informe o codigo de 4 digitos do cliente para concluir a entrega da 99Food.'
+                );
+            }
+
+            $this->persistDeliveredCodeResult($order, $normalizedDeliveryCode);
+
+            $response = $this->normalizeOrderActionResponse(
+                $this->completeStoreDeliveryOrderRequest($orderId, $normalizedLocator, $normalizedDeliveryCode),
+                'Nao foi possivel concluir a entrega da loja na 99Food.'
+            );
+
+            $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+            $completed = $this->isSuccessfulErrno($response['errno'] ?? null) && (int) ($data['code'] ?? 0) === 1;
+
+            if (!$completed) {
+                $result = [
+                    'errno' => 10005,
+                    'errmsg' => trim((string) ($data['msg'] ?? $response['errmsg'] ?? 'Nao foi possivel concluir a entrega da loja na 99Food.')),
+                    'data' => $data,
+                ];
+                $this->persistDeliveredCodeResult($order, $normalizedDeliveryCode, $result);
+
+                return $result;
+            }
+
+            $result = [
+                'errno' => 0,
+                'errmsg' => trim((string) ($data['msg'] ?? $response['errmsg'] ?? 'ok')) ?: 'ok',
+                'data' => $data,
+            ];
+            $this->persistDeliveredCodeResult($order, $normalizedDeliveryCode, $result);
+
+            return $result;
+        }
+
+        $payload = [];
         if ($normalizedDeliveryCode !== '') {
             $payload['deliveryCode'] = $normalizedDeliveryCode;
         }
@@ -622,7 +951,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         );
     }
 
-    public function performDeliveredAction(Order $order, ?string $deliveryCode = null): array
+    public function performDeliveredAction(Order $order, ?string $deliveryCode = null, ?string $locator = null): array
     {
         $orderId = $this->resolveRemoteOrderId($order);
         if (!$orderId) {
@@ -636,7 +965,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             );
         }
 
-        if ($this->requiresStoreDeliveryCode($state)) {
+        if ($this->requiresStoreDeliveryLocator($state)) {
+            $normalizedLocator = $this->normalizeDeliveryLocator($locator ?: (string) ($state['locator'] ?? ''));
+            if (strlen($normalizedLocator) !== 8) {
+                return $this->persistOrderActionResult(
+                    $order,
+                    'delivered',
+                    $this->buildUnavailableOrderActionResponse(
+                        'Informe o localizador de 8 digitos para concluir a entrega 99Food.'
+                    )
+                );
+            }
+
             $normalizedDeliveryCode = $this->normalizeDeliveryCode($deliveryCode);
             if (strlen($normalizedDeliveryCode) !== 4) {
                 return $this->persistOrderActionResult(
@@ -653,7 +993,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $this->persistOrderActionResult(
                 $order,
                 'delivered',
-                $this->completeStoreDeliveryOrder($order, $orderId, $normalizedDeliveryCode)
+                $this->completeStoreDeliveryOrder($order, $orderId, $normalizedDeliveryCode, $normalizedLocator)
             );
         }
 
@@ -1570,6 +1910,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
             'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
             'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
+            'pickup_code' => $this->getFood99OrderExtraDataValue($orderId, 'pickup_code'),
             'locator' => $this->getFood99OrderExtraDataValue($orderId, 'locator'),
             'handover_page_url' => $this->getFood99OrderExtraDataValue($orderId, 'handover_page_url'),
             'virtual_phone_number' => $this->getFood99OrderExtraDataValue($orderId, 'virtual_phone_number'),
@@ -1592,12 +1933,302 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $state;
     }
 
+    private function resolveBestStoredOrderPayload(Order $order): array
+    {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        $candidateKeys = [];
+        $latestEventType = $this->normalizeIncomingFood99Value($otherInformations['latest_event_type'] ?? null);
+
+        if ($latestEventType !== '') {
+            $candidateKeys[] = $latestEventType;
+        }
+
+        $candidateKeys = array_merge($candidateKeys, [
+            'orderDetailSync',
+            'orderNew',
+            self::APP_CONTEXT,
+            self::LEGACY_ORDER_CONTEXT,
+        ]);
+
+        foreach (array_unique($candidateKeys) as $candidateKey) {
+            $candidate = $otherInformations[$candidateKey] ?? null;
+            if (is_string($candidate)) {
+                $candidate = $this->decodeOrderOtherInformationsValue($candidate);
+            }
+
+            if (!is_array($candidate) || empty($candidate)) {
+                continue;
+            }
+
+            $payload = $this->unwrapStoredOrderPayload($candidate);
+            if (!is_array($payload) || empty($payload)) {
+                continue;
+            }
+
+            $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+            $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+            if (!empty($orderInfo) || !empty($data)) {
+                return $payload;
+            }
+        }
+
+        return [];
+    }
+
+    private function normalizeFood99Money(mixed $value): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+
+        return round(((float) $value) / 100, 2);
+    }
+
+    private function normalizeFood99Boolean(mixed $value): ?bool
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value !== 0;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        if (in_array($normalized, ['true', 'yes', 'y', 'sim'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['false', 'no', 'n', 'nao'], true)) {
+            return false;
+        }
+
+        return null;
+    }
+
+    private function sumPromotionStoreSubsidy(array $promotions): float
+    {
+        $total = 0.0;
+
+        foreach ($promotions as $promotion) {
+            if (!is_array($promotion)) {
+                continue;
+            }
+
+            $total += $this->normalizeFood99Money($promotion['shop_subside_price'] ?? null);
+        }
+
+        return round($total, 2);
+    }
+
+    private function sumPromotionTotalDiscount(array $promotions): float
+    {
+        $total = 0.0;
+
+        foreach ($promotions as $promotion) {
+            if (!is_array($promotion)) {
+                continue;
+            }
+
+            $total += $this->normalizeFood99Money($promotion['promo_discount'] ?? null);
+        }
+
+        return round($total, 2);
+    }
+
+    private function extractOrderPromotionList(array $payload): array
+    {
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $promotions = $orderInfo['promotions'] ?? $data['promotions'] ?? [];
+        if (is_array($promotions) && !empty($promotions)) {
+            return array_values(array_filter($promotions, 'is_array'));
+        }
+
+        $items = $orderInfo['order_items'] ?? $data['order_items'] ?? [];
+        $fallback = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $promotionDetail = is_array($item['promotion_detail'] ?? null) ? $item['promotion_detail'] : null;
+            if ($promotionDetail === null) {
+                continue;
+            }
+
+            $fallback[] = $promotionDetail;
+        }
+
+        return $fallback;
+    }
+
+    private function buildFood99AddressDisplay(array $address): ?string
+    {
+        $parts = array_filter([
+            $this->normalizeIncomingFood99Value($address['poi_address'] ?? null),
+            $this->normalizeIncomingFood99Value($address['street_name'] ?? null),
+            $this->normalizeIncomingFood99Value($address['street_number'] ?? null),
+            $this->normalizeIncomingFood99Value($address['district'] ?? null),
+            $this->normalizeIncomingFood99Value($address['city'] ?? null),
+            $this->normalizeIncomingFood99Value($address['state'] ?? null),
+            $this->normalizeIncomingFood99Value($address['postal_code'] ?? null),
+            $this->normalizeIncomingFood99Value($address['reference'] ?? null),
+        ], static fn($value) => $value !== null && $value !== '');
+
+        if (empty($parts)) {
+            return null;
+        }
+
+        return implode(', ', array_values(array_unique($parts)));
+    }
+
+    private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
+    {
+        $normalizedPayType = trim((string) $payType);
+        $normalizedDeliveryType = trim((string) $deliveryType);
+
+        if ($normalizedDeliveryType === '1') {
+            return 'Online pela 99Food';
+        }
+
+        return match ($normalizedPayType) {
+            '2' => 'Online',
+            '1' => 'Pagamento na entrega',
+            default => 'Indefinido',
+        };
+    }
+
+    public function getOrderHomologationSnapshot(Order $order): array
+    {
+        $this->init();
+
+        $payload = $this->resolveBestStoredOrderPayload($order);
+        if (empty($payload)) {
+            return [
+                'financial' => null,
+                'payment' => null,
+                'customer' => null,
+                'address' => null,
+                'notes' => null,
+                'identifiers' => null,
+                'raw_payload_available' => false,
+            ];
+        }
+
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $price = is_array($orderInfo['price'] ?? null) ? $orderInfo['price'] : (is_array($data['price'] ?? null) ? $data['price'] : []);
+        $otherFees = is_array($price['others_fees'] ?? null) ? $price['others_fees'] : [];
+        $promotions = $this->extractOrderPromotionList($payload);
+        $receiveAddress = is_array($data['receive_address'] ?? null) ? $data['receive_address'] : [];
+        $deliveryType = $this->normalizeIncomingFood99Value($orderInfo['delivery_type'] ?? $data['delivery_type'] ?? null);
+        $payType = $this->normalizeIncomingFood99Value($orderInfo['pay_type'] ?? $data['pay_type'] ?? null);
+        $payMethod = $this->normalizeIncomingFood99Value($orderInfo['pay_method'] ?? $data['pay_method'] ?? null);
+        $payChannel = $this->normalizeIncomingFood99Value($orderInfo['pay_channel'] ?? $data['pay_channel'] ?? null);
+        $storeDiscountTotal = $this->sumPromotionStoreSubsidy($promotions);
+
+        $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
+        $deliveryFee = $this->normalizeFood99Money($price['delivery_price'] ?? null);
+        $serviceFee = $this->normalizeFood99Money($otherFees['service_price'] ?? null);
+        $smallOrderFee = $this->normalizeFood99Money($otherFees['small_order_price'] ?? null);
+        $tipTotal = $this->normalizeFood99Money($otherFees['total_tip_money'] ?? null);
+        $mealTopUpFee = $this->normalizeFood99Money($otherFees['meal_top_up_price'] ?? null);
+        $subtotalBeforeDiscounts = round($itemsTotal + $deliveryFee + $serviceFee + $smallOrderFee + $tipTotal + $mealTopUpFee, 2);
+        $customerTotal = $this->normalizeFood99Money(
+            $price['customer_need_paying_money'] ?? $price['real_pay_price'] ?? null
+        );
+        $discountTotal = round(max(0, $subtotalBeforeDiscounts - $customerTotal), 2);
+        $platformDiscountTotal = round(max(0, $discountTotal - $storeDiscountTotal), 2);
+        $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
+        $isPlatformDelivery = $deliveryType === '1';
+        $isPaidOnline = $isPlatformDelivery || $payType === '2';
+        $amountPaid = $isPaidOnline ? $customerTotal : 0.0;
+        $amountPending = round(max(0, $customerTotal - $amountPaid), 2);
+
+        return [
+            'financial' => [
+                'currency' => 'BRL',
+                'items_total' => $itemsTotal,
+                'delivery_fee' => $deliveryFee,
+                'service_fee' => $serviceFee,
+                'small_order_fee' => $smallOrderFee,
+                'meal_top_up_fee' => $mealTopUpFee,
+                'tip_total' => $tipTotal,
+                'subtotal_before_discounts' => $subtotalBeforeDiscounts,
+                'discount_total' => $discountTotal,
+                'store_discount_total' => $storeDiscountTotal,
+                'platform_discount_total' => $platformDiscountTotal,
+                'promotions_total' => $this->sumPromotionTotalDiscount($promotions),
+                'items_discount_total' => $this->normalizeFood99Money($price['items_discount'] ?? null),
+                'delivery_discount_total' => $this->normalizeFood99Money($price['delivery_discount'] ?? null),
+                'coupon_discount_total' => $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null),
+                'customer_total' => $customerTotal,
+                'store_receivable_total' => $this->normalizeFood99Money($price['real_price'] ?? null),
+                'real_pay_total' => $this->normalizeFood99Money($price['real_pay_price'] ?? null),
+                'refund_total' => $this->normalizeFood99Money($price['refund_price'] ?? null),
+                'store_charged_delivery_price' => $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? null),
+            ],
+            'payment' => [
+                'pay_type' => $payType,
+                'pay_type_label' => $paymentTypeLabel,
+                'pay_method' => $payMethod,
+                'pay_channel' => $payChannel,
+                'amount_paid' => $amountPaid,
+                'amount_pending' => $amountPending,
+                'is_fully_paid' => $amountPending <= 0.009,
+                'should_confirm_payment' => !$isPaidOnline,
+                'is_paid_online' => $isPaidOnline,
+                'delivery_99_always_paid_rule' => $isPlatformDelivery,
+            ],
+            'customer' => [
+                'name' => $this->normalizeIncomingFood99Value(
+                    $receiveAddress['name']
+                        ?? trim(implode(' ', array_filter([
+                            $receiveAddress['first_name'] ?? null,
+                            $receiveAddress['last_name'] ?? null,
+                        ])))
+                        ?? null
+                ),
+                'phone' => $this->normalizeIncomingFood99Value($receiveAddress['phone'] ?? null),
+            ],
+            'address' => [
+                'display' => $this->buildFood99AddressDisplay($receiveAddress),
+                'street_name' => $this->normalizeIncomingFood99Value($receiveAddress['street_name'] ?? null),
+                'street_number' => $this->normalizeIncomingFood99Value($receiveAddress['street_number'] ?? null),
+                'district' => $this->normalizeIncomingFood99Value($receiveAddress['district'] ?? null),
+                'city' => $this->normalizeIncomingFood99Value($receiveAddress['city'] ?? null),
+                'state' => $this->normalizeIncomingFood99Value($receiveAddress['state'] ?? null),
+                'reference' => $this->normalizeIncomingFood99Value($receiveAddress['reference'] ?? null),
+                'complement' => $this->normalizeIncomingFood99Value($receiveAddress['complement'] ?? null),
+                'poi_address' => $this->normalizeIncomingFood99Value($receiveAddress['poi_address'] ?? null),
+            ],
+            'notes' => [
+                'remark' => $this->normalizeIncomingFood99Value($orderInfo['remark'] ?? $data['remark'] ?? null),
+                'need_cutlery' => $this->normalizeFood99Boolean($orderInfo['need_cutlery'] ?? $data['need_cutlery'] ?? null),
+            ],
+            'identifiers' => [
+                'remote_order_id' => $this->normalizeIncomingFood99Value($orderInfo['order_id'] ?? $data['order_id'] ?? null),
+                'order_index' => $this->normalizeIncomingFood99Value($orderInfo['order_index'] ?? $data['order_index'] ?? null),
+                'delivery_type' => $deliveryType,
+                'pickup_code' => $this->normalizeIncomingFood99Value($data['pickup_code'] ?? $orderInfo['pickup_code'] ?? null),
+                'handover_code' => $this->normalizeIncomingFood99Value($data['handover_code'] ?? $orderInfo['handover_code'] ?? null),
+            ],
+            'raw_payload_available' => true,
+        ];
+    }
+
     private function extractOrderDeliveryStateFields(array $json): array
     {
         return [
             'delivery_type' => $this->extractOrderDeliveryType($json),
             'fulfillment_mode' => $this->extractOrderFulfillmentMode($json),
             'expected_arrived_eta' => $this->extractOrderExpectedArrivedEta($json),
+            'pickup_code' => $this->extractOrderPickupCode($json),
             'locator' => $this->extractOrderLocator($json),
             'handover_page_url' => $this->extractOrderHandoverPageUrl($json),
             'virtual_phone_number' => $this->extractOrderVirtualPhoneNumber($json),
@@ -1611,6 +2242,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'delivery_type',
             'fulfillment_mode',
             'expected_arrived_eta',
+            'pickup_code',
             'locator',
             'handover_page_url',
             'virtual_phone_number',
@@ -1747,6 +2379,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'expectedArrivedEta',
             'delivery_eta',
             'deliveryEta',
+        ]);
+    }
+
+    private function extractOrderPickupCode(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'pickup_code',
+            'pickupCode',
         ]);
     }
 
