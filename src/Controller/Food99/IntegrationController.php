@@ -1071,6 +1071,8 @@ class IntegrationController extends AbstractController
         $isReadyOrBeyond = in_array($remoteState, ['ready', 'picked_up', 'delivering', 'arriving', 'delivered', 'finished', 'closed', 'complete', 'completed'], true);
         $isDeliveredOrCancelled = in_array($remoteState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true);
         $isDelivering = in_array($remoteState, ['picked_up', 'delivering', 'arriving'], true);
+        $requiresDeliveryCode = !empty($storedState['is_store_delivery'])
+            && trim((string) ($storedState['handover_code'] ?? '')) !== '';
 
         $canCancel = !$isTerminal;
         $canReady = !$isTerminal && !$isReadyOrBeyond;
@@ -1087,6 +1089,8 @@ class IntegrationController extends AbstractController
             'can_ready' => $canReady,
             'can_cancel' => $canCancel,
             'can_delivered' => $canDelivered,
+            'requires_delivery_code' => $canDelivered && $requiresDeliveryCode,
+            'delivery_code_length' => 4,
             'is_terminal' => $isTerminal,
             'is_delivering' => $isDelivering,
             'remote_state' => $remoteState,
@@ -1683,7 +1687,7 @@ class IntegrationController extends AbstractController
     }
 
     #[Route('/marketplace/integrations/99food/orders/{orderId}/delivered', name: 'marketplace_integrations_food99_order_delivered', methods: ['POST'])]
-    public function deliveredOrderAction(string $orderId): JsonResponse
+    public function deliveredOrderAction(string $orderId, Request $request): JsonResponse
     {
         $order = $this->resolveOrder($orderId);
         if (!$order) {
@@ -1694,7 +1698,18 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->food99Service->performDeliveredAction($order);
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $deliveryCode = trim((string) ($payload['delivery_code'] ?? $payload['deliveryCode'] ?? ''));
+
+        $result = $this->food99Service->performDeliveredAction(
+            $order,
+            $deliveryCode !== '' ? $deliveryCode : null
+        );
 
         return new JsonResponse([
             'action' => 'delivered',

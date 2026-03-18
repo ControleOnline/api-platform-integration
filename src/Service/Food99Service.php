@@ -98,7 +98,15 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function sanitizePayloadForLog(array $payload): array
     {
-        foreach (['auth_token', 'app_secret', 'appSecret', 'access_token', 'finance_access_token'] as $secretKey) {
+        foreach ([
+            'auth_token',
+            'app_secret',
+            'appSecret',
+            'access_token',
+            'finance_access_token',
+            'deliveryCode',
+            'delivery_code',
+        ] as $secretKey) {
             if (isset($payload[$secretKey])) {
                 $payload[$secretKey] = '***';
             }
@@ -368,6 +376,22 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $provider);
     }
 
+    public function validateSelfDeliveryCode(string $orderId, string $deliveryCode, ?People $provider = null): ?array
+    {
+        $encodedOrderId = rawurlencode($orderId);
+
+        return $this->call99StoreEndpointWithResponse('GET', "/v4/opendelivery/v1/orders/{$encodedOrderId}/validateCode", [
+            'deliveryCode' => $deliveryCode,
+        ], $provider);
+    }
+
+    public function deliveredSelfDeliveryOrder(string $orderId, ?People $provider = null): ?array
+    {
+        $encodedOrderId = rawurlencode($orderId);
+
+        return $this->call99StoreEndpointWithResponse('POST', "/v4/opendelivery/v1/orders/{$encodedOrderId}/delivered", [], $provider);
+    }
+
     public function cancelByShop(string $orderId, ?People $provider = null): ?array
     {
         return $this->call99EndpointWithResponse('/v1/order/order/cancel', [
@@ -426,6 +450,66 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->entityManager->flush();
 
         return $safeResponse;
+    }
+
+    private function normalizeDeliveryCode(?string $deliveryCode): string
+    {
+        $normalized = preg_replace('/\D+/', '', (string) $deliveryCode);
+
+        return trim((string) $normalized);
+    }
+
+    private function requiresStoreDeliveryCode(array $state): bool
+    {
+        if (empty($state['is_store_delivery'])) {
+            return false;
+        }
+
+        return trim((string) ($state['handover_code'] ?? '')) !== '';
+    }
+
+    private function persistDeliveredValidationResult(Order $order, string $deliveryCode, ?array $response): array
+    {
+        $safeResponse = is_array($response)
+            ? $response
+            : $this->buildUnavailableOrderActionResponse('Nao foi possivel validar o codigo de entrega da 99Food.');
+
+        $this->persistOrderIntegrationState($order, [
+            'delivery_validate_at' => date('Y-m-d H:i:s'),
+            'delivery_validate_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
+            'delivery_validate_message' => $safeResponse['errmsg'] ?? '',
+            'delivery_code_last4' => substr($deliveryCode, -4),
+        ]);
+
+        $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_validate', $safeResponse);
+
+        return $safeResponse;
+    }
+
+    private function completeStoreDeliveryOrder(Order $order, string $orderId): array
+    {
+        $provider = $order->getProvider();
+        $opendeliveryResponse = $this->deliveredSelfDeliveryOrder($orderId, $provider);
+        $safeOpendeliveryResponse = is_array($opendeliveryResponse)
+            ? $opendeliveryResponse
+            : $this->buildUnavailableOrderActionResponse('Nao foi possivel concluir a entrega da loja na 99Food.');
+
+        $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_opendelivery', $safeOpendeliveryResponse);
+
+        if ($this->isSuccessfulErrno($safeOpendeliveryResponse['errno'] ?? null)) {
+            return $safeOpendeliveryResponse;
+        }
+
+        $legacyResponse = $this->deliveredOrder($orderId, $provider);
+        if (is_array($legacyResponse)) {
+            $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_legacy', $legacyResponse);
+        }
+
+        if ($this->isSuccessfulErrno(is_array($legacyResponse) ? ($legacyResponse['errno'] ?? null) : null)) {
+            return $legacyResponse;
+        }
+
+        return $safeOpendeliveryResponse;
     }
 
     private function persistOrderConfirmResult(Order $order, ?array $response): array
@@ -556,7 +640,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         );
     }
 
-    public function performDeliveredAction(Order $order): array
+    public function performDeliveredAction(Order $order, ?string $deliveryCode = null): array
     {
         $orderId = $this->resolveRemoteOrderId($order);
         if (!$orderId) {
@@ -570,10 +654,41 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             );
         }
 
+        if ($this->requiresStoreDeliveryCode($state)) {
+            $normalizedDeliveryCode = $this->normalizeDeliveryCode($deliveryCode);
+            if (strlen($normalizedDeliveryCode) !== 4) {
+                return $this->persistOrderActionResult(
+                    $order,
+                    'delivered',
+                    $this->buildUnavailableOrderActionResponse(
+                        'Informe o codigo de 4 digitos do cliente para concluir a entrega 99Food.'
+                    )
+                );
+            }
+
+            $validationResult = $this->persistDeliveredValidationResult(
+                $order,
+                $normalizedDeliveryCode,
+                $this->validateSelfDeliveryCode($orderId, $normalizedDeliveryCode, $order->getProvider())
+            );
+
+            if (!$this->isSuccessfulErrno($validationResult['errno'] ?? null)) {
+                return $this->persistOrderActionResult($order, 'delivered', $validationResult);
+            }
+
+            return $this->persistOrderActionResult(
+                $order,
+                'delivered',
+                $this->completeStoreDeliveryOrder($order, $orderId)
+            );
+        }
+
         return $this->persistOrderActionResult(
             $order,
             'delivered',
-            $this->deliveredOrder($orderId, $order->getProvider())
+            !empty($state['is_store_delivery'])
+                ? $this->completeStoreDeliveryOrder($order, $orderId)
+                : $this->deliveredOrder($orderId, $order->getProvider())
         );
     }
 
