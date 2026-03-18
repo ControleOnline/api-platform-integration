@@ -369,27 +369,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $provider);
     }
 
-    public function deliveredOrder(string $orderId, ?People $provider = null): ?array
+    public function deliveredOrder(string $orderId, ?People $provider = null, array $extraPayload = []): ?array
     {
-        return $this->call99EndpointWithResponse('/v1/order/order/delivered', [
+        return $this->call99EndpointWithResponse('/v1/order/order/delivered', array_merge([
             'order_id' => $orderId,
-        ], $provider);
-    }
-
-    public function validateSelfDeliveryCode(string $orderId, string $deliveryCode, ?People $provider = null): ?array
-    {
-        $encodedOrderId = rawurlencode($orderId);
-
-        return $this->call99StoreEndpointWithResponse('GET', "/v4/opendelivery/v1/orders/{$encodedOrderId}/validateCode", [
-            'deliveryCode' => $deliveryCode,
-        ], $provider);
-    }
-
-    public function deliveredSelfDeliveryOrder(string $orderId, ?People $provider = null): ?array
-    {
-        $encodedOrderId = rawurlencode($orderId);
-
-        return $this->call99StoreEndpointWithResponse('POST', "/v4/opendelivery/v1/orders/{$encodedOrderId}/delivered", [], $provider);
+        ], $extraPayload), $provider);
     }
 
     public function cancelByShop(string $orderId, ?People $provider = null): ?array
@@ -410,11 +394,31 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function normalizeOrderActionResponse(?array $response, string $fallbackMessage): array
+    {
+        if (!is_array($response)) {
+            return $this->buildUnavailableOrderActionResponse($fallbackMessage);
+        }
+
+        if (array_key_exists('errno', $response)) {
+            return $response;
+        }
+
+        $message = trim((string) ($response['errmsg'] ?? $response['message'] ?? ''));
+
+        return [
+            'errno' => 10002,
+            'errmsg' => $message !== '' ? $message : $fallbackMessage,
+            'data' => $response['data'] ?? $response,
+        ];
+    }
+
     private function persistOrderActionResult(Order $order, string $action, ?array $response): array
     {
-        $safeResponse = is_array($response)
-            ? $response
-            : $this->buildUnavailableOrderActionResponse('Nao foi possivel executar a acao no pedido da 99Food.');
+        $safeResponse = $this->normalizeOrderActionResponse(
+            $response,
+            'Nao foi possivel executar a acao no pedido da 99Food.'
+        );
 
         $success = $this->isSuccessfulErrno($safeResponse['errno'] ?? null);
 
@@ -468,48 +472,26 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return trim((string) ($state['handover_code'] ?? '')) !== '';
     }
 
-    private function persistDeliveredValidationResult(Order $order, string $deliveryCode, ?array $response): array
+    private function persistDeliveredCodeResult(Order $order, string $deliveryCode): void
     {
-        $safeResponse = is_array($response)
-            ? $response
-            : $this->buildUnavailableOrderActionResponse('Nao foi possivel validar o codigo de entrega da 99Food.');
-
         $this->persistOrderIntegrationState($order, [
             'delivery_validate_at' => date('Y-m-d H:i:s'),
-            'delivery_validate_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
-            'delivery_validate_message' => $safeResponse['errmsg'] ?? '',
+            'delivery_validate_errno' => '0',
+            'delivery_validate_message' => 'Codigo de entrega informado no PPC.',
             'delivery_code_last4' => substr($deliveryCode, -4),
         ]);
-
-        $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_validate', $safeResponse);
-
-        return $safeResponse;
     }
 
-    private function completeStoreDeliveryOrder(Order $order, string $orderId): array
+    private function completeStoreDeliveryOrder(Order $order, string $orderId, ?string $deliveryCode = null): array
     {
-        $provider = $order->getProvider();
-        $opendeliveryResponse = $this->deliveredSelfDeliveryOrder($orderId, $provider);
-        $safeOpendeliveryResponse = is_array($opendeliveryResponse)
-            ? $opendeliveryResponse
-            : $this->buildUnavailableOrderActionResponse('Nao foi possivel concluir a entrega da loja na 99Food.');
-
-        $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_opendelivery', $safeOpendeliveryResponse);
-
-        if ($this->isSuccessfulErrno($safeOpendeliveryResponse['errno'] ?? null)) {
-            return $safeOpendeliveryResponse;
+        $payload = [];
+        $normalizedDeliveryCode = $this->normalizeDeliveryCode($deliveryCode);
+        if ($normalizedDeliveryCode !== '') {
+            $payload['deliveryCode'] = $normalizedDeliveryCode;
         }
 
-        $legacyResponse = $this->deliveredOrder($orderId, $provider);
-        if (is_array($legacyResponse)) {
-            $this->storeOrderRemoteSnapshot($order, 'last_action_delivered_legacy', $legacyResponse);
-        }
-
-        if ($this->isSuccessfulErrno(is_array($legacyResponse) ? ($legacyResponse['errno'] ?? null) : null)) {
-            return $legacyResponse;
-        }
-
-        return $safeOpendeliveryResponse;
+        return $this->deliveredOrder($orderId, $order->getProvider(), $payload)
+            ?? $this->buildUnavailableOrderActionResponse('Nao foi possivel concluir a entrega da loja na 99Food.');
     }
 
     private function persistOrderConfirmResult(Order $order, ?array $response): array
@@ -666,20 +648,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 );
             }
 
-            $validationResult = $this->persistDeliveredValidationResult(
-                $order,
-                $normalizedDeliveryCode,
-                $this->validateSelfDeliveryCode($orderId, $normalizedDeliveryCode, $order->getProvider())
-            );
-
-            if (!$this->isSuccessfulErrno($validationResult['errno'] ?? null)) {
-                return $this->persistOrderActionResult($order, 'delivered', $validationResult);
-            }
+            $this->persistDeliveredCodeResult($order, $normalizedDeliveryCode);
 
             return $this->persistOrderActionResult(
                 $order,
                 'delivered',
-                $this->completeStoreDeliveryOrder($order, $orderId)
+                $this->completeStoreDeliveryOrder($order, $orderId, $normalizedDeliveryCode)
             );
         }
 
