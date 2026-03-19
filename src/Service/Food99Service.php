@@ -2405,6 +2405,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'delivery_discount_total' => $deliveryDiscountTotal,
                 'coupon_discount_total' => $couponDiscountTotal,
                 'customer_total' => $customerTotal,
+                'customer_need_paying_money' => $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null),
                 'store_receivable_total' => $this->normalizeFood99Money($price['real_price'] ?? null),
                 'real_pay_total' => $this->normalizeFood99Money($price['real_pay_price'] ?? null),
                 'refund_total' => $this->normalizeFood99Money($price['refund_price'] ?? null),
@@ -2417,6 +2418,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'pay_channel' => $payChannel,
                 'amount_paid' => $amountPaid,
                 'amount_pending' => $amountPending,
+                'customer_need_paying_money' => $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null),
+                'collect_on_delivery_amount' => $isPaidOnline
+                    ? 0.0
+                    : ($this->normalizeFood99Money($price['customer_need_paying_money'] ?? null) ?: $customerTotal),
                 'is_fully_paid' => $amountPending <= 0.009,
                 'should_confirm_payment' => !$isPaidOnline,
                 'is_paid_online' => $isPaidOnline,
@@ -2433,6 +2438,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'district' => $this->normalizeIncomingFood99Value($receiveAddress['district'] ?? null),
                 'city' => $this->normalizeIncomingFood99Value($receiveAddress['city'] ?? null),
                 'state' => $this->normalizeIncomingFood99Value($receiveAddress['state'] ?? null),
+                'postal_code' => $this->normalizeIncomingFood99Value($receiveAddress['postal_code'] ?? null),
                 'reference' => $this->normalizeIncomingFood99Value($receiveAddress['reference'] ?? null),
                 'complement' => $this->normalizeIncomingFood99Value($receiveAddress['complement'] ?? null),
                 'poi_address' => $this->normalizeIncomingFood99Value($receiveAddress['poi_address'] ?? null),
