@@ -16,6 +16,20 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 {
     private const APP_CONTEXT = 'Food99';
     private const LEGACY_ORDER_CONTEXT = 'iFood';
+    private const SHOP_CANCEL_REASONS = [
+        ['reason_id' => 1010, 'description' => 'Item sold out', 'applicable_to' => 'all'],
+        ['reason_id' => 1020, 'description' => 'Store closed for the day', 'applicable_to' => 'all'],
+        ['reason_id' => 1030, 'description' => 'Store too busy to prepare order', 'applicable_to' => 'all'],
+        ['reason_id' => 1040, 'description' => 'Major accident or utility outage', 'applicable_to' => 'all'],
+        ['reason_id' => 1050, 'description' => 'Canceled due to customer issue', 'applicable_to' => 'all'],
+        ['reason_id' => 1060, 'description' => 'No courier available', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1070, 'description' => 'Menu needs to be updated', 'applicable_to' => 'all'],
+        ['reason_id' => 1071, 'description' => 'Order is outside the delivery area', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1072, 'description' => 'Order address is in an unsafe area', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1073, 'description' => 'Suspected fraud or prank', 'applicable_to' => 'all'],
+        ['reason_id' => 1074, 'description' => 'Questions about fees or promotions', 'applicable_to' => 'all'],
+        ['reason_id' => 1080, 'description' => 'Other reason', 'applicable_to' => 'all'],
+    ];
     private static array $authTokenCache = [];
 
     private function init()
@@ -48,6 +62,62 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return trim((string) $value);
+    }
+
+    private function normalizeCancelReasonId(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $normalized = preg_replace('/\D+/', '', (string) $value);
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return null;
+        }
+
+        $reasonId = (int) $normalized;
+
+        return $reasonId > 0 ? $reasonId : null;
+    }
+
+    private function findShopCancelReasonDefinition(int $reasonId): ?array
+    {
+        foreach (self::SHOP_CANCEL_REASONS as $reason) {
+            if ((int) ($reason['reason_id'] ?? 0) === $reasonId) {
+                return $reason;
+            }
+        }
+
+        return null;
+    }
+
+    private function isCancelReasonApplicableToState(array $reason, array $state): bool
+    {
+        $scope = strtolower(trim((string) ($reason['applicable_to'] ?? 'all')));
+        if ($scope === 'all') {
+            return true;
+        }
+
+        if ($scope === 'self_delivery') {
+            return !empty($state['is_store_delivery']);
+        }
+
+        return true;
+    }
+
+    private function buildShopCancelReasonListForState(array $state): array
+    {
+        return array_map(function (array $reason) use ($state) {
+            $isApplicable = $this->isCancelReasonApplicableToState($reason, $state);
+
+            return [
+                'reason_id' => (int) $reason['reason_id'],
+                'description' => (string) $reason['description'],
+                'applicable_to' => (string) $reason['applicable_to'],
+                'requires_description' => (int) $reason['reason_id'] === 1080,
+                'applicable' => $isApplicable,
+            ];
+        }, self::SHOP_CANCEL_REASONS);
     }
 
     private function buildOrderIntegrationLockKey(string $orderId): string
@@ -381,13 +451,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $extraPayload), $provider);
     }
 
-    public function cancelByShop(string $orderId, ?People $provider = null): ?array
+    public function cancelByShop(string $orderId, ?People $provider = null, ?int $reasonId = null, ?string $reason = null): ?array
     {
-        return $this->call99EndpointWithResponse('/v1/order/order/cancel', [
+        $resolvedReasonId = $reasonId ?: 1080;
+        $resolvedReason = trim((string) $reason);
+
+        if ($resolvedReasonId === 1080 && $resolvedReason === '') {
+            $resolvedReason = 'Cancelled by merchant system';
+        }
+
+        $payload = [
             'order_id' => $orderId,
-            'reason_id' => 1080,
-            'reason' => 'Cancelled by merchant system',
-        ], $provider);
+            'reason_id' => $resolvedReasonId,
+        ];
+
+        if ($resolvedReason !== '') {
+            $payload['reason'] = $resolvedReason;
+        }
+
+        return $this->call99EndpointWithResponse('/v1/order/order/cancel', $payload, $provider);
     }
 
     private function buildUnavailableOrderActionResponse(string $message): array
@@ -440,8 +522,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             if ($action === 'cancel') {
                 $this->persistOrderIntegrationState($order, [
                     'remote_order_state' => 'cancelled',
-                    'cancel_code' => '1080',
-                    'cancel_reason' => 'Cancelled by merchant system',
                 ]);
                 $this->applyLocalCanceledStatus($order);
             } elseif ($action === 'ready') {
@@ -923,6 +1003,21 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $safeResponse;
     }
 
+    public function getOrderCancelReasons(Order $order): array
+    {
+        $state = $this->getStoredOrderIntegrationState($order);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'delivery_type' => $state['delivery_type'] ?? '',
+                'delivery_label' => $state['delivery_label'] ?? 'Indefinido',
+                'reasons' => $this->buildShopCancelReasonListForState($state),
+            ],
+        ];
+    }
+
     public function performReadyAction(Order $order): array
     {
         $orderId = $this->resolveRemoteOrderId($order);
@@ -937,7 +1032,91 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         );
     }
 
-    public function performCancelAction(Order $order): array
+    public function performCancelAction(Order $order, ?int $reasonId = null, ?string $reason = null): array
+    {
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
+        }
+
+        $state = $this->getStoredOrderIntegrationState($order);
+        $resolvedReasonId = $reasonId ?: 1080;
+        $definition = $this->findShopCancelReasonDefinition($resolvedReasonId);
+
+        if (!$definition) {
+            return $this->persistOrderActionResult(
+                $order,
+                'cancel',
+                $this->buildUnavailableOrderActionResponse('Motivo de cancelamento da 99Food invalido.')
+            );
+        }
+
+        if (!$this->isCancelReasonApplicableToState($definition, $state)) {
+            return $this->persistOrderActionResult(
+                $order,
+                'cancel',
+                $this->buildUnavailableOrderActionResponse('O motivo selecionado nao se aplica ao tipo de entrega deste pedido.')
+            );
+        }
+
+        $resolvedReason = trim((string) $reason);
+        if ($resolvedReasonId === 1080 && $resolvedReason === '') {
+            $resolvedReason = 'Cancelled by merchant system';
+        }
+
+        $result = $this->persistOrderActionResult(
+            $order,
+            'cancel',
+            $this->cancelByShop($orderId, $order->getProvider(), $resolvedReasonId, $resolvedReason)
+        );
+
+        if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
+            $this->persistOrderIntegrationState($order, [
+                'cancel_code' => (string) $resolvedReasonId,
+                'cancel_reason' => $resolvedReason !== '' ? $resolvedReason : (string) ($definition['description'] ?? ''),
+            ]);
+            $this->entityManager->flush();
+        }
+
+        return $result;
+    }
+
+    public function performVerifyAction(Order $order, array $payload): array
+    {
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
+        }
+
+        $offlineGoodsPrice = $payload['offline_goods_price'] ?? $payload['offlineGoodsPrice'] ?? null;
+        if (!is_numeric($offlineGoodsPrice)) {
+            return $this->persistOrderActionResult(
+                $order,
+                'verify',
+                $this->buildUnavailableOrderActionResponse('offline_goods_price deve ser informado em centavos para validar o pedido.')
+            );
+        }
+
+        $requestPayload = [
+            'order_id' => $orderId,
+            'offline_goods_price' => (int) round((float) $offlineGoodsPrice),
+        ];
+
+        foreach (['picker_id', 'cashier_id'] as $fieldName) {
+            $value = $payload[$fieldName] ?? null;
+            if ($value !== null && $value !== '' && is_numeric($value)) {
+                $requestPayload[$fieldName] = (int) $value;
+            }
+        }
+
+        return $this->persistOrderActionResult(
+            $order,
+            'verify',
+            $this->verifyOrder($order->getProvider(), $requestPayload)
+        );
+    }
+
+    public function performCashPaymentConfirmAction(Order $order): array
     {
         $orderId = $this->resolveRemoteOrderId($order);
         if (!$orderId) {
@@ -946,8 +1125,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         return $this->persistOrderActionResult(
             $order,
-            'cancel',
-            $this->cancelByShop($orderId, $order->getProvider())
+            'pay_confirm',
+            $this->confirmCashPayment($order->getProvider(), [
+                'order_id' => $orderId,
+            ])
         );
     }
 

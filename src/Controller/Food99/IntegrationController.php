@@ -1702,7 +1702,7 @@ class IntegrationController extends AbstractController
     }
 
     #[Route('/marketplace/integrations/99food/orders/{orderId}/cancel', name: 'marketplace_integrations_food99_order_cancel', methods: ['POST'])]
-    public function cancelOrderAction(string $orderId): JsonResponse
+    public function cancelOrderAction(string $orderId, Request $request): JsonResponse
     {
         $order = $this->resolveOrder($orderId);
         if (!$order) {
@@ -1713,11 +1713,43 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->food99Service->performCancelAction($order);
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $reasonId = $payload['reason_id'] ?? $payload['reasonId'] ?? null;
+        $reason = trim((string) ($payload['reason'] ?? ''));
+
+        $result = $this->food99Service->performCancelAction(
+            $order,
+            $reasonId !== null && $reasonId !== '' ? (int) preg_replace('/\D+/', '', (string) $reasonId) : null,
+            $reason !== '' ? $reason : null
+        );
 
         return new JsonResponse([
             'action' => 'cancel',
             'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/cancel-reasons', name: 'marketplace_integrations_food99_order_cancel_reasons', methods: ['GET'])]
+    public function getCancelReasonsAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        return new JsonResponse([
+            'action' => 'cancel_reasons',
+            'result' => $this->food99Service->getOrderCancelReasons($order),
             'state' => $this->buildOrderIntegrationDetail($order),
         ]);
     }
@@ -1804,6 +1836,54 @@ class IntegrationController extends AbstractController
 
         return new JsonResponse([
             'action' => 'reconcile',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/verify', name: 'marketplace_integrations_food99_order_verify', methods: ['POST'])]
+    public function verifyOrderAction(string $orderId, Request $request): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $result = $this->food99Service->performVerifyAction($order, $payload);
+
+        return new JsonResponse([
+            'action' => 'verify',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/99food/orders/{orderId}/pay-confirm', name: 'marketplace_integrations_food99_order_pay_confirm', methods: ['POST'])]
+    public function payConfirmOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderErrorResponse();
+        }
+
+        if (!$this->isFood99Order($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $result = $this->food99Service->performCashPaymentConfirmAction($order);
+
+        return new JsonResponse([
+            'action' => 'pay_confirm',
             'result' => $result,
             'state' => $this->buildOrderIntegrationDetail($order),
         ]);
