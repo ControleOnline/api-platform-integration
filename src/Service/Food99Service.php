@@ -2355,17 +2355,29 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $payMethod = $this->normalizeIncomingFood99Value($orderInfo['pay_method'] ?? $data['pay_method'] ?? null);
         $payChannel = $this->normalizeIncomingFood99Value($orderInfo['pay_channel'] ?? $data['pay_channel'] ?? null);
         $storeDiscountTotal = $this->sumPromotionStoreSubsidy($promotions);
+        $itemsDiscountTotal = $this->normalizeFood99Money($price['items_discount'] ?? null);
+        $deliveryDiscountTotal = $this->normalizeFood99Money($price['delivery_discount'] ?? null);
+        $couponDiscountTotal = $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null);
+        $promotionsTotal = $this->sumPromotionTotalDiscount($promotions);
+        $originalDeliveryFee = $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? $price['delivery_price'] ?? null);
 
         $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
-        $deliveryFee = $this->normalizeFood99Money($price['delivery_price'] ?? null);
+        $deliveryFee = $originalDeliveryFee;
         $serviceFee = $this->normalizeFood99Money($otherFees['service_price'] ?? null);
         $smallOrderFee = $this->normalizeFood99Money($otherFees['small_order_price'] ?? null);
         $tipTotal = $this->normalizeFood99Money($otherFees['total_tip_money'] ?? null);
         $mealTopUpFee = $this->normalizeFood99Money($otherFees['meal_top_up_price'] ?? null);
         $subtotalBeforeDiscounts = round($itemsTotal + $deliveryFee + $serviceFee + $smallOrderFee + $tipTotal + $mealTopUpFee, 2);
-        $customerTotal = $this->normalizeFood99Money(
-            $price['customer_need_paying_money'] ?? $price['real_pay_price'] ?? null
+        $explicitCustomerTotal = $this->normalizeFood99Money(
+            $price['customer_need_paying_money'] ?? $price['real_pay_price'] ?? $price['real_price'] ?? null
         );
+        $knownDiscountTotal = max(
+            $itemsDiscountTotal + $deliveryDiscountTotal + $couponDiscountTotal,
+            $promotionsTotal
+        );
+        $customerTotal = $explicitCustomerTotal > 0
+            ? $explicitCustomerTotal
+            : round(max(0, $subtotalBeforeDiscounts - $knownDiscountTotal), 2);
         $discountTotal = round(max(0, $subtotalBeforeDiscounts - $customerTotal), 2);
         $platformDiscountTotal = round(max(0, $discountTotal - $storeDiscountTotal), 2);
         $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
@@ -2388,15 +2400,15 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'discount_total' => $discountTotal,
                 'store_discount_total' => $storeDiscountTotal,
                 'platform_discount_total' => $platformDiscountTotal,
-                'promotions_total' => $this->sumPromotionTotalDiscount($promotions),
-                'items_discount_total' => $this->normalizeFood99Money($price['items_discount'] ?? null),
-                'delivery_discount_total' => $this->normalizeFood99Money($price['delivery_discount'] ?? null),
-                'coupon_discount_total' => $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null),
+                'promotions_total' => $promotionsTotal,
+                'items_discount_total' => $itemsDiscountTotal,
+                'delivery_discount_total' => $deliveryDiscountTotal,
+                'coupon_discount_total' => $couponDiscountTotal,
                 'customer_total' => $customerTotal,
                 'store_receivable_total' => $this->normalizeFood99Money($price['real_price'] ?? null),
                 'real_pay_total' => $this->normalizeFood99Money($price['real_pay_price'] ?? null),
                 'refund_total' => $this->normalizeFood99Money($price['refund_price'] ?? null),
-                'store_charged_delivery_price' => $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? null),
+                'store_charged_delivery_price' => $originalDeliveryFee,
             ],
             'payment' => [
                 'pay_type' => $payType,
