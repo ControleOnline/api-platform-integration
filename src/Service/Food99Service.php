@@ -2023,20 +2023,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $client;
         }
 
-        $nameParts = array_filter([
-            $this->normalizeIncomingFood99Value($address['name'] ?? null),
-            $this->normalizeIncomingFood99Value($address['first_name'] ?? null),
-            $this->normalizeIncomingFood99Value($address['last_name'] ?? null),
-        ]);
-        $fallbackName = trim(implode(' ', array_unique($nameParts)));
-        if ($fallbackName === '') {
-            $fallbackName = 'Cliente Food99';
-        }
-
-        $clientCode = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
-        if ($clientCode === '') {
-            $clientCode = 'food99-order-' . $orderId;
-        }
+        $fallbackName = $this->resolveFood99CustomerName($address);
+        $clientCode = $this->resolveFood99ClientCode($address, $orderId);
 
         self::$logger->warning('Food99 order received without a resolved customer name; using fallback customer record', [
             'order_id' => $orderId,
@@ -2271,6 +2259,58 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return implode(', ', array_values(array_unique($parts)));
     }
 
+    private function isFood99PrivacyPlaceholder(mixed $value): bool
+    {
+        $normalized = strtolower(trim((string) $this->normalizeIncomingFood99Value($value)));
+        if ($normalized === '') {
+            return false;
+        }
+
+        return in_array($normalized, [
+            'privacy protection',
+            'privacy_protection',
+            'privacy-protection',
+            'protected',
+        ], true);
+    }
+
+    private function sanitizeFood99IdentityValue(mixed $value): ?string
+    {
+        $normalized = $this->normalizeIncomingFood99Value($value);
+        if ($normalized === '' || $this->isFood99PrivacyPlaceholder($normalized)) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    private function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
+    {
+        $nameParts = array_filter([
+            $this->sanitizeFood99IdentityValue($address['name'] ?? null),
+            $this->sanitizeFood99IdentityValue($address['first_name'] ?? null),
+            $this->sanitizeFood99IdentityValue($address['last_name'] ?? null),
+        ], static fn($value) => $value !== null && $value !== '');
+
+        $resolved = trim(implode(' ', array_values(array_unique($nameParts))));
+
+        if ($resolved !== '') {
+            return $resolved;
+        }
+
+        return $fallback;
+    }
+
+    private function resolveFood99ClientCode(array $address, string $orderId): string
+    {
+        $clientCode = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
+        if ($clientCode === '' || $clientCode === '0') {
+            return 'food99-order-' . $orderId;
+        }
+
+        return $clientCode;
+    }
+
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
     {
         $normalizedPayType = trim((string) $payType);
@@ -2371,14 +2411,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'delivery_99_always_paid_rule' => $isPlatformDelivery,
             ],
             'customer' => [
-                'name' => $this->normalizeIncomingFood99Value(
-                    $receiveAddress['name']
-                        ?? trim(implode(' ', array_filter([
-                            $receiveAddress['first_name'] ?? null,
-                            $receiveAddress['last_name'] ?? null,
-                        ])))
-                        ?? null
-                ),
+                'name' => $this->resolveFood99CustomerName($receiveAddress, ''),
                 'phone' => $this->normalizeIncomingFood99Value($receiveAddress['phone'] ?? null),
             ],
             'address' => [
@@ -5104,18 +5137,24 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function discoveryClient(array $address): ?People
     {
-        if (empty($address['name'])) {
+        $resolvedName = $this->resolveFood99CustomerName($address, '');
+        $uid = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
+
+        if ($uid === '0') {
+            $uid = '';
+        }
+
+        if ($resolvedName === '' || $uid === '') {
             return null;
         }
 
         $client = $this->peopleService->discoveryPeople(
-            $address['uid'] ?? null,
+            $uid,
             null,
             null,
-            $address['name']
+            $resolvedName
         );
 
-        $uid = (string) ($address['uid'] ?? '');
         if ($uid !== '') {
             $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $uid);
         }
