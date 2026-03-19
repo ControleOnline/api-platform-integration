@@ -1015,6 +1015,9 @@ class IntegrationController extends AbstractController
                 'handover_page_url' => $storedState['handover_page_url'],
                 'handover_confirmation_url' => $this->resolveFood99HandoverConfirmationUrl($storedState),
                 'virtual_phone_number' => $storedState['virtual_phone_number'],
+                'rider_name' => $storedState['rider_name'] ?? null,
+                'rider_phone' => $storedState['rider_phone'] ?? null,
+                'rider_to_store_eta' => $storedState['rider_to_store_eta'] ?? null,
                 'is_store_delivery' => $storedState['is_store_delivery'],
                 'is_platform_delivery' => $storedState['is_platform_delivery'],
                 'allows_manual_delivery_completion' => $storedState['allows_manual_delivery_completion'],
@@ -1052,6 +1055,7 @@ class IntegrationController extends AbstractController
             'accepted' => 'Aceito',
             'preparing' => 'Preparando',
             'ready' => 'Pronto',
+            'courier_to_store' => 'Entregador a caminho da loja',
             'picked_up' => 'Coletado',
             'arriving' => 'Chegando',
             'delivering' => 'Entregando',
@@ -1098,9 +1102,9 @@ class IntegrationController extends AbstractController
         $remoteState = $this->normalizeOrderStateValue($storedState['remote_order_state'] ?? null);
 
         $isTerminal = $this->isTerminalOrderState($realStatus, $remoteState);
-        $isReadyOrBeyond = in_array($remoteState, ['ready', 'picked_up', 'delivering', 'arriving', 'delivered', 'finished', 'closed', 'complete', 'completed'], true);
+        $isReadyOrBeyond = in_array($remoteState, ['ready', 'courier_to_store', 'picked_up', 'delivering', 'arriving', 'delivered', 'finished', 'closed', 'complete', 'completed'], true);
         $isDeliveredOrCancelled = in_array($remoteState, ['delivered', 'finished', 'closed', 'complete', 'completed', 'cancelled', 'canceled'], true);
-        $isDelivering = in_array($remoteState, ['picked_up', 'delivering', 'arriving'], true);
+        $isDelivering = in_array($remoteState, ['courier_to_store', 'picked_up', 'delivering', 'arriving'], true);
         $requiresDeliveryLocator = !empty($storedState['is_store_delivery'])
             && !empty($storedState['allows_manual_delivery_completion']);
         $requiresDeliveryCode = $requiresDeliveryLocator;

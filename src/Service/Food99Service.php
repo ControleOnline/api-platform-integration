@@ -2096,6 +2096,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'handover_page_url' => $this->getFood99OrderExtraDataValue($orderId, 'handover_page_url'),
             'virtual_phone_number' => $this->getFood99OrderExtraDataValue($orderId, 'virtual_phone_number'),
             'handover_code' => $this->getFood99OrderExtraDataValue($orderId, 'handover_code'),
+            'rider_name' => $this->getFood99OrderExtraDataValue($orderId, 'rider_name'),
+            'rider_phone' => $this->getFood99OrderExtraDataValue($orderId, 'rider_phone'),
+            'rider_to_store_eta' => $this->getFood99OrderExtraDataValue($orderId, 'rider_to_store_eta'),
         ];
 
         $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
@@ -2278,9 +2281,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return match ($normalizedPayType) {
-            '2' => 'Online',
+            '2' => 'Pagamento fora da plataforma',
             '1' => 'Pagamento na entrega',
-            default => 'Indefinido',
+            default => 'Pagamento fora da plataforma',
         };
     }
 
@@ -2327,7 +2330,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $platformDiscountTotal = round(max(0, $discountTotal - $storeDiscountTotal), 2);
         $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
         $isPlatformDelivery = $deliveryType === '1';
-        $isPaidOnline = $isPlatformDelivery || $payType === '2';
+        // 99Food only guarantees "already paid" when delivery is handled by the 99 platform.
+        $isPaidOnline = $isPlatformDelivery;
         $amountPaid = $isPaidOnline ? $customerTotal : 0.0;
         $amountPending = round(max(0, $customerTotal - $amountPaid), 2);
 
@@ -2414,6 +2418,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'handover_page_url' => $this->extractOrderHandoverPageUrl($json),
             'virtual_phone_number' => $this->extractOrderVirtualPhoneNumber($json),
             'handover_code' => $this->extractOrderHandoverCode($json),
+            'rider_name' => $this->extractOrderRiderName($json),
+            'rider_phone' => $this->extractOrderRiderPhone($json),
+            'rider_to_store_eta' => $this->extractOrderRiderToStoreEta($json),
         ];
     }
 
@@ -2428,6 +2435,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'handover_page_url',
             'virtual_phone_number',
             'handover_code',
+            'rider_name',
+            'rider_phone',
+            'rider_to_store_eta',
         ];
 
         $requiresFallback = false;
@@ -2599,6 +2609,33 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $this->searchPayloadValueByKeys($json, [
             'handover_code',
             'handoverCode',
+        ]);
+    }
+
+    private function extractOrderRiderName(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'rider_name',
+            'riderName',
+        ]);
+    }
+
+    private function extractOrderRiderPhone(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'rider_phone',
+            'riderPhone',
+        ]);
+    }
+
+    private function extractOrderRiderToStoreEta(array $json): ?string
+    {
+        return $this->searchPayloadValueByKeys($json, [
+            'rider_to_B_ETA',
+            'rider_to_b_eta',
+            'riderToBEta',
+            'rider_to_store_eta',
+            'riderToStoreEta',
         ]);
     }
 
@@ -3010,6 +3047,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             if ($statusCode === 160 || $statusCode >= 600) {
                 return 'delivered';
             }
+            if ($statusCode === 120) {
+                return 'courier_to_store';
+            }
             if ($statusCode >= 400) {
                 return 'delivering';
             }
@@ -3084,6 +3124,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'accepted' => 20,
             'preparing' => 30,
             'ready' => 40,
+            'courier_to_store' => 42,
             'partial_cancel', 'cancel_requested' => 45,
             'picked_up' => 50,
             'delivering' => 60,
