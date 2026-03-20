@@ -2314,17 +2314,110 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
     {
         $normalizedPayType = trim((string) $payType);
-        $normalizedDeliveryType = trim((string) $deliveryType);
-
-        if ($normalizedDeliveryType === '1') {
-            return 'Online pela 99Food';
-        }
 
         return match ($normalizedPayType) {
-            '2' => 'Pagamento fora da plataforma',
-            '1' => 'Pagamento na entrega',
-            default => 'Pagamento fora da plataforma',
+            '1' => 'Pagamento online',
+            '2' => 'Dinheiro',
+            '3' => 'POS',
+            '4' => 'Carteira / 99Pay',
+            '5' => 'PayPay sem senha',
+            '6' => 'PayPay com senha',
+            default => trim((string) $deliveryType) === '1'
+                ? 'Pagamento processado pela 99Food'
+                : 'Pagamento nao mapeado',
         };
+    }
+
+    private function resolveFood99PaymentMethodLabel(?string $payMethod): string
+    {
+        return match (trim((string) $payMethod)) {
+            '1' => 'Pagamento online',
+            '2' => 'Pagamento offline',
+            '0' => 'Nao informado pela 99',
+            default => 'Metodo nao mapeado',
+        };
+    }
+
+    private function resolveFood99PaymentChannelLabel(?string $payChannel, ?string $payMethod, ?string $deliveryType): string
+    {
+        $normalizedPayChannel = trim((string) $payChannel);
+        $normalizedPayMethod = trim((string) $payMethod);
+        $normalizedDeliveryType = trim((string) $deliveryType);
+
+        if ($normalizedPayChannel === '') {
+            return '';
+        }
+
+        return match ($normalizedPayChannel) {
+            '0' => 'Nao informado pela 99',
+            '110' => 'Cupom',
+            '120' => '99Food Wallet',
+            '150' => 'Cartao de credito / debito',
+            '153' => 'Dinheiro',
+            '154' => 'POS',
+            '167' => 'Preauth',
+            '182' => 'PayPay sem senha',
+            '184' => 'PayPay com senha',
+            '190' => '99Pay',
+            '212' => 'PIX',
+            '219' => '99Food Cuenta',
+            '229' => 'NuPay',
+            '234' => 'Apple Pay (pre-auth)',
+            '235' => 'Apple Pay',
+            '257' => 'Vale Refeicao Pluxee',
+            '258' => 'Vale Refeicao Ticket',
+            '259' => 'Vale Refeicao VR',
+            '260' => 'Vale Refeicao Alelo',
+            '261' => 'NEQUI',
+            '262' => 'POS cartao de credito',
+            '263' => 'POS cartao de debito',
+            '264' => 'POS vale refeicao',
+            '272' => 'Google Pay',
+            '273' => 'Google Pay (pre-auth)',
+            '310' => 'Yape',
+            '311' => 'Plin',
+            '901' => 'Beneficio',
+            '2008' => 'Marketing',
+            default => match ($normalizedPayMethod) {
+                '1' => $normalizedDeliveryType === '1'
+                    ? 'Pagamento online'
+                    : 'Pagamento online selecionado pelo cliente',
+                '2' => 'Pagamento offline',
+                default => 'Canal nao mapeado',
+            },
+        };
+    }
+
+    private function resolveFood99SelectedPaymentLabel(
+        string $paymentChannelLabel,
+        string $paymentTypeLabel,
+        string $paymentMethodLabel
+    ): string {
+        $preferredLabels = [
+            $paymentChannelLabel,
+            $paymentTypeLabel,
+            $paymentMethodLabel,
+        ];
+
+        foreach ($preferredLabels as $label) {
+            $normalizedLabel = trim((string) $label);
+            if ($normalizedLabel === '') {
+                continue;
+            }
+
+            if (in_array($normalizedLabel, [
+                'Nao informado pela 99',
+                'Canal nao mapeado',
+                'Metodo nao mapeado',
+                'Pagamento nao mapeado',
+            ], true)) {
+                continue;
+            }
+
+            return $normalizedLabel;
+        }
+
+        return trim((string) ($paymentChannelLabel ?: $paymentTypeLabel ?: $paymentMethodLabel));
     }
 
     public function getOrderHomologationSnapshot(Order $order): array
@@ -2360,6 +2453,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $couponDiscountTotal = $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null);
         $promotionsTotal = $this->sumPromotionTotalDiscount($promotions);
         $originalDeliveryFee = $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? $price['delivery_price'] ?? null);
+        $changeFor = $this->normalizeFood99Money($orderInfo['change_for'] ?? $data['change_for'] ?? null);
+        $shopPaidMoney = $this->normalizeFood99Money($price['shop_paid_money'] ?? null);
 
         $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
         $deliveryFee = $originalDeliveryFee;
@@ -2381,11 +2476,22 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $discountTotal = round(max(0, $subtotalBeforeDiscounts - $customerTotal), 2);
         $platformDiscountTotal = round(max(0, $discountTotal - $storeDiscountTotal), 2);
         $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
+        $paymentMethodLabel = $this->resolveFood99PaymentMethodLabel($payMethod);
+        $paymentChannelLabel = $this->resolveFood99PaymentChannelLabel($payChannel, $payMethod, $deliveryType);
+        $selectedPaymentLabel = $this->resolveFood99SelectedPaymentLabel(
+            $paymentChannelLabel,
+            $paymentTypeLabel,
+            $paymentMethodLabel
+        );
         $isPlatformDelivery = $deliveryType === '1';
         // 99Food only guarantees "already paid" when delivery is handled by the 99 platform.
         $isPaidOnline = $isPlatformDelivery;
         $amountPaid = $isPaidOnline ? $customerTotal : 0.0;
         $amountPending = round(max(0, $customerTotal - $amountPaid), 2);
+        $customerNeedPayingMoney = $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null);
+        $changeAmount = $changeFor > 0 && $customerNeedPayingMoney > 0
+            ? round(max(0, $changeFor - $customerNeedPayingMoney), 2)
+            : 0.0;
 
         return [
             'financial' => [
@@ -2405,23 +2511,31 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'delivery_discount_total' => $deliveryDiscountTotal,
                 'coupon_discount_total' => $couponDiscountTotal,
                 'customer_total' => $customerTotal,
-                'customer_need_paying_money' => $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null),
+                'customer_need_paying_money' => $customerNeedPayingMoney,
                 'store_receivable_total' => $this->normalizeFood99Money($price['real_price'] ?? null),
                 'real_pay_total' => $this->normalizeFood99Money($price['real_pay_price'] ?? null),
                 'refund_total' => $this->normalizeFood99Money($price['refund_price'] ?? null),
                 'store_charged_delivery_price' => $originalDeliveryFee,
+                'shop_paid_money' => $shopPaidMoney,
             ],
             'payment' => [
                 'pay_type' => $payType,
                 'pay_type_label' => $paymentTypeLabel,
                 'pay_method' => $payMethod,
+                'pay_method_label' => $paymentMethodLabel,
                 'pay_channel' => $payChannel,
+                'pay_channel_label' => $paymentChannelLabel,
+                'selected_payment_label' => $selectedPaymentLabel,
                 'amount_paid' => $amountPaid,
                 'amount_pending' => $amountPending,
-                'customer_need_paying_money' => $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null),
+                'customer_need_paying_money' => $customerNeedPayingMoney,
                 'collect_on_delivery_amount' => $isPaidOnline
                     ? 0.0
-                    : ($this->normalizeFood99Money($price['customer_need_paying_money'] ?? null) ?: $customerTotal),
+                    : ($customerNeedPayingMoney ?: $customerTotal),
+                'shop_paid_money' => $shopPaidMoney,
+                'change_for' => $changeFor,
+                'change_amount' => $changeAmount,
+                'needs_change' => $changeAmount > 0.009,
                 'is_fully_paid' => $amountPending <= 0.009,
                 'should_confirm_payment' => !$isPaidOnline,
                 'is_paid_online' => $isPaidOnline,
