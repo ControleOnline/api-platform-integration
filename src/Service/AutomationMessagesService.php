@@ -7,6 +7,7 @@ use ControleOnline\Entity\Connection;
 use ControleOnline\Message\SendAutomationMessage;
 use ControleOnline\Messages\MessageInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
+
 class AutomationMessagesService
 {
     public function __construct(
@@ -17,9 +18,14 @@ class AutomationMessagesService
     public function receiveMessage(MessageInterface $message, Connection $connection, Task $task)
     {
         $this->bus->dispatch(new SendAutomationMessage(
-            $message,
-            $connection,
-            $task
+            messageData: [
+                'origin' => $message->getOriginNumber(),
+                'destination' => $message->getDestinationNumber(),
+                'message' => $message->getMessageContent()->getBody(),
+                'action' => $message->getAction(),
+            ],
+            connectionId: $connection->getId(),
+            taskId: $task->getId()
         ));
     }
 }

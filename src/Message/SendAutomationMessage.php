@@ -9,8 +9,8 @@ use ControleOnline\Messages\MessageInterface;
 class SendAutomationMessage
 {
     public function __construct(
-        public MessageInterface $message,
-        public Connection $connection,
-        public Task $task
+        public array $messageData,
+        public int $connectionId,
+        public int $taskId
     ) {}
 }
