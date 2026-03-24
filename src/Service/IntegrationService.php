@@ -11,6 +11,7 @@ use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInt
 use ControleOnline\Service\StatusService;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 
 class IntegrationService
@@ -22,7 +23,7 @@ class IntegrationService
         private StatusService $statusService,
         private LockFactory $lockFactory,
         private ContainerInterface $container,
-
+        private MessageBusInterface $bus,
 
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
@@ -123,10 +124,7 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
-        //if ($this->lock->acquire()) {
-        //    $this->executeIntegration($integration);
-        //    $this->lock->release();
-        //}
+        $this->bus->dispatch($integration);
 
         return $integration;
     }
