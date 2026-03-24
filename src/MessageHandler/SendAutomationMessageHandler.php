@@ -24,10 +24,10 @@ class SendAutomationMessageHandler
         $task = $this->em->getRepository(Task::class)->find($message->taskId);
 
         $whatsAppMessage = new WhatsAppMessage();
-        $whatsAppMessage->setAction($message['action']);
-        $whatsAppMessage->setOriginNumber($message['origin']);
-        $whatsAppMessage->setDestinationNumber($message['destination']);
-        $whatsAppMessage->setMessageContent($message['message']);
+        $whatsAppMessage->setAction($message->messageData['action']);
+        $whatsAppMessage->setOriginNumber($message->messageData['origin']);
+        $whatsAppMessage->setDestinationNumber($message->messageData['destination']);
+        $whatsAppMessage->setMessageContent($message->messageData['message']);
 
         $this->n8nService->sendToWebhook(
             $whatsAppMessage,
