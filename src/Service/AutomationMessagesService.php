@@ -3,20 +3,23 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Task;
-use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface
-as Security;
 use ControleOnline\Entity\Connection;
+use ControleOnline\Message\SendAutomationMessage;
 use ControleOnline\Messages\MessageInterface;
-
+use Symfony\Component\Messenger\MessageBusInterface;
 class AutomationMessagesService
 {
     public function __construct(
-        private N8NService $n8nService,
+        private MessageBusInterface $bus
+
     ) {}
 
     public function receiveMessage(MessageInterface $message, Connection $connection, Task $task)
     {
-        return $this->n8nService->sendToWebhook($message, $connection, $task);
+        $this->bus->dispatch(new SendAutomationMessage(
+            $message,
+            $connection,
+            $task
+        ));
     }
 }
