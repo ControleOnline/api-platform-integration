@@ -5,7 +5,7 @@ services:
         public: true 
     ControleOnline\:
         resource: '../../src/*'
-        exclude: '../src/{DependencyInjection,Entity,Resource,Migrations,Library,Tests,Kernel.php}'
+        exclude: '../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,Tests,Kernel.php}'
     ControleOnline\Repository\:
         resource: '../../src/Repository'
         tags: ['doctrine.repository_service']
@@ -25,3 +25,8 @@ services:
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
         arguments:
             - { base_uri: '%env(N8N_WEBHOOK)%' }
+    ControleOnline\Message\:
+        resource: '../src/ControleOnline/Message'
+        autowire: false
+        autoconfigure: false
+        public: false
