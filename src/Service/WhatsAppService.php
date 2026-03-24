@@ -75,7 +75,7 @@ class WhatsAppService
             case 'support':
                 return $this->taskInterationService->addClientInteration($whatsAppMessage, $connection, 'support');
                 break;
-            case 'crm':
+            case 'relationship':
                 return $this->taskInterationService->addClientInteration($whatsAppMessage, $connection, 'relationship');
                 break;
         }
