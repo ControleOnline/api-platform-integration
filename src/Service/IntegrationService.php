@@ -6,6 +6,7 @@ use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
+use ControleOnline\Message\SendIntegrationMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
@@ -124,7 +125,11 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
-        $this->bus->dispatch($integration);
+        $this->bus->dispatch(
+            new SendIntegrationMessage(
+                integrationId: $integration->getId()
+            )
+        );
 
         return $integration;
     }

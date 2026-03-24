@@ -2,10 +2,13 @@
 
 namespace ControleOnline\MessageHandler;
 
+use ControleOnline\Entity\Connection;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Message\SendIntegrationMessage;
 use ControleOnline\Service\IntegrationService;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Doctrine\ORM\EntityManagerInterface;
 
 #[AsMessageHandler]
 class IntegrationMessageHandler
@@ -14,12 +17,14 @@ class IntegrationMessageHandler
     public function __construct(
         private IntegrationService $integrationService,
         private LockFactory $lockFactory,
+        private EntityManagerInterface $em
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
     }
 
-    public function __invoke(Integration $integration)
+    public function __invoke(SendIntegrationMessage $message)
     {
+        $integration = $this->em->getRepository(Connection::class)->find($message->integrationId);
         if (!$integration)
             return;
 
