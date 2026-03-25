@@ -19,7 +19,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Throwable;
 
-class IntegrationCommand extends DefaultCommand
+class TenantIntegrationCommand extends DefaultCommand
 {
     protected $input;
     protected $output;
@@ -40,7 +40,7 @@ class IntegrationCommand extends DefaultCommand
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
         $this->loggerService = $loggerService;
-        parent::__construct('integration:start');
+        parent::__construct('tenant:integration:start');
     }
 
 
