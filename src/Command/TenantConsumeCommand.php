@@ -23,7 +23,7 @@ class TenantConsumeCommand extends DefaultCommand
     public function __construct(
         LockFactory $lockFactory,
         DatabaseSwitchService $databaseSwitchService,
-        ContainerInterface $messengerReceiverLocator 
+        ContainerInterface $messengerReceiverLocator
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
@@ -66,6 +66,9 @@ class TenantConsumeCommand extends DefaultCommand
 
             $receivers[$name] = $this->receiverLocator->get($name);
         }
+
+        var_dump(array_keys($receivers));
+        exit;
 
         $worker = new Worker(
             $receivers,
