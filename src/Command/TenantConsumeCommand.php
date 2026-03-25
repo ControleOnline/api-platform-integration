@@ -57,6 +57,10 @@ class TenantConsumeCommand extends DefaultCommand
 
     protected function runCommand(): int
     {
+        if (!$this->lock->acquire()) {
+            $this->addLog('Outro processo ainda está em execução. Ignorando...');
+            return Command::SUCCESS;
+        }
         $domain = $this->input->getOption('domain');
 
         if (!$domain) {

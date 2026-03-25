@@ -51,33 +51,32 @@ class TenantIntegrationCommand extends DefaultCommand
 
     protected function runCommand(): int
     {
-        if ($this->lock->acquire()) {
-            $this->addLog('Iniciando a verificação da fila de integração...');
-            $integrations = $this->integrationService->getAllOpenIntegrations(1000);
-
-            foreach ($integrations as $integration)
-                try {
-                    $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
-                    $this->addLog(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
-                    $this->addLog('Service: ' . $serviceName);
-                    $this->integrationService->executeIntegration($integration);
-                } catch (Throwable $e) {
-                    $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
-                    $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
-                    $this->addLog($e->getLine());
-                    $this->addLog($e->getFile());
-                    $integration->setStatus($statusError);
-                    $this->entityManager->persist($integration);
-                    $this->entityManager->flush();
-                }
-
-
-            $this->addLog('Verificação da fila de integração concluída.');
-
-            return Command::SUCCESS;
-        } else {
+        if (!$this->lock->acquire()) {
             $this->addLog('Outro processo ainda está em execução. Ignorando...');
             return Command::SUCCESS;
         }
+        $this->addLog('Iniciando a verificação da fila de integração...');
+        $integrations = $this->integrationService->getAllOpenIntegrations(1000);
+
+        foreach ($integrations as $integration)
+            try {
+                $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+                $this->addLog(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
+                $this->addLog('Service: ' . $serviceName);
+                $this->integrationService->executeIntegration($integration);
+            } catch (Throwable $e) {
+                $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
+                $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
+                $this->addLog($e->getLine());
+                $this->addLog($e->getFile());
+                $integration->setStatus($statusError);
+                $this->entityManager->persist($integration);
+                $this->entityManager->flush();
+            }
+
+
+        $this->addLog('Verificação da fila de integração concluída.');
+
+        return Command::SUCCESS;
     }
 }
