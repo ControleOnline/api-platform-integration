@@ -7,6 +7,8 @@ use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Lock\LockFactory;
+use ControleOnline\Service\DatabaseSwitchService;
 
 #[AsCommand(
     name: 'tenant:messenger:consume',
@@ -15,8 +17,8 @@ use Symfony\Component\Console\Command\Command;
 class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
-        $lockFactory,
-        $databaseSwitchService
+        LockFactory $lockFactory,
+        DatabaseSwitchService $databaseSwitchService
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
