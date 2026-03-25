@@ -4984,7 +4984,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function getUniqueSellableMenuItemIds(array $payload): array
     {
-        $modifierItemIds = $this->getModifierGroupItemIds(is_array($payload['modifier_groups'] ?? null) ? $payload['modifier_groups'] : []);
         $sellableItemIds = [];
 
         foreach (($payload['items'] ?? []) as $item) {
@@ -4993,10 +4992,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $itemId = (string) $item['app_item_id'];
-
-            if (in_array($itemId, $modifierItemIds, true)) {
-                continue;
-            }
 
             if (!$this->isStandaloneMenuItem($item) || !$this->isActiveMenuItem($item)) {
                 continue;
