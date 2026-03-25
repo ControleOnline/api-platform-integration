@@ -9,7 +9,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use Symfony\Component\Messenger\Worker;
-use Symfony\Component\Messenger\Transport\Receiver\ReceiverLocator;
+use Psr\Container\ContainerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
@@ -19,20 +19,20 @@ use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 )]
 class TenantConsumeCommand extends DefaultCommand
 {
-    private ReceiverLocator $receiverLocator;
+    private ContainerInterface $receiverLocator;
     private MessageBusInterface $bus;
     private EventDispatcherInterface $eventDispatcher;
 
     public function __construct(
         LockFactory $lockFactory,
         DatabaseSwitchService $databaseSwitchService,
-        ReceiverLocator $receiverLocator,
+        ContainerInterface $messengerReceiverLocator,
         MessageBusInterface $bus,
         EventDispatcherInterface $eventDispatcher
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
-        $this->receiverLocator = $receiverLocator;
+        $this->receiverLocator = $messengerReceiverLocator;
         $this->bus = $bus;
         $this->eventDispatcher = $eventDispatcher;
 
@@ -67,6 +67,10 @@ class TenantConsumeCommand extends DefaultCommand
         $receivers = [];
 
         foreach ($receiversNames as $name) {
+            if (!$this->receiverLocator->has($name)) {
+                throw new \RuntimeException("Receiver \"$name\" não encontrado.");
+            }
+
             $receivers[$name] = $this->receiverLocator->get($name);
         }
 
