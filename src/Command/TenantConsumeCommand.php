@@ -19,16 +19,19 @@ use Doctrine\ORM\EntityManagerInterface;
 class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
-        private LockFactory $lockFactory,
-        private DatabaseSwitchService $databaseSwitchService,
-        private LoggerService $loggerService,
-        private SkyNetService $skyNetService,
+        LockFactory $lockFactory,
+        DatabaseSwitchService $databaseSwitchService,
+        LoggerService $loggerService,
+        SkyNetService $skyNetService,
         private IntegrationService $integrationService,
         private EntityManagerInterface $entityManager,
         private StatusService $statusService,
         private DomainService $domainService,
     ) {
-
+        $this->skyNetService = $skyNetService;
+        $this->lockFactory = $lockFactory;
+        $this->databaseSwitchService = $databaseSwitchService;
+        $this->loggerService = $loggerService;
         parent::__construct('tenant:messenger:consume');
     }
 
