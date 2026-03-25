@@ -45,6 +45,7 @@ class TenantConsumeCommand extends DefaultCommand
             ->addOption('keepalive', null, InputOption::VALUE_OPTIONAL);
     }
 
+
     protected function runCommand(): int
     {
         $domain = $this->input->getOption('domain');
@@ -56,30 +57,39 @@ class TenantConsumeCommand extends DefaultCommand
         $receivers = $this->input->getArgument('receivers') ?: ['async'];
 
         $this->addLog(sprintf(
-            '[tenant:messenger:consume] Iniciando | domain=%s | receivers=%s',
+            '[tenant:messenger:consume] Iniciando worker | domain=%s | receivers=%s',
             $domain,
             implode(',', $receivers)
         ));
 
-        $options = array_filter([
-            'command' => 'messenger:consume',
+    // Pega o comando real do Messenger
+        /** @var ConsumeMessagesCommand $consumeCommand */
+        $consumeCommand = $this->getApplication()->find('messenger:consume');
+
+        // Prepara as opções (mantém tudo que você já passa)
+        $options = [
             'receivers' => $receivers,
-            '--limit' => $this->input->getOption('limit'),
-            '--failure-limit' => $this->input->getOption('failure-limit'),
-            '--memory-limit' => $this->input->getOption('memory-limit'),
-            '--time-limit' => $this->input->getOption('time-limit'),
-            '--sleep' => $this->input->getOption('sleep'),
-            '--bus' => $this->input->getOption('bus'),
-            '--queues' => $this->input->getOption('queues'),
-            '--no-reset' => $this->input->getOption('no-reset'),
-            '--all' => $this->input->getOption('all'),
+            '--limit'            => $this->input->getOption('limit'),
+            '--failure-limit'    => $this->input->getOption('failure-limit'),
+            '--memory-limit'     => $this->input->getOption('memory-limit'),
+            '--time-limit'       => $this->input->getOption('time-limit'),
+            '--sleep'            => $this->input->getOption('sleep'),
+            '--bus'              => $this->input->getOption('bus'),
+            '--queues'           => $this->input->getOption('queues'),
+            '--no-reset'         => $this->input->getOption('no-reset'),
+            '--all'              => $this->input->getOption('all'),
             '--exclude-receivers' => $this->input->getOption('exclude-receivers'),
-            '--keepalive' => $this->input->getOption('keepalive'),
-        ], fn($v) => $v !== null && $v !== false && $v !== []);
+            '--keepalive'        => $this->input->getOption('keepalive'),
+            '--verbose'          => $this->output->getVerbosity(), // importante para logs
+        ];
+
+        // Remove valores null/false/vazios
+        $options = array_filter($options, fn($v) => $v !== null && $v !== false && $v !== []);
 
         $newInput = new ArrayInput($options);
         $newInput->setInteractive(false);
 
-        return $this->getApplication()->doRun($newInput, $this->output);
+        // Executa o consumeCommand diretamente (mantém o mesmo Output)
+        return $consumeCommand->run($newInput, $this->output);
     }
 }
