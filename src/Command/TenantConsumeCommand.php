@@ -16,10 +16,6 @@ use ControleOnline\Service\SkyNetService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
 
-#[AsCommand(
-    name: 'tenant:messenger:consume',
-    description: 'Consume mensagens com suporte a multi-tenancy'
-)]
 class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
