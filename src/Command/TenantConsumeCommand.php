@@ -9,8 +9,9 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use Symfony\Component\Messenger\Worker;
-use Symfony\Component\Messenger\Transport\Receiver\ReceiverInterface;
-use Psr\Container\ContainerInterface;
+use Symfony\Component\Messenger\Transport\Receiver\ReceiverLocator;
+use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 #[AsCommand(
     name: 'tenant:messenger:consume',
@@ -18,16 +19,22 @@ use Psr\Container\ContainerInterface;
 )]
 class TenantConsumeCommand extends DefaultCommand
 {
-    private ContainerInterface $receiverLocator;
+    private ReceiverLocator $receiverLocator;
+    private MessageBusInterface $bus;
+    private EventDispatcherInterface $eventDispatcher;
 
     public function __construct(
         LockFactory $lockFactory,
         DatabaseSwitchService $databaseSwitchService,
-        ContainerInterface $messengerReceiverLocator
+        ReceiverLocator $receiverLocator,
+        MessageBusInterface $bus,
+        EventDispatcherInterface $eventDispatcher
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
-        $this->receiverLocator = $messengerReceiverLocator;
+        $this->receiverLocator = $receiverLocator;
+        $this->bus = $bus;
+        $this->eventDispatcher = $eventDispatcher;
 
         parent::__construct('tenant:messenger:consume');
     }
@@ -60,15 +67,12 @@ class TenantConsumeCommand extends DefaultCommand
         $receivers = [];
 
         foreach ($receiversNames as $name) {
-            if (!$this->receiverLocator->has($name)) {
-                throw new \RuntimeException("Receiver \"$name\" não encontrado.");
-            }
-
             $receivers[$name] = $this->receiverLocator->get($name);
         }
 
-        var_dump(array_keys($receivers));
-        exit;
+        if (!$receivers) {
+            throw new \RuntimeException('Nenhum receiver encontrado.');
+        }
 
         $worker = new Worker(
             $receivers,
