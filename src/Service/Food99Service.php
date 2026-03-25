@@ -4298,6 +4298,76 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $connection->fetchAllAssociative($sql, $params);
     }
 
+    private function fetchMenuModifierRows(People $provider, array $productIds = []): array
+    {
+        $parentIds = $this->normalizeProductIds($productIds);
+        if (empty($parentIds)) {
+            return [];
+        }
+
+        $connection = $this->entityManager->getConnection();
+        $params = [
+            'providerId' => $provider->getId(),
+            'food99Context' => self::APP_CONTEXT,
+            'codeFieldName' => 'code',
+        ];
+
+        $placeholders = [];
+        foreach ($parentIds as $index => $productId) {
+            $key = 'parentProductId' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $productId;
+        }
+
+        $sql = <<<SQL
+            SELECT
+                pg.parent_product_id AS parent_product_id,
+                pg.id AS product_group_id,
+                pg.product_group AS product_group_name,
+                pg.required AS group_required,
+                pg.minimum AS group_minimum,
+                pg.maximum AS group_maximum,
+                pg.group_order AS group_order,
+                pgp.product_child_id AS child_product_id,
+                pgp.price AS child_relation_price,
+                child.product AS child_product_name,
+                child.description AS child_description,
+                child.price AS child_base_price,
+                ed_child.data_value AS child_food99_code
+            FROM product_group pg
+            INNER JOIN product_group_product pgp
+                ON pgp.product_group_id = pg.id
+            INNER JOIN product parent
+                ON parent.id = pg.parent_product_id
+            INNER JOIN product child
+                ON child.id = pgp.product_child_id
+            LEFT JOIN extra_fields ef_code
+                ON ef_code.context = :food99Context
+               AND ef_code.field_name = :codeFieldName
+            LEFT JOIN extra_data ed_child
+                ON ed_child.extra_fields_id = ef_code.id
+               AND ed_child.entity_name = 'Product'
+               AND ed_child.entity_id = child.id
+            WHERE parent.company_id = :providerId
+              AND parent.active = 1
+              AND child.active = 1
+              AND pg.active = 1
+              AND pgp.active = 1
+              AND pgp.product_type IN ('component', 'package')
+              AND pg.parent_product_id IN (%s)
+            ORDER BY
+                pg.parent_product_id ASC,
+                COALESCE(pg.group_order, 0) ASC,
+                pg.id ASC,
+                child.product ASC,
+                child.id ASC
+        SQL;
+
+        $sql = sprintf($sql, implode(', ', $placeholders));
+
+        return $connection->fetchAllAssociative($sql, $params);
+    }
+
     private function buildMenuProductView(array $row): array
     {
         $productId = (int) ($row['id'] ?? 0);
@@ -4616,7 +4686,49 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $categoriesMap = [];
-        $items = [];
+        $itemsById = [];
+        $parentItemIdByProductId = [];
+        $nextPriority = 1;
+
+        $upsertItem = static function (array &$itemsById, string $appItemId, array $itemData) use (&$nextPriority): void {
+            $itemData['app_item_id'] = $appItemId;
+
+            if (!isset($itemsById[$appItemId])) {
+                $itemData['priority'] = $itemData['priority'] ?? $nextPriority++;
+                $itemData['status'] = $itemData['status'] ?? 1;
+                $itemData['short_desc'] = $itemData['short_desc'] ?? '';
+                $itemData['is_sold_separately'] = $itemData['is_sold_separately'] ?? true;
+                $itemsById[$appItemId] = $itemData;
+                return;
+            }
+
+            $existingItem = $itemsById[$appItemId];
+
+            if (
+                !empty($itemData['item_name'])
+                && (!isset($existingItem['item_name']) || trim((string) $existingItem['item_name']) === '')
+            ) {
+                $existingItem['item_name'] = $itemData['item_name'];
+            }
+
+            if (
+                array_key_exists('price', $itemData)
+                && (!isset($existingItem['price']) || (int) $existingItem['price'] === 0)
+            ) {
+                $existingItem['price'] = (int) $itemData['price'];
+            }
+
+            if (!empty($itemData['short_desc']) && empty($existingItem['short_desc'])) {
+                $existingItem['short_desc'] = $itemData['short_desc'];
+            }
+
+            if (($itemData['is_sold_separately'] ?? false) === true) {
+                $existingItem['is_sold_separately'] = true;
+            }
+
+            $itemsById[$appItemId] = $existingItem;
+        };
+
         foreach ($eligibleProducts as $index => $product) {
             $categoryId = (string) $product['category']['id'];
             if (!isset($categoriesMap[$categoryId])) {
@@ -4628,16 +4740,142 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 ];
             }
 
-            $categoriesMap[$categoryId]['app_item_ids'][] = (string) $product['suggested_app_item_id'];
-            $items[] = [
-                'app_item_id' => (string) $product['suggested_app_item_id'],
+            $appItemId = (string) $product['suggested_app_item_id'];
+            $parentItemIdByProductId[(int) $product['id']] = $appItemId;
+            $categoriesMap[$categoryId]['app_item_ids'][] = $appItemId;
+
+            $upsertItem($itemsById, $appItemId, [
                 'item_name' => $product['name'],
                 'short_desc' => $product['description'],
                 'price' => (int) round($product['price'] * 100),
-                'status' => 1,
                 'priority' => $index + 1,
                 'is_sold_separately' => true,
+            ]);
+        }
+
+        foreach ($categoriesMap as &$category) {
+            $category['app_item_ids'] = array_values(array_unique($category['app_item_ids']));
+        }
+        unset($category);
+
+        $modifierRows = $this->fetchMenuModifierRows($provider, array_keys($parentItemIdByProductId));
+        $modifierGroupsMap = [];
+
+        foreach ($modifierRows as $modifierRow) {
+            $parentProductId = (int) ($modifierRow['parent_product_id'] ?? 0);
+            if ($parentProductId <= 0 || !isset($parentItemIdByProductId[$parentProductId])) {
+                continue;
+            }
+
+            $groupId = (int) ($modifierRow['product_group_id'] ?? 0);
+            if ($groupId <= 0) {
+                continue;
+            }
+
+            $appModifierGroupId = 'mg_' . $groupId;
+            if (!isset($modifierGroupsMap[$appModifierGroupId])) {
+                $isRequired = (int) ($modifierRow['group_required'] ?? 0) === 1;
+                $minimum = max(0, (int) round((float) ($modifierRow['group_minimum'] ?? 0)));
+                $maximum = max(0, (int) round((float) ($modifierRow['group_maximum'] ?? 0)));
+
+                if ($isRequired && $minimum === 0) {
+                    $minimum = 1;
+                }
+
+                $modifierGroupsMap[$appModifierGroupId] = [
+                    'app_modifier_group_id' => $appModifierGroupId,
+                    'modifier_group_name' => trim((string) ($modifierRow['product_group_name'] ?? 'Grupo')),
+                    'is_required' => $isRequired ? 1 : 2,
+                    'quantity_min_permitted' => $minimum,
+                    'quantity_max_permitted' => $maximum,
+                    'buy_mode' => 0,
+                    'app_mg_items' => [],
+                    '_parent_item_ids' => [],
+                ];
+            }
+
+            $parentAppItemId = $parentItemIdByProductId[$parentProductId];
+            if (!in_array($parentAppItemId, $modifierGroupsMap[$appModifierGroupId]['_parent_item_ids'], true)) {
+                $modifierGroupsMap[$appModifierGroupId]['_parent_item_ids'][] = $parentAppItemId;
+            }
+
+            $childProductId = (int) ($modifierRow['child_product_id'] ?? 0);
+            $childName = trim((string) ($modifierRow['child_product_name'] ?? ''));
+            if ($childProductId <= 0 || $childName === '') {
+                continue;
+            }
+
+            $childAppItemId = trim((string) ($modifierRow['child_food99_code'] ?? ''));
+            if ($childAppItemId === '') {
+                $childAppItemId = (string) $childProductId;
+            }
+
+            $rawChildPrice = $modifierRow['child_relation_price'] ?? null;
+            $childPrice = ($rawChildPrice === null || $rawChildPrice === '')
+                ? (float) ($modifierRow['child_base_price'] ?? 0)
+                : (float) $rawChildPrice;
+
+            $childPriceCents = max(0, (int) round($childPrice * 100));
+
+            $upsertItem($itemsById, $childAppItemId, [
+                'item_name' => $childName,
+                'short_desc' => trim((string) ($modifierRow['child_description'] ?? '')),
+                'price' => $childPriceCents,
+                'is_sold_separately' => false,
+            ]);
+
+            $modifierGroupsMap[$appModifierGroupId]['app_mg_items'][] = [
+                'app_item_id' => $childAppItemId,
+                'price' => $childPriceCents,
             ];
+        }
+
+        $modifierGroups = [];
+        foreach ($modifierGroupsMap as $modifierGroup) {
+            $deduplicatedModifierItems = [];
+            foreach ($modifierGroup['app_mg_items'] as $modifierItem) {
+                $modifierItemId = (string) ($modifierItem['app_item_id'] ?? '');
+                if ($modifierItemId === '' || isset($deduplicatedModifierItems[$modifierItemId])) {
+                    continue;
+                }
+
+                $deduplicatedModifierItems[$modifierItemId] = [
+                    'app_item_id' => $modifierItemId,
+                    'price' => max(0, (int) ($modifierItem['price'] ?? 0)),
+                ];
+            }
+
+            if (empty($deduplicatedModifierItems)) {
+                continue;
+            }
+
+            $modifierGroup['app_mg_items'] = array_values($deduplicatedModifierItems);
+            $modifierItemCount = count($modifierGroup['app_mg_items']);
+
+            if (($modifierGroup['quantity_max_permitted'] ?? 0) <= 0) {
+                $modifierGroup['quantity_max_permitted'] = $modifierItemCount;
+            }
+
+            if (($modifierGroup['quantity_max_permitted'] ?? 0) < ($modifierGroup['quantity_min_permitted'] ?? 0)) {
+                $modifierGroup['quantity_max_permitted'] = $modifierGroup['quantity_min_permitted'];
+            }
+
+            foreach ($modifierGroup['_parent_item_ids'] as $parentItemId) {
+                if (!isset($itemsById[$parentItemId])) {
+                    continue;
+                }
+
+                if (!isset($itemsById[$parentItemId]['app_modifier_group_ids'])) {
+                    $itemsById[$parentItemId]['app_modifier_group_ids'] = [];
+                }
+
+                if (!in_array($modifierGroup['app_modifier_group_id'], $itemsById[$parentItemId]['app_modifier_group_ids'], true)) {
+                    $itemsById[$parentItemId]['app_modifier_group_ids'][] = $modifierGroup['app_modifier_group_id'];
+                }
+            }
+
+            unset($modifierGroup['_parent_item_ids']);
+            $modifierGroups[] = $modifierGroup;
         }
 
         $payload = [
@@ -4650,8 +4888,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 )),
             ]],
             'categories' => array_values($categoriesMap),
-            'items' => $items,
-            'modifier_groups' => [],
+            'items' => array_values($itemsById),
+            'modifier_groups' => $modifierGroups,
         ];
 
         return [
