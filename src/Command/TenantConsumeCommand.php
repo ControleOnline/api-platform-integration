@@ -10,10 +10,6 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 
-#[AsCommand(
-    name: 'tenant:messenger:consume',
-    description: 'Consume mensagens com suporte a multi-tenancy'
-)]
 class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
@@ -61,9 +57,8 @@ class TenantConsumeCommand extends DefaultCommand
             implode(',', $receivers)
         ));
 
-        $command = $this->getApplication()->find('messenger:consume');
-
-        $newInput = new ArrayInput([
+        $options = array_filter([
+            'command' => 'messenger:consume',
             'receivers' => $receivers,
             '--limit' => $this->input->getOption('limit'),
             '--failure-limit' => $this->input->getOption('failure-limit'),
@@ -76,10 +71,11 @@ class TenantConsumeCommand extends DefaultCommand
             '--all' => $this->input->getOption('all'),
             '--exclude-receivers' => $this->input->getOption('exclude-receivers'),
             '--keepalive' => $this->input->getOption('keepalive'),
-        ]);
+        ], fn($v) => $v !== null && $v !== false && $v !== []);
 
+        $newInput = new ArrayInput($options);
         $newInput->setInteractive(false);
 
-        return $command->run($newInput, $this->output);
+        return $this->getApplication()->doRun($newInput, $this->output);
     }
 }
