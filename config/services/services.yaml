@@ -25,8 +25,3 @@ services:
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
         arguments:
             - { base_uri: '%env(N8N_WEBHOOK)%' }
-    ControleOnline\Command\TenantConsumeCommand:
-        arguments:
-            $messengerReceiverLocator: '@messenger.receiver_locator'
-            $bus: '@messenger.bus.default'
-            $eventDispatcher: '@event_dispatcher'

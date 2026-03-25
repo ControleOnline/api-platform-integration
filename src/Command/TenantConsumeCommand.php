@@ -3,15 +3,12 @@
 namespace ControleOnline\Command;
 
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
-use Symfony\Component\Messenger\Worker;
-use Psr\Container\ContainerInterface;
-use Symfony\Component\Messenger\MessageBusInterface;
-use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 #[AsCommand(
     name: 'tenant:messenger:consume',
@@ -19,22 +16,12 @@ use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 )]
 class TenantConsumeCommand extends DefaultCommand
 {
-    private ContainerInterface $receiverLocator;
-    private MessageBusInterface $bus;
-    private EventDispatcherInterface $eventDispatcher;
-
     public function __construct(
         LockFactory $lockFactory,
-        DatabaseSwitchService $databaseSwitchService,
-        ContainerInterface $messengerReceiverLocator,
-        MessageBusInterface $bus,
-        EventDispatcherInterface $eventDispatcher
+        DatabaseSwitchService $databaseSwitchService
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
-        $this->receiverLocator = $messengerReceiverLocator;
-        $this->bus = $bus;
-        $this->eventDispatcher = $eventDispatcher;
 
         parent::__construct('tenant:messenger:consume');
     }
@@ -45,7 +32,17 @@ class TenantConsumeCommand extends DefaultCommand
 
         $this
             ->addArgument('receivers', InputArgument::IS_ARRAY, 'Receivers (ex: async)')
-            ->addOption('sleep', null, InputOption::VALUE_OPTIONAL, '', 1);
+            ->addOption('limit', 'l', InputOption::VALUE_OPTIONAL)
+            ->addOption('failure-limit', 'f', InputOption::VALUE_OPTIONAL)
+            ->addOption('memory-limit', 'm', InputOption::VALUE_OPTIONAL)
+            ->addOption('time-limit', 't', InputOption::VALUE_OPTIONAL)
+            ->addOption('sleep', null, InputOption::VALUE_OPTIONAL)
+            ->addOption('bus', 'b', InputOption::VALUE_OPTIONAL)
+            ->addOption('queues', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY)
+            ->addOption('no-reset', null, InputOption::VALUE_NONE)
+            ->addOption('all', null, InputOption::VALUE_NONE)
+            ->addOption('exclude-receivers', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY)
+            ->addOption('keepalive', null, InputOption::VALUE_OPTIONAL);
     }
 
     protected function runCommand(): int
@@ -53,41 +50,36 @@ class TenantConsumeCommand extends DefaultCommand
         $domain = $this->input->getOption('domain');
 
         if (!$domain) {
-            throw new \RuntimeException('Você deve informar --domain.');
+            throw new \RuntimeException('Você deve informar --domain para consumir filas.');
         }
 
-        $receiversNames = $this->input->getArgument('receivers') ?: ['async'];
+        $receivers = $this->input->getArgument('receivers') ?: ['async'];
 
         $this->addLog(sprintf(
             '[tenant:messenger:consume] Iniciando | domain=%s | receivers=%s',
             $domain,
-            implode(',', $receiversNames)
+            implode(',', $receivers)
         ));
 
-        $receivers = [];
+        $options = array_filter([
+            'command' => 'messenger:consume',
+            'receivers' => $receivers,
+            '--limit' => $this->input->getOption('limit'),
+            '--failure-limit' => $this->input->getOption('failure-limit'),
+            '--memory-limit' => $this->input->getOption('memory-limit'),
+            '--time-limit' => $this->input->getOption('time-limit'),
+            '--sleep' => $this->input->getOption('sleep'),
+            '--bus' => $this->input->getOption('bus'),
+            '--queues' => $this->input->getOption('queues'),
+            '--no-reset' => $this->input->getOption('no-reset'),
+            '--all' => $this->input->getOption('all'),
+            '--exclude-receivers' => $this->input->getOption('exclude-receivers'),
+            '--keepalive' => $this->input->getOption('keepalive'),
+        ], fn($v) => $v !== null && $v !== false && $v !== []);
 
-        foreach ($receiversNames as $name) {
-            if (!$this->receiverLocator->has($name)) {
-                throw new \RuntimeException("Receiver \"$name\" não encontrado.");
-            }
+        $newInput = new ArrayInput($options);
+        $newInput->setInteractive(false);
 
-            $receivers[$name] = $this->receiverLocator->get($name);
-        }
-
-        if (!$receivers) {
-            throw new \RuntimeException('Nenhum receiver encontrado.');
-        }
-
-        $worker = new Worker(
-            $receivers,
-            $this->bus,
-            $this->eventDispatcher
-        );
-
-        $worker->run([
-            'sleep' => (int)$this->input->getOption('sleep'),
-        ]);
-
-        return Command::SUCCESS;
+        return $this->getApplication()->doRun($newInput, $this->output);
     }
 }
