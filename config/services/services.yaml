@@ -25,3 +25,7 @@ services:
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
         arguments:
             - { base_uri: '%env(N8N_WEBHOOK)%' }
+    ControleOnline\Command\TenantConsumeCommand:
+        decorates: 'console.command.messenger_consume_messages'
+        arguments:
+            $innerCommand: '@ControleOnline\Command\TenantConsumeCommand.inner'
