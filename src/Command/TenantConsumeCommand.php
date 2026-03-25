@@ -16,8 +16,7 @@ class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
         $lockFactory,
-        $databaseSwitchService,
-        private $application // importante
+        $databaseSwitchService
     ) {
         $this->lockFactory = $lockFactory;
         $this->databaseSwitchService = $databaseSwitchService;
@@ -31,21 +30,32 @@ class TenantConsumeCommand extends DefaultCommand
 
         $this
             ->addArgument('receivers', InputArgument::IS_ARRAY, 'Receivers (ex: async)')
-            ->addOption('limit', null, InputOption::VALUE_OPTIONAL)
-            ->addOption('memory-limit', null, InputOption::VALUE_OPTIONAL)
-            ->addOption('time-limit', null, InputOption::VALUE_OPTIONAL)
+            ->addOption('limit', 'l', InputOption::VALUE_OPTIONAL)
+            ->addOption('failure-limit', 'f', InputOption::VALUE_OPTIONAL)
+            ->addOption('memory-limit', 'm', InputOption::VALUE_OPTIONAL)
+            ->addOption('time-limit', 't', InputOption::VALUE_OPTIONAL)
             ->addOption('sleep', null, InputOption::VALUE_OPTIONAL)
-            ->addOption('bus', null, InputOption::VALUE_OPTIONAL)
-            ->addOption('queues', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY);
+            ->addOption('bus', 'b', InputOption::VALUE_OPTIONAL)
+            ->addOption('queues', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY)
+            ->addOption('no-reset', null, InputOption::VALUE_NONE)
+            ->addOption('all', null, InputOption::VALUE_NONE)
+            ->addOption('exclude-receivers', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY)
+            ->addOption('keepalive', null, InputOption::VALUE_OPTIONAL);
     }
 
     protected function runCommand(): int
     {
+        $domain = $this->input->getOption('domain');
+
+        if (!$domain) {
+            throw new \RuntimeException('Você deve informar --domain para consumir filas.');
+        }
+
         $receivers = $this->input->getArgument('receivers') ?: ['async'];
 
         $this->addLog(sprintf(
             '[tenant:messenger:consume] Iniciando | domain=%s | receivers=%s',
-            $this->input->getOption('domain') ?: 'all',
+            $domain,
             implode(',', $receivers)
         ));
 
@@ -54,11 +64,16 @@ class TenantConsumeCommand extends DefaultCommand
         $newInput = new ArrayInput([
             'receivers' => $receivers,
             '--limit' => $this->input->getOption('limit'),
+            '--failure-limit' => $this->input->getOption('failure-limit'),
             '--memory-limit' => $this->input->getOption('memory-limit'),
             '--time-limit' => $this->input->getOption('time-limit'),
             '--sleep' => $this->input->getOption('sleep'),
             '--bus' => $this->input->getOption('bus'),
             '--queues' => $this->input->getOption('queues'),
+            '--no-reset' => $this->input->getOption('no-reset'),
+            '--all' => $this->input->getOption('all'),
+            '--exclude-receivers' => $this->input->getOption('exclude-receivers'),
+            '--keepalive' => $this->input->getOption('keepalive'),
         ]);
 
         $newInput->setInteractive(false);
