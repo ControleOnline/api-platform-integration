@@ -9,6 +9,12 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
+use ControleOnline\Service\DomainService;
+use ControleOnline\Service\IntegrationService;
+use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\SkyNetService;
+use ControleOnline\Service\StatusService;
+use Doctrine\ORM\EntityManagerInterface;
 
 #[AsCommand(
     name: 'tenant:messenger:consume',
@@ -17,11 +23,15 @@ use ControleOnline\Service\DatabaseSwitchService;
 class TenantConsumeCommand extends DefaultCommand
 {
     public function __construct(
-        LockFactory $lockFactory,
-        DatabaseSwitchService $databaseSwitchService
+        private LockFactory $lockFactory,
+        private DatabaseSwitchService $databaseSwitchService,
+        private LoggerService $loggerService,
+        private SkyNetService $skyNetService,
+        private IntegrationService $integrationService,
+        private EntityManagerInterface $entityManager,
+        private StatusService $statusService,
+        private DomainService $domainService,
     ) {
-        $this->lockFactory = $lockFactory;
-        $this->databaseSwitchService = $databaseSwitchService;
 
         parent::__construct('tenant:messenger:consume');
     }
