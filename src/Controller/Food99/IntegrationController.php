@@ -5,6 +5,7 @@ namespace ControleOnline\Controller\Food99;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\LoggerService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -25,6 +26,7 @@ class IntegrationController extends AbstractController
         private LoggerService $loggerService,
         private Security $security,
         private Food99Service $food99Service,
+        private iFoodService $iFoodService,
     ) {
         self::$logger = $loggerService->getLogger('Food99');
     }
@@ -1178,41 +1180,70 @@ class IntegrationController extends AbstractController
 
         $products = $this->food99Service->listSelectableMenuProducts($provider);
         $storedState = $this->food99Service->getStoredIntegrationState($provider);
+        $ifoodState = $this->iFoodService->getStoredIntegrationState($provider);
         $publishedProductCount = count(array_filter(
             $products['products'] ?? [],
             static fn(array $product) => !empty($product['food99_published'])
         ));
+        $ifoodEligibleProducts = $this->iFoodService->countEligibleProducts($provider);
 
         return new JsonResponse([
             'provider' => [
                 'id' => $provider->getId(),
                 'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
             ],
-            'items' => [[
-                'key' => '99food',
-                'label' => '99Food',
-                'minimum_required_items' => 5,
-                'eligible_product_count' => $products['eligible_product_count'] ?? 0,
-                'connected' => $storedState['connected'],
-                'remote_connected' => $storedState['remote_connected'],
-                'food99_code' => $storedState['food99_code'],
-                'app_shop_id' => $storedState['app_shop_id'],
-                'biz_status' => $storedState['biz_status'],
-                'sub_biz_status' => $storedState['sub_biz_status'],
-                'store_status' => $storedState['store_status'],
-                'online' => $storedState['online'],
-                'last_sync_at' => $storedState['last_sync_at'],
-                'last_menu_task_status' => $storedState['last_menu_task_status'],
-                'last_menu_task_message' => $storedState['last_menu_task_message'],
-                'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'],
-                'last_menu_publish_state' => $storedState['last_menu_publish_state'],
-                'published_product_count' => $publishedProductCount,
-                'remote_only_item_count' => $storedState['remote_only_item_count'],
-                'last_error_code' => $storedState['last_error_code'],
-                'last_error_message' => $storedState['last_error_message'],
-                'store' => null,
-                'store_error' => null,
-            ]],
+            'items' => [
+                [
+                    'key' => '99food',
+                    'label' => '99Food',
+                    'minimum_required_items' => 5,
+                    'eligible_product_count' => $products['eligible_product_count'] ?? 0,
+                    'connected' => $storedState['connected'],
+                    'remote_connected' => $storedState['remote_connected'],
+                    'food99_code' => $storedState['food99_code'],
+                    'app_shop_id' => $storedState['app_shop_id'],
+                    'biz_status' => $storedState['biz_status'],
+                    'sub_biz_status' => $storedState['sub_biz_status'],
+                    'store_status' => $storedState['store_status'],
+                    'online' => $storedState['online'],
+                    'last_sync_at' => $storedState['last_sync_at'],
+                    'last_menu_task_status' => $storedState['last_menu_task_status'],
+                    'last_menu_task_message' => $storedState['last_menu_task_message'],
+                    'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'],
+                    'last_menu_publish_state' => $storedState['last_menu_publish_state'],
+                    'published_product_count' => $publishedProductCount,
+                    'remote_only_item_count' => $storedState['remote_only_item_count'],
+                    'last_error_code' => $storedState['last_error_code'],
+                    'last_error_message' => $storedState['last_error_message'],
+                    'store' => null,
+                    'store_error' => null,
+                ],
+                [
+                    'key' => 'ifood',
+                    'label' => 'iFood',
+                    'minimum_required_items' => 1,
+                    'eligible_product_count' => $ifoodEligibleProducts,
+                    'connected' => (bool) ($ifoodState['connected'] ?? false),
+                    'remote_connected' => (bool) ($ifoodState['remote_connected'] ?? false),
+                    'ifood_code' => $ifoodState['ifood_code'] ?? null,
+                    'merchant_id' => $ifoodState['merchant_id'] ?? null,
+                    'merchant_name' => $ifoodState['merchant_name'] ?? null,
+                    'merchant_status' => $ifoodState['merchant_status'] ?? null,
+                    'merchant_status_label' => $ifoodState['merchant_status_label'] ?? 'Indefinido',
+                    'online' => (bool) ($ifoodState['online'] ?? false),
+                    'last_sync_at' => $ifoodState['last_sync_at'] ?? null,
+                    'last_error_code' => $ifoodState['last_error_code'] ?? null,
+                    'last_error_message' => $ifoodState['last_error_message'] ?? null,
+                    'auth_available' => (bool) ($ifoodState['auth_available'] ?? false),
+                    'store' => ($ifoodState['merchant_id'] ?? null) ? [
+                        'merchant_id' => $ifoodState['merchant_id'],
+                        'name' => $ifoodState['merchant_name'] ?? null,
+                        'status' => $ifoodState['merchant_status'] ?? null,
+                        'status_label' => $ifoodState['merchant_status_label'] ?? 'Indefinido',
+                    ] : null,
+                    'store_error' => null,
+                ],
+            ],
         ]);
     }
 

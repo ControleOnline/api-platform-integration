@@ -526,6 +526,376 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $state;
     }
 
+    private function persistProviderIntegrationState(People $provider, array $fields): void
+    {
+        foreach ($fields as $fieldName => $value) {
+            $this->upsertIfoodExtraDataValue('People', (int) $provider->getId(), (string) $fieldName, $value);
+        }
+    }
+
+    private function normalizeMerchantStatusLabel(?string $status): string
+    {
+        return match (strtoupper($this->normalizeString($status))) {
+            'AVAILABLE', 'ONLINE', 'OPEN' => 'Online',
+            'UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE' => 'Offline',
+            default => 'Indefinido',
+        };
+    }
+
+    private function normalizeMerchantPayload(mixed $merchant): ?array
+    {
+        if (!is_array($merchant)) {
+            return null;
+        }
+
+        $merchantId = $this->normalizeString(
+            $merchant['id']
+                ?? $merchant['merchantId']
+                ?? $merchant['merchant_id']
+                ?? null
+        );
+
+        if ($merchantId === '') {
+            return null;
+        }
+
+        $merchantStatus = strtoupper($this->normalizeString(
+            $merchant['status']
+                ?? $merchant['state']
+                ?? $merchant['merchantStatus']
+                ?? null
+        ));
+
+        return [
+            'merchant_id' => $merchantId,
+            'name' => $this->normalizeString(
+                $merchant['name']
+                    ?? $merchant['displayName']
+                    ?? $merchant['merchantName']
+                    ?? null
+            ),
+            'status' => $merchantStatus,
+            'status_label' => $this->normalizeMerchantStatusLabel($merchantStatus),
+            'city' => $this->normalizeString($merchant['city'] ?? null),
+            'raw' => $merchant,
+        ];
+    }
+
+    private function normalizeMerchantListPayload(mixed $payload): array
+    {
+        if (!is_array($payload)) {
+            return [];
+        }
+
+        $merchantRows = [];
+        if (array_is_list($payload)) {
+            $merchantRows = $payload;
+        } elseif (is_array($payload['merchants'] ?? null)) {
+            $merchantRows = $payload['merchants'];
+        } elseif (is_array($payload['items'] ?? null)) {
+            $merchantRows = $payload['items'];
+        } elseif (is_array($payload['data'] ?? null)) {
+            if (array_is_list($payload['data'])) {
+                $merchantRows = $payload['data'];
+            } elseif (is_array($payload['data']['merchants'] ?? null)) {
+                $merchantRows = $payload['data']['merchants'];
+            } elseif (is_array($payload['data']['items'] ?? null)) {
+                $merchantRows = $payload['data']['items'];
+            }
+        }
+
+        $normalized = [];
+        foreach ($merchantRows as $merchantRow) {
+            $merchant = $this->normalizeMerchantPayload($merchantRow);
+            if ($merchant === null) {
+                continue;
+            }
+
+            $normalized[] = $merchant;
+        }
+
+        return $normalized;
+    }
+
+    private function listMerchantsRaw(): array
+    {
+        $this->init();
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return [
+                'errno' => 10001,
+                'errmsg' => 'Token iFood indisponivel',
+                'status' => 401,
+                'data' => [
+                    'merchants' => [],
+                ],
+            ];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'GET',
+                self::API_BASE_URL . '/merchant/v1.0/merchants',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                    ],
+                ]
+            );
+
+            $statusCode = $response->getStatusCode();
+            $content = $response->getContent(false);
+            $decoded = json_decode($content, true);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+                $decoded = [];
+            }
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                return [
+                    'errno' => $statusCode > 0 ? $statusCode : 1,
+                    'errmsg' => $this->normalizeString(
+                        $decoded['message']
+                            ?? $decoded['details']
+                            ?? $decoded['description']
+                            ?? 'Falha ao listar lojas iFood'
+                    ),
+                    'status' => $statusCode,
+                    'data' => [
+                        'merchants' => [],
+                        'raw' => $decoded,
+                    ],
+                ];
+            }
+
+            return [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'status' => $statusCode,
+                'data' => [
+                    'merchants' => $this->normalizeMerchantListPayload($decoded),
+                    'raw' => $decoded,
+                ],
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood merchants list request failed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'errno' => 1,
+                'errmsg' => 'Falha ao consultar lojas iFood',
+                'status' => 500,
+                'data' => [
+                    'merchants' => [],
+                ],
+            ];
+        }
+    }
+
+    public function listMerchants(): array
+    {
+        return $this->listMerchantsRaw();
+    }
+
+    public function isAuthAvailable(): bool
+    {
+        $this->init();
+
+        return $this->getAccessToken() !== null;
+    }
+
+    public function countEligibleProducts(People $provider): int
+    {
+        $connection = $this->entityManager->getConnection();
+        $sql = <<<SQL
+            SELECT COUNT(1)
+            FROM product p
+            WHERE p.company_id = :providerId
+              AND p.active = 1
+              AND p.type IN ('manufactured', 'custom', 'product')
+        SQL;
+
+        return (int) $connection->fetchOne($sql, [
+            'providerId' => (int) $provider->getId(),
+        ]);
+    }
+
+    public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        $merchantId = $this->normalizeString(
+            $this->getIfoodExtraDataValue('People', $providerId, 'merchant_id')
+                ?? $this->getIfoodExtraDataValue('People', $providerId, 'code')
+                ?? null
+        );
+        $merchantStatus = strtoupper($this->normalizeString(
+            $this->getIfoodExtraDataValue('People', $providerId, 'merchant_status')
+        ));
+        $remoteConnectedRaw = $this->normalizeString(
+            $this->getIfoodExtraDataValue('People', $providerId, 'remote_connected')
+        );
+
+        $connected = $merchantId !== '';
+        $remoteConnected = $remoteConnectedRaw !== '' ? $remoteConnectedRaw === '1' : $connected;
+
+        return [
+            'connected' => $connected,
+            'remote_connected' => $remoteConnected,
+            'ifood_code' => $merchantId !== '' ? $merchantId : null,
+            'merchant_id' => $merchantId !== '' ? $merchantId : null,
+            'merchant_name' => $this->getIfoodExtraDataValue('People', $providerId, 'merchant_name'),
+            'merchant_status' => $merchantStatus !== '' ? $merchantStatus : null,
+            'merchant_status_label' => $this->normalizeMerchantStatusLabel($merchantStatus),
+            'online' => in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
+            'connected_at' => $this->getIfoodExtraDataValue('People', $providerId, 'connected_at'),
+            'disconnected_at' => $this->getIfoodExtraDataValue('People', $providerId, 'disconnected_at'),
+            'last_sync_at' => $this->getIfoodExtraDataValue('People', $providerId, 'last_sync_at'),
+            'last_error_code' => $this->getIfoodExtraDataValue('People', $providerId, 'last_error_code'),
+            'last_error_message' => $this->getIfoodExtraDataValue('People', $providerId, 'last_error_message'),
+            'auth_available' => $includeAuthCheck ? $this->isAuthAvailable() : null,
+        ];
+    }
+
+    public function connectStore(People $provider, string $merchantId, ?array $merchant = null): array
+    {
+        $this->init();
+        $normalizedMerchantId = $this->normalizeString($merchantId);
+        if ($normalizedMerchantId === '') {
+            return [
+                'errno' => 10002,
+                'errmsg' => 'merchant_id obrigatorio',
+            ];
+        }
+
+        $merchantName = '';
+        $merchantStatus = '';
+        if (is_array($merchant)) {
+            $merchantName = $this->normalizeString($merchant['name'] ?? $merchant['merchant_name'] ?? null);
+            $merchantStatus = strtoupper($this->normalizeString($merchant['status'] ?? $merchant['merchant_status'] ?? null));
+        }
+
+        $remoteConnected = $merchantName !== '' || $merchantStatus !== '' ? '1' : '0';
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => $normalizedMerchantId,
+            'merchant_id' => $normalizedMerchantId,
+            'merchant_name' => $merchantName,
+            'merchant_status' => $merchantStatus,
+            'remote_connected' => $remoteConnected,
+            'connected_at' => date('Y-m-d H:i:s'),
+            'disconnected_at' => '',
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+
+        $this->entityManager->flush();
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'state' => $this->getStoredIntegrationState($provider),
+        ];
+    }
+
+    public function disconnectStore(People $provider): array
+    {
+        $this->init();
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => '',
+            'merchant_id' => '',
+            'merchant_name' => '',
+            'merchant_status' => '',
+            'remote_connected' => '0',
+            'disconnected_at' => date('Y-m-d H:i:s'),
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+
+        $this->entityManager->flush();
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'state' => $this->getStoredIntegrationState($provider),
+        ];
+    }
+
+    public function syncIntegrationState(People $provider): array
+    {
+        $this->init();
+        $state = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        $storesResponse = $this->listMerchantsRaw();
+        $merchants = is_array($storesResponse['data']['merchants'] ?? null) ? $storesResponse['data']['merchants'] : [];
+
+        if ((int) ($storesResponse['errno'] ?? 1) !== 0) {
+            $this->persistProviderIntegrationState($provider, [
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => (string) ($storesResponse['errno'] ?? 1),
+                'last_error_message' => $this->normalizeString($storesResponse['errmsg'] ?? 'Falha ao sincronizar iFood'),
+                'remote_connected' => '0',
+            ]);
+            $this->entityManager->flush();
+
+            return [
+                'errno' => (int) ($storesResponse['errno'] ?? 1),
+                'errmsg' => $this->normalizeString($storesResponse['errmsg'] ?? 'Falha ao sincronizar iFood'),
+                'stores' => $merchants,
+                'state' => $this->getStoredIntegrationState($provider),
+            ];
+        }
+
+        $matchedStore = null;
+        if ($merchantId !== '') {
+            foreach ($merchants as $store) {
+                if ($this->normalizeString($store['merchant_id'] ?? null) === $merchantId) {
+                    $matchedStore = $store;
+                    break;
+                }
+            }
+        }
+
+        if ($matchedStore) {
+            $this->persistProviderIntegrationState($provider, [
+                'merchant_name' => $this->normalizeString($matchedStore['name'] ?? null),
+                'merchant_status' => strtoupper($this->normalizeString($matchedStore['status'] ?? null)),
+                'remote_connected' => '1',
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => '',
+                'last_error_message' => '',
+            ]);
+        } elseif ($merchantId !== '') {
+            $this->persistProviderIntegrationState($provider, [
+                'remote_connected' => '0',
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => '404',
+                'last_error_message' => 'Loja vinculada nao encontrada na conta iFood',
+            ]);
+        } else {
+            $this->persistProviderIntegrationState($provider, [
+                'remote_connected' => '0',
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => '',
+                'last_error_message' => '',
+            ]);
+        }
+
+        $this->entityManager->flush();
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'stores' => $merchants,
+            'store' => $matchedStore,
+            'state' => $this->getStoredIntegrationState($provider),
+        ];
+    }
+
     // CANCELAMENTO DE PEDIDO
     // Busca pedido pelo orderId do iFood, marca como cancelado e atualiza banco
     private function cancelOrder(array $json): ?Order
