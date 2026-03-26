@@ -11,7 +11,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
 
-class SpotifyTokenController extends AbstractController
+class SpotifyController extends AbstractController
 {
     public function __construct(
         private HttpClientInterface $httpClient,
