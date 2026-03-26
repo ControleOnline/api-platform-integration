@@ -448,23 +448,8 @@ class IntegrationController extends AbstractController
                 'webhook_processed_at' => $storedState['webhook_processed_at'] ?? null,
                 'last_integration_id' => $storedState['last_integration_id'] ?? null,
             ],
-            'delivery' => [
-                'delivery_label' => $deliveryContext['delivery_label'],
-                'remote_delivery_status' => $remoteState,
-                'expected_arrived_eta' => null,
-                'pickup_code' => null,
-                'handover_code' => null,
-                'locator' => null,
-                'handover_page_url' => null,
-                'handover_confirmation_url' => null,
-                'virtual_phone_number' => null,
-                'rider_name' => null,
-                'rider_phone' => null,
-                'rider_to_store_eta' => null,
-                'is_store_delivery' => $deliveryContext['is_store_delivery'],
-                'is_platform_delivery' => $deliveryContext['is_platform_delivery'],
-                'allows_manual_delivery_completion' => (bool) ($capabilities['can_delivered'] ?? false),
-            ],
+            'delivery'      => $this->buildDeliveryDetail($payload, $storedState, $remoteState, $deliveryContext, $capabilities),
+            'financial'     => $this->buildFinancialDetail($payload),
             'observability' => [
                 'has_action_error' => $this->hasErrnoError($storedState['last_action_errno'] ?? null),
                 'is_healthy' => !$this->hasErrnoError($storedState['last_action_errno'] ?? null),
@@ -475,7 +460,8 @@ class IntegrationController extends AbstractController
                 'order_index' => $orderIndex,
             ],
             'notes' => [
-                'remark' => $remark,
+                'remark'          => $remark,
+                'item_remarks'    => $this->extractItemRemarks($payload),
             ],
             'capabilities' => $capabilities,
         ];
@@ -637,6 +623,35 @@ class IntegrationController extends AbstractController
         ));
     }
 
+    #[Route('/marketplace/integrations/ifood/menu/sync', name: 'marketplace_integrations_ifood_menu_sync', methods: ['POST'])]
+    public function syncMenuFromIfood(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        try {
+            $result = $this->iFoodService->syncCatalogFromIfood($provider);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao sincronizar catalogo do iFood.',
+            ];
+        }
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'menu_sync', 'result' => $result]
+        ));
+    }
+
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/ready', name: 'marketplace_integrations_ifood_order_ready', methods: ['POST'])]
     public function readyOrderAction(string $orderId): JsonResponse
     {
@@ -683,9 +698,14 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
         }
 
-        $reason = $this->normalizeString($payload['reason'] ?? null);
+        $reason           = $this->normalizeString($payload['reason'] ?? null);
+        $cancellationCode = $this->normalizeString($payload['reason_id'] ?? $payload['cancellationCode'] ?? null);
         try {
-            $result = $this->iFoodService->performCancelAction($order, $reason !== '' ? $reason : null);
+            $result = $this->iFoodService->performCancelAction(
+                $order,
+                $reason !== '' ? $reason : null,
+                $cancellationCode !== '' ? $cancellationCode : null
+            );
         } catch (\Throwable $e) {
             $result = [
                 'errno' => 1,
@@ -743,5 +763,149 @@ class IntegrationController extends AbstractController
         }
 
         return new JsonResponse($this->buildOrderIntegrationDetail($order));
+    }
+
+    #[Route('/marketplace/integrations/ifood/orders/{orderId}/confirm', name: 'marketplace_integrations_ifood_order_confirm', methods: ['POST'])]
+    public function confirmOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderNotFound();
+        }
+
+        if (!$this->isIfoodOrder($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $result = $this->iFoodService->performConfirmAction($order);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao confirmar pedido no iFood.'];
+        }
+
+        return new JsonResponse([
+            'action' => 'confirm',
+            'result' => $result,
+            'state'  => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    private function buildFinancialDetail(array $payload): array
+    {
+        $order    = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        $total    = is_array($order['total'] ?? null) ? $order['total'] : [];
+        $methods  = is_array($order['payments']['methods'] ?? null) ? $order['payments']['methods'] : [];
+        $benefits = is_array($order['benefits'] ?? null) ? $order['benefits'] : [];
+
+        $itemsTotal    = (float) ($total['itemsPrice'] ?? $total['subTotal'] ?? 0.0);
+        $deliveryFee   = (float) ($total['deliveryFee'] ?? 0.0);
+        $additionalFees = (float) ($total['additionalFees'] ?? 0.0);
+        $orderAmount   = (float) ($total['orderAmount'] ?? 0.0);
+
+        /* descontos separados: iFood vs loja */
+        $ifoodSubsidy    = 0.0;
+        $merchantSubsidy = 0.0;
+        $discountTotal   = 0.0;
+        foreach ($benefits as $benefit) {
+            $discountTotal += (float) ($benefit['value'] ?? 0.0);
+            foreach ((array) ($benefit['sponsorshipValues'] ?? []) as $sponsor) {
+                $name  = strtoupper($this->normalizeString($sponsor['name'] ?? null));
+                $value = (float) ($sponsor['value'] ?? 0.0);
+                if ($name === 'IFOOD') {
+                    $ifoodSubsidy += $value;
+                } else {
+                    $merchantSubsidy += $value;
+                }
+            }
+        }
+
+        /* bandeira do cartão e troco */
+        $paymentBrand  = null;
+        $changeFor     = null;
+        $paymentLabels = [];
+        foreach ($methods as $m) {
+            $type  = strtoupper($this->normalizeString($m['type'] ?? null));
+            $brand = $this->normalizeString($m['card']['brand'] ?? null);
+            if ($brand !== '') {
+                $paymentBrand = $brand;
+            }
+            $change = $m['cash']['changeFor'] ?? null;
+            if ($change !== null) {
+                $changeFor = (float) $change;
+            }
+            if ($type !== '') {
+                $paymentLabels[] = $type . ($brand !== '' ? " ($brand)" : '');
+            }
+        }
+
+        return [
+            'items_total'      => $itemsTotal,
+            'delivery_fee'     => $deliveryFee,
+            'additional_fees'  => $additionalFees,
+            'order_amount'     => $orderAmount,
+            'discount_total'   => $discountTotal,
+            'ifood_subsidy'    => $ifoodSubsidy,
+            'merchant_subsidy' => $merchantSubsidy,
+            'payment_brand'    => $paymentBrand,
+            'change_for'       => $changeFor,
+            'payment_labels'   => $paymentLabels,
+        ];
+    }
+
+    private function extractItemRemarks(array $payload): array
+    {
+        $items = is_array($payload['order']['items'] ?? null) ? $payload['order']['items'] : [];
+        $remarks = [];
+        foreach ($items as $item) {
+            $obs = $this->normalizeString($item['observations'] ?? $item['notes'] ?? null);
+            if ($obs !== '') {
+                $remarks[] = [
+                    'name'        => $this->normalizeString($item['name'] ?? null),
+                    'observation' => $obs,
+                ];
+            }
+        }
+        return $remarks;
+    }
+
+    private function buildDeliveryDetail(
+        array $payload,
+        array $storedState,
+        string $remoteState,
+        array $deliveryContext,
+        array $capabilities
+    ): array {
+        $liveTracking = is_array($payload['order']['delivery']['liveTracking'] ?? null)
+            ? $payload['order']['delivery']['liveTracking'] : [];
+        $riderData    = is_array($liveTracking['rider'] ?? null) ? $liveTracking['rider'] : [];
+
+        $pickupCode    = $this->normalizeString($payload['order']['pickup']['code'] ?? $storedState['pickup_code'] ?? null);
+        $virtualPhone  = $this->normalizeString($payload['order']['customer']['phone']['localizer'] ?? $storedState['virtual_phone'] ?? null);
+        $riderName     = $this->normalizeString($riderData['name'] ?? null);
+        $riderPhone    = $this->normalizeString($riderData['phone']['number'] ?? null);
+        $riderToStore  = $this->normalizeString($liveTracking['riderToStoreEta'] ?? null);
+        $expectedEta   = $this->normalizeString(
+            $payload['order']['delivery']['deliveryDateTime']
+                ?? $payload['order']['delivery']['estimatedDeliveryDate']
+                ?? null
+        );
+
+        return [
+            'delivery_label'                  => $deliveryContext['delivery_label'],
+            'remote_delivery_status'          => $remoteState,
+            'expected_arrived_eta'            => $expectedEta !== '' ? $expectedEta : null,
+            'pickup_code'                     => $pickupCode !== '' ? $pickupCode : null,
+            'handover_code'                   => null,
+            'locator'                         => null,
+            'handover_page_url'               => null,
+            'handover_confirmation_url'       => null,
+            'virtual_phone_number'            => $virtualPhone !== '' ? $virtualPhone : null,
+            'rider_name'                      => $riderName !== '' ? $riderName : null,
+            'rider_phone'                     => $riderPhone !== '' ? $riderPhone : null,
+            'rider_to_store_eta'              => $riderToStore !== '' ? $riderToStore : null,
+            'is_store_delivery'               => $deliveryContext['is_store_delivery'],
+            'is_platform_delivery'            => $deliveryContext['is_platform_delivery'],
+            'allows_manual_delivery_completion' => (bool) ($capabilities['can_delivered'] ?? false),
+        ];
     }
 }

@@ -72,12 +72,15 @@ class OrderActionService
             $canReadyStates = ['', 'new', 'placed', 'confirmed', 'preparing', 'started'];
             $canDeliveredStates = ['ready', 'dispatching', 'dispatched'];
 
+            $canConfirmStates = ['', 'new', 'placed'];
             return array_merge($base, [
-                'can_cancel' => !$isTerminal,
-                'can_ready' => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
-                'can_delivered' => !$isTerminal && in_array($remoteOrderState, $canDeliveredStates, true),
-                'is_terminal' => $isTerminal,
-                'remote_state' => $remoteOrderState !== '' ? $remoteOrderState : null,
+                'can_confirm'             => !$isTerminal && in_array($remoteOrderState, $canConfirmStates, true),
+                'can_cancel'              => !$isTerminal,
+                'can_ready'               => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
+                'can_delivered'           => !$isTerminal && in_array($remoteOrderState, $canDeliveredStates, true),
+                'requires_cancel_reasons' => true,
+                'is_terminal'             => $isTerminal,
+                'remote_state'            => $remoteOrderState !== '' ? $remoteOrderState : null,
             ]);
         }
 
@@ -97,7 +100,21 @@ class OrderActionService
             return $this->food99Service->getOrderCancelReasons($order);
         }
 
+        if ($this->ehIfood($order)) {
+            $reasons = $this->iFoodService->getIfoodCancellationReasons();
+            return ['data' => ['reasons' => $reasons]];
+        }
+
         return ['data' => ['reasons' => []]];
+    }
+
+    public function confirm(Order $order): array
+    {
+        if ($this->ehIfood($order)) {
+            return $this->iFoodService->performConfirmAction($order);
+        }
+
+        return ['errno' => 1, 'errmsg' => 'Confirmacao nao suportada para esta plataforma.'];
     }
 
     public function cancel(Order $order, ?int $reasonId = null, ?string $reason = null): array
@@ -107,7 +124,8 @@ class OrderActionService
         }
 
         if ($this->ehIfood($order)) {
-            return $this->iFoodService->performCancelAction($order, $reason);
+            $cancellationCode = $reasonId !== null ? (string) $reasonId : null;
+            return $this->iFoodService->performCancelAction($order, $reason, $cancellationCode);
         }
 
         return $this->aplicarStatusLocal($order, 'canceled', 'canceled');
