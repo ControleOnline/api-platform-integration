@@ -4,6 +4,7 @@ namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Order;
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -12,6 +13,7 @@ class OrderActionService
     public function __construct(
         private EntityManagerInterface $entityManager,
         private Food99Service $food99Service,
+        private iFoodService $iFoodService,
         private StatusService $statusService,
     ) {}
 
@@ -23,6 +25,11 @@ class OrderActionService
     private function ehFood99(Order $order): bool
     {
         return in_array($this->plataforma($order), ['food99', '99food'], true);
+    }
+
+    private function ehIfood(Order $order): bool
+    {
+        return $this->plataforma($order) === 'ifood';
     }
 
     public function getCapabilities(Order $order): array
@@ -56,10 +63,21 @@ class OrderActionService
             ]);
         }
 
-        if ($plataforma === 'ifood') {
+        if ($this->ehIfood($order)) {
+            $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
+            $remoteOrderState = strtolower(trim((string) ($storedState['remote_order_state'] ?? '')));
+            $isTerminalRemoteState = in_array($remoteOrderState, ['concluded', 'cancelled', 'canceled'], true);
+            $isTerminal = $terminal || $isTerminalRemoteState;
+
+            $canReadyStates = ['', 'new', 'placed', 'confirmed', 'preparing', 'started'];
+            $canDeliveredStates = ['ready', 'dispatching', 'dispatched'];
+
             return array_merge($base, [
-                'can_ready'     => false,
-                'can_delivered' => false,
+                'can_cancel' => !$isTerminal,
+                'can_ready' => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
+                'can_delivered' => !$isTerminal && in_array($remoteOrderState, $canDeliveredStates, true),
+                'is_terminal' => $isTerminal,
+                'remote_state' => $remoteOrderState !== '' ? $remoteOrderState : null,
             ]);
         }
 
@@ -88,6 +106,10 @@ class OrderActionService
             return $this->food99Service->performCancelAction($order, $reasonId, $reason);
         }
 
+        if ($this->ehIfood($order)) {
+            return $this->iFoodService->performCancelAction($order, $reason);
+        }
+
         return $this->aplicarStatusLocal($order, 'canceled', 'canceled');
     }
 
@@ -97,6 +119,10 @@ class OrderActionService
             return $this->food99Service->performReadyAction($order);
         }
 
+        if ($this->ehIfood($order)) {
+            return $this->iFoodService->performReadyAction($order);
+        }
+
         return $this->aplicarStatusLocal($order, 'open', 'ready');
     }
 
@@ -104,6 +130,10 @@ class OrderActionService
     {
         if ($this->ehFood99($order)) {
             return $this->food99Service->performDeliveredAction($order, $deliveryCode, $locator);
+        }
+
+        if ($this->ehIfood($order)) {
+            return $this->iFoodService->performDeliveredAction($order);
         }
 
         return $this->aplicarStatusLocal($order, 'closed', 'closed');
