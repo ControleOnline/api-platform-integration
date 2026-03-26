@@ -1,4 +1,5 @@
 <?php
+
 namespace ControleOnline\Controller\Spotify;
 
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -15,10 +16,7 @@ class SpotifyTokenController extends AbstractController
     {
         $clientId = $_ENV['SPOTIFY_CLIENT_ID'] ?? '';
         $clientSecret = $_ENV['SPOTIFY_CLIENT_SECRET'] ?? '';
-
-        if (!$clientId || !$clientSecret) {
-            return $this->json(['error' => 'Spotify credentials not set'], 500);
-        }
+        $refreshToken = $_ENV['SPOTIFY_REFRESH_TOKEN'] ?? '';
 
         try {
             $response = $this->httpClient->request('POST', 'https://accounts.spotify.com/api/token', [
@@ -27,7 +25,8 @@ class SpotifyTokenController extends AbstractController
                     'Content-Type' => 'application/x-www-form-urlencoded',
                 ],
                 'body' => [
-                    'grant_type' => 'client_credentials',
+                    'grant_type' => 'refresh_token',
+                    'refresh_token' => $refreshToken,
                 ],
             ]);
 
@@ -38,7 +37,7 @@ class SpotifyTokenController extends AbstractController
                 'expires_in' => $data['expires_in'] ?? null,
             ]);
         } catch (\Exception $e) {
-            return $this->json(['error' => $e->getMessage()], 500);
+            return $this->json(['error' => 'Erro ao renovar token: ' . $e->getMessage()], 500);
         }
     }
 }
