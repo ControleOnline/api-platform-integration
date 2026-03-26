@@ -2,23 +2,42 @@
 
 namespace ControleOnline\Controller\Spotify;
 
+use ControleOnline\Entity\People;
+use ControleOnline\Service\ConfigService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Doctrine\ORM\EntityManagerInterface;
+use Exception;
 
 class SpotifyTokenController extends AbstractController
 {
-    public function __construct(private HttpClientInterface $httpClient) {}
+    public function __construct(
+        private HttpClientInterface $httpClient,
+        private EntityManagerInterface $manager,
+        private ConfigService $configService
+    ) {}
 
-    #[Route('/spotify/token', name: 'spotify_token', methods: ['GET'])]
-    public function index(): JsonResponse
+    #[Route('/spotify/token/{peopleId}', name: 'spotify_token_per_kitchen', methods: ['GET'])]
+    public function token(string $peopleId): JsonResponse
     {
-        $clientId = $_ENV['SPOTIFY_CLIENT_ID'] ?? '';
-        $clientSecret = $_ENV['SPOTIFY_CLIENT_SECRET'] ?? '';
-        $refreshToken = $_ENV['SPOTIFY_REFRESH_TOKEN'] ?? '';
-
         try {
+
+            $people = $this->manager->getRepository(People::class)->find($peopleId);
+            if (!$people)
+                throw new Exception('People not found');
+
+            $spotify_autentication =  $this->configService->discoveryConfig($people, 'spotify_autentication')?->getConfigValue();
+
+            if (!$spotify_autentication)
+                throw new Exception('Spotify is not configured');
+
+            $clientId = $_ENV['SPOTIFY_CLIENT_ID'];
+            $clientSecret = $_ENV['SPOTIFY_CLIENT_SECRET'];
+            $refreshToken = $spotify_autentication['REFRESH_TOKEN'];
+
+
             $response = $this->httpClient->request('POST', 'https://accounts.spotify.com/api/token', [
                 'headers' => [
                     'Authorization' => 'Basic ' . base64_encode("$clientId:$clientSecret"),
@@ -30,14 +49,9 @@ class SpotifyTokenController extends AbstractController
                 ],
             ]);
 
-            $data = $response->toArray();
-
-            return $this->json([
-                'access_token' => $data['access_token'] ?? null,
-                'expires_in' => $data['expires_in'] ?? null,
-            ]);
+            return $this->json($response->toArray());
         } catch (\Exception $e) {
-            return $this->json(['error' => 'Erro ao renovar token: ' . $e->getMessage()], 500);
+            return $this->json(['error' => $e->getMessage()], 500);
         }
     }
 }
