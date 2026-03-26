@@ -124,6 +124,42 @@ class OrderActionController extends AbstractController
         );
     }
 
+    private function safeResolveCapabilities(Order $order): array
+    {
+        try {
+            return $this->orderActionService->getCapabilities($order);
+        } catch (\Throwable $e) {
+            $this->loggerService->getLogger('OrderAction')->error('Order capabilities resolution failed', [
+                'order_id' => $order->getId(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
+    private function safeRunOrderAction(string $action, callable $callback, Order $order): array
+    {
+        try {
+            $result = $callback();
+            return is_array($result) ? $result : [
+                'errno' => 1,
+                'errmsg' => 'Resposta invalida ao executar acao.',
+            ];
+        } catch (\Throwable $e) {
+            $this->loggerService->getLogger('OrderAction')->error('Order action execution failed', [
+                'order_id' => $order->getId(),
+                'action' => $action,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'errno' => 1,
+                'errmsg' => sprintf('Falha ao executar acao %s.', $action),
+            ];
+        }
+    }
+
     #[Route('/orders/{orderId}/capabilities', name: 'order_action_capabilities', methods: ['GET'])]
     public function capabilities(string $orderId): JsonResponse
     {
@@ -132,7 +168,7 @@ class OrderActionController extends AbstractController
             return $this->orderNotFound();
         }
 
-        return new JsonResponse($this->orderActionService->getCapabilities($order));
+        return new JsonResponse($this->safeResolveCapabilities($order));
     }
 
     #[Route('/orders/{orderId}/cancel-reasons', name: 'order_action_cancel_reasons', methods: ['GET'])]
@@ -166,16 +202,18 @@ class OrderActionController extends AbstractController
         $reasonId = $payload['reason_id'] ?? $payload['reasonId'] ?? null;
         $reason   = trim((string) ($payload['reason'] ?? ''));
 
-        $result = $this->orderActionService->cancel(
-            $order,
-            $reasonId !== null && $reasonId !== '' ? (int) preg_replace('/\D+/', '', (string) $reasonId) : null,
-            $reason !== '' ? $reason : null
-        );
+        $result = $this->safeRunOrderAction('cancel', function () use ($order, $reasonId, $reason) {
+            return $this->orderActionService->cancel(
+                $order,
+                $reasonId !== null && $reasonId !== '' ? (int) preg_replace('/\D+/', '', (string) $reasonId) : null,
+                $reason !== '' ? $reason : null
+            );
+        }, $order);
 
         return new JsonResponse([
             'action'       => 'cancel',
             'result'       => $result,
-            'capabilities' => $this->orderActionService->getCapabilities($order),
+            'capabilities' => $this->safeResolveCapabilities($order),
         ]);
     }
 
@@ -187,12 +225,14 @@ class OrderActionController extends AbstractController
             return $this->orderNotFound();
         }
 
-        $result = $this->orderActionService->ready($order);
+        $result = $this->safeRunOrderAction('ready', function () use ($order) {
+            return $this->orderActionService->ready($order);
+        }, $order);
 
         return new JsonResponse([
             'action'       => 'ready',
             'result'       => $result,
-            'capabilities' => $this->orderActionService->getCapabilities($order),
+            'capabilities' => $this->safeResolveCapabilities($order),
         ]);
     }
 
@@ -213,16 +253,18 @@ class OrderActionController extends AbstractController
         $deliveryCode = trim((string) ($payload['delivery_code'] ?? $payload['deliveryCode'] ?? ''));
         $locator      = trim((string) ($payload['locator'] ?? ''));
 
-        $result = $this->orderActionService->delivered(
-            $order,
-            $deliveryCode !== '' ? $deliveryCode : null,
-            $locator !== '' ? $locator : null
-        );
+        $result = $this->safeRunOrderAction('delivered', function () use ($order, $deliveryCode, $locator) {
+            return $this->orderActionService->delivered(
+                $order,
+                $deliveryCode !== '' ? $deliveryCode : null,
+                $locator !== '' ? $locator : null
+            );
+        }, $order);
 
         return new JsonResponse([
             'action'       => 'delivered',
             'result'       => $result,
-            'capabilities' => $this->orderActionService->getCapabilities($order),
+            'capabilities' => $this->safeResolveCapabilities($order),
         ]);
     }
 }

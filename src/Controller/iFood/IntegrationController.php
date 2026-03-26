@@ -608,6 +608,35 @@ class IntegrationController extends AbstractController
         ));
     }
 
+    #[Route('/marketplace/integrations/ifood/menu/upload', name: 'marketplace_integrations_ifood_menu_upload', methods: ['POST'])]
+    public function uploadMenu(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        try {
+            $result = $this->iFoodService->publishMenu($provider);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao iniciar upload de cardapio iFood.',
+            ];
+        }
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'menu_upload', 'result' => $result]
+        ));
+    }
+
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/ready', name: 'marketplace_integrations_ifood_order_ready', methods: ['POST'])]
     public function readyOrderAction(string $orderId): JsonResponse
     {
@@ -620,7 +649,14 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->iFoodService->performReadyAction($order);
+        try {
+            $result = $this->iFoodService->performReadyAction($order);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao executar acao ready no iFood.',
+            ];
+        }
 
         return new JsonResponse([
             'action' => 'ready',
@@ -648,7 +684,14 @@ class IntegrationController extends AbstractController
         }
 
         $reason = $this->normalizeString($payload['reason'] ?? null);
-        $result = $this->iFoodService->performCancelAction($order, $reason !== '' ? $reason : null);
+        try {
+            $result = $this->iFoodService->performCancelAction($order, $reason !== '' ? $reason : null);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao executar acao cancel no iFood.',
+            ];
+        }
 
         return new JsonResponse([
             'action' => 'cancel',
@@ -669,7 +712,14 @@ class IntegrationController extends AbstractController
             return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->iFoodService->performDeliveredAction($order);
+        try {
+            $result = $this->iFoodService->performDeliveredAction($order);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao executar acao delivered no iFood.',
+            ];
+        }
 
         return new JsonResponse([
             'action' => 'delivered',

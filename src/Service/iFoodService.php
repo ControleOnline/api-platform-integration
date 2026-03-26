@@ -325,10 +325,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         SQL;
 
         $connection = $this->entityManager->getConnection();
-        $fieldId = $connection->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-        ]);
+        try {
+            $fieldId = $connection->fetchOne($sql, [
+                'context' => self::APP_CONTEXT,
+                'fieldName' => $fieldName,
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood extra field lookup failed', [
+                'field_name' => $fieldName,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
 
         if (is_numeric($fieldId)) {
             return (int) $fieldId;
@@ -349,10 +357,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
         }
 
-        $fieldId = $connection->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-        ]);
+        try {
+            $fieldId = $connection->fetchOne($sql, [
+                'context' => self::APP_CONTEXT,
+                'fieldName' => $fieldName,
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood extra field lookup retry failed', [
+                'field_name' => $fieldName,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
 
         return is_numeric($fieldId) ? (int) $fieldId : null;
     }
@@ -380,14 +396,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $normalizedValue = $this->normalizeExtraDataValue($value);
         $connection = $this->entityManager->getConnection();
-        $existingId = $connection->fetchOne(
-            'SELECT id FROM extra_data WHERE extra_fields_id = :fieldId AND LOWER(entity_name) = LOWER(:entityName) AND entity_id = :entityId ORDER BY id DESC LIMIT 1',
-            [
-                'fieldId' => $fieldId,
-                'entityName' => $entityName,
-                'entityId' => $entityId,
-            ]
-        );
+        try {
+            $existingId = $connection->fetchOne(
+                'SELECT id FROM extra_data WHERE extra_fields_id = :fieldId AND LOWER(entity_name) = LOWER(:entityName) AND entity_id = :entityId ORDER BY id DESC LIMIT 1',
+                [
+                    'fieldId' => $fieldId,
+                    'entityName' => $entityName,
+                    'entityId' => $entityId,
+                ]
+            );
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood extra data lookup failed', [
+                'entity_name' => $entityName,
+                'entity_id' => $entityId,
+                'field_name' => $fieldName,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
 
         $payload = [
             'data_value' => $normalizedValue,
@@ -718,6 +744,41 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return (int) $connection->fetchOne($sql, [
             'providerId' => (int) $provider->getId(),
         ]);
+    }
+
+    public function publishMenu(People $provider): array
+    {
+        $this->init();
+
+        $state = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return [
+                'errno' => 10002,
+                'errmsg' => 'Loja iFood nao conectada. Vincule o merchant_id antes de publicar o cardapio.',
+            ];
+        }
+
+        $eligibleProductCount = $this->countEligibleProducts($provider);
+        if ($eligibleProductCount <= 0) {
+            return [
+                'errno' => 10002,
+                'errmsg' => 'Nenhum produto apto encontrado para publicar no iFood.',
+                'data' => [
+                    'eligible_product_count' => 0,
+                    'merchant_id' => $merchantId,
+                ],
+            ];
+        }
+
+        return [
+            'errno' => 10001,
+            'errmsg' => 'Upload de cardapio iFood ainda nao implementado nesta versao.',
+            'data' => [
+                'eligible_product_count' => $eligibleProductCount,
+                'merchant_id' => $merchantId,
+            ],
+        ];
     }
 
     public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array
@@ -1404,8 +1465,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $payload['remote_order_state'] = $remoteStateOnSuccess;
         }
 
-        $this->persistOrderIntegrationState($order, $payload);
-        $this->entityManager->flush();
+        try {
+            $this->persistOrderIntegrationState($order, $payload);
+            $this->entityManager->flush();
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood order action state persist failed', [
+                'order_id' => $order->getId(),
+                'action' => $action,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'errno' => 1,
+                'errmsg' => 'Falha ao persistir estado da acao no iFood.',
+                'status' => (int) ($result['status'] ?? 500),
+                'data' => is_array($result['data'] ?? null) ? $result['data'] : [],
+            ];
+        }
 
         return $result;
     }
@@ -1434,10 +1510,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
 
         if ((string) ($result['errno'] ?? '') === '0' && $reason !== null) {
-            $this->persistOrderIntegrationState($order, [
-                'cancel_reason' => $reason,
-            ]);
-            $this->entityManager->flush();
+            try {
+                $this->persistOrderIntegrationState($order, [
+                    'cancel_reason' => $reason,
+                ]);
+                $this->entityManager->flush();
+            } catch (\Throwable $e) {
+                self::$logger->error('iFood cancel reason persist failed', [
+                    'order_id' => $order->getId(),
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         return $result;
