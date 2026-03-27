@@ -1269,11 +1269,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    /* Retorna status das operacoes da loja.
+     * GET /merchant/v1.0/merchants/{id}/status → array de {operation, salesChannel, available, state, validations}
+     * state possíveis: OK, WARNING, CLOSED, ERROR, UNAVAILABLE
+     */
     public function getStoreStatus(People $provider): array
     {
         $this->init();
-        $state      = $this->getStoredIntegrationState($provider);
-        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        $stored     = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
@@ -1293,25 +1297,46 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             if ($statusCode < 200 || $statusCode >= 300) {
                 return [
                     'errno'  => $statusCode,
-                    'errmsg' => $this->normalizeString($decoded['message'] ?? $decoded['description'] ?? 'Falha ao obter status da loja'),
-                    'data'   => null,
+                    'errmsg' => $this->normalizeString(
+                        (is_array($decoded) ? ($decoded['message'] ?? $decoded['description'] ?? null) : null)
+                        ?? 'Falha ao obter status da loja'
+                    ),
+                    'data' => null,
                 ];
             }
 
-            $available = isset($decoded['available']) ? (bool) $decoded['available'] : null;
-            $stateVal  = strtoupper($this->normalizeString(
-                $decoded['state'] ?? ($available === true ? 'AVAILABLE' : ($available === false ? 'UNAVAILABLE' : null))
-            ));
+            /* A API retorna um array de operações.
+             * Considera a loja "online" se ao menos uma operação está OK ou WARNING.
+             */
+            $operations = array_is_list($decoded) ? $decoded : [$decoded];
+            $online     = false;
+            $normalizedOps = [];
+            foreach ($operations as $op) {
+                $opState    = strtoupper($this->normalizeString($op['state'] ?? null));
+                $opOnline   = in_array($opState, ['OK', 'WARNING'], true)
+                    || (isset($op['available']) && (bool) $op['available'] === true);
+                if ($opOnline) $online = true;
+                $normalizedOps[] = [
+                    'operation'    => $this->normalizeString($op['operation'] ?? null),
+                    'sales_channel'=> $this->normalizeString($op['salesChannel'] ?? null),
+                    'available'    => isset($op['available']) ? (bool) $op['available'] : $opOnline,
+                    'state'        => $opState,
+                    'state_label'  => $this->normalizeOperationStateLabel($opState),
+                    'message'      => $op['message'] ?? null,
+                    'validations'  => $op['validations'] ?? [],
+                ];
+            }
+
+            /* Obtém interrupções ativas */
+            $interruptions = $this->listInterruptionsRaw($merchantId, $token);
 
             return [
                 'errno'  => 0,
                 'errmsg' => 'ok',
                 'data'   => [
-                    'available'   => $available ?? in_array($stateVal, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
-                    'state'       => $stateVal,
-                    'state_label' => $this->normalizeMerchantStatusLabel($stateVal),
-                    'online'      => in_array($stateVal, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
-                    'raw'         => $decoded,
+                    'online'        => $online,
+                    'operations'    => $normalizedOps,
+                    'interruptions' => $interruptions,
                 ],
             ];
         } catch (\Throwable $e) {
@@ -1320,11 +1345,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
-    public function setStoreAvailability(People $provider, bool $available): array
+    /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).
+     * POST /merchant/v1.0/merchants/{id}/interruptions
+     */
+    public function closeStore(People $provider): array
     {
         $this->init();
-        $state      = $this->getStoredIntegrationState($provider);
-        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        $stored     = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
@@ -1333,13 +1361,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $newState = $available ? 'AVAILABLE' : 'UNAVAILABLE';
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $end = $now->modify('+7 days');
+
         try {
-            $response   = $this->httpClient->request('PUT',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
+            $response   = $this->httpClient->request('POST',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => ['state' => $newState],
+                    'json'    => [
+                        'description' => 'Loja fechada pelo gestor',
+                        'start'       => $now->format(\DateTimeInterface::ATOM),
+                        'end'         => $end->format(\DateTimeInterface::ATOM),
+                    ],
                 ]);
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
@@ -1350,32 +1384,98 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 return [
                     'errno'  => $statusCode,
                     'errmsg' => $this->normalizeString(
-                        $decoded['message'] ?? $decoded['description']
-                            ?? ($available ? 'Falha ao abrir a loja no iFood' : 'Falha ao fechar a loja no iFood')
+                        $decoded['message'] ?? $decoded['description'] ?? 'Falha ao fechar a loja no iFood'
                     ),
                     'data' => null,
                 ];
             }
 
-            $this->persistProviderIntegrationState($provider, [
-                'merchant_status' => $newState,
-                'last_sync_at'    => date('Y-m-d H:i:s'),
-            ]);
-            $this->entityManager->flush();
-
             return [
                 'errno'  => 0,
                 'errmsg' => 'ok',
-                'data'   => [
-                    'state'       => $newState,
-                    'state_label' => $this->normalizeMerchantStatusLabel($newState),
-                    'online'      => $available,
-                ],
+                'data'   => ['interruption' => $decoded, 'online' => false],
             ];
         } catch (\Throwable $e) {
-            self::$logger->error('iFood setStoreAvailability failed', ['error' => $e->getMessage(), 'available' => $available]);
-            return ['errno' => 1, 'errmsg' => 'Falha ao alterar disponibilidade da loja iFood', 'data' => null];
+            self::$logger->error('iFood closeStore failed', ['error' => $e->getMessage()]);
+            return ['errno' => 1, 'errmsg' => 'Falha ao fechar a loja iFood', 'data' => null];
         }
+    }
+
+    /* Abre a loja removendo todas as interrupções ativas.
+     * GET /interruptions → DELETE /interruptions/{id} para cada uma.
+     */
+    public function openStore(People $provider): array
+    {
+        $this->init();
+        $stored     = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
+        }
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
+        }
+
+        $interruptions = $this->listInterruptionsRaw($merchantId, $token);
+        if (empty($interruptions)) {
+            return ['errno' => 0, 'errmsg' => 'ok', 'data' => ['removed' => 0, 'online' => true]];
+        }
+
+        $removed = 0;
+        $lastError = null;
+        foreach ($interruptions as $interruption) {
+            $id = $this->normalizeString($interruption['id'] ?? null);
+            if ($id === '') continue;
+            try {
+                $resp = $this->httpClient->request('DELETE',
+                    self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
+                    ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+                if ($resp->getStatusCode() < 300) {
+                    $removed++;
+                } else {
+                    $lastError = 'Falha ao remover interrupcao ' . $id;
+                }
+            } catch (\Throwable $e) {
+                $lastError = $e->getMessage();
+            }
+        }
+
+        if ($removed === 0 && $lastError !== null) {
+            return ['errno' => 1, 'errmsg' => $lastError, 'data' => null];
+        }
+
+        return [
+            'errno'  => 0,
+            'errmsg' => 'ok',
+            'data'   => ['removed' => $removed, 'online' => true],
+        ];
+    }
+
+    private function listInterruptionsRaw(string $merchantId, string $token): array
+    {
+        try {
+            $response = $this->httpClient->request('GET',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            if ($response->getStatusCode() !== 200) return [];
+            $decoded = json_decode($response->getContent(false), true);
+            return is_array($decoded) ? $decoded : [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    private function normalizeOperationStateLabel(string $state): string
+    {
+        return match ($state) {
+            'OK'          => 'Online',
+            'WARNING'     => 'Online (com aviso)',
+            'CLOSED'      => 'Fechada',
+            'ERROR'       => 'Erro',
+            'UNAVAILABLE' => 'Indisponivel',
+            default       => 'Indefinido',
+        };
     }
 
     public function syncIntegrationState(People $provider): array

@@ -624,7 +624,7 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $result = $this->iFoodService->setStoreAvailability($provider, true);
+        $result = $this->iFoodService->openStore($provider);
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
@@ -646,7 +646,7 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $result = $this->iFoodService->setStoreAvailability($provider, false);
+        $result = $this->iFoodService->closeStore($provider);
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
