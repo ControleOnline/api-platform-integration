@@ -25,7 +25,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 {
     private const APP_CONTEXT = 'iFood';
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
+    private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB
     private static array $authTokenCache = [];
+    private static array $catalogImagePathCache = [];
     // INICIALIZAÇÃO
     // Define constantes: app name, logger e entidade padrão do iFood
     private function init()
@@ -1101,6 +1103,153 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    private function normalizeImageMimeType(?string $contentType): ?string
+    {
+        $normalized = strtolower(trim((string) $contentType));
+        if ($normalized === '') {
+            return null;
+        }
+
+        $normalized = explode(';', $normalized)[0] ?? $normalized;
+        $normalized = trim($normalized);
+
+        if ($normalized === 'image/jpg') {
+            return 'image/jpeg';
+        }
+
+        return in_array($normalized, ['image/jpeg', 'image/png'], true) ? $normalized : null;
+    }
+
+    private function buildIfoodUploadImageDataUri(string $imageUrl): ?string
+    {
+        try {
+            $response = $this->httpClient->request('GET', $imageUrl);
+            $statusCode = $response->getStatusCode();
+            if ($statusCode < 200 || $statusCode >= 300) {
+                self::$logger->warning('iFood image fetch failed before upload', [
+                    'image_url' => $imageUrl,
+                    'status_code' => $statusCode,
+                ]);
+                return null;
+            }
+
+            $headers = $response->getHeaders(false);
+            $contentType = $headers['content-type'][0] ?? null;
+            $mimeType = $this->normalizeImageMimeType($contentType);
+            if (!$mimeType) {
+                self::$logger->warning('iFood image fetch returned unsupported mime type', [
+                    'image_url' => $imageUrl,
+                    'content_type' => $contentType,
+                ]);
+                return null;
+            }
+
+            $binary = $response->getContent(false);
+            $sizeBytes = strlen($binary);
+            if ($sizeBytes <= 0 || $sizeBytes > self::MAX_IMAGE_UPLOAD_BYTES) {
+                self::$logger->warning('iFood image fetch returned invalid size for upload', [
+                    'image_url' => $imageUrl,
+                    'size_bytes' => $sizeBytes,
+                    'max_bytes' => self::MAX_IMAGE_UPLOAD_BYTES,
+                ]);
+                return null;
+            }
+
+            return 'data:' . $mimeType . ';base64,' . base64_encode($binary);
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood image fetch exception before upload', [
+                'image_url' => $imageUrl,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    private function resolveIfoodUploadedImagePath(mixed $responseBody): ?string
+    {
+        if (!is_array($responseBody)) {
+            return null;
+        }
+
+        $candidates = [
+            $responseBody['imagePath'] ?? null,
+            $responseBody['path'] ?? null,
+            $responseBody['url'] ?? null,
+            is_array($responseBody['data'] ?? null) ? ($responseBody['data']['imagePath'] ?? null) : null,
+            is_array($responseBody['data'] ?? null) ? ($responseBody['data']['path'] ?? null) : null,
+            is_array($responseBody['data'] ?? null) ? ($responseBody['data']['url'] ?? null) : null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $normalized = $this->normalizeString($candidate);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function uploadIfoodCatalogImageAndResolvePath(string $merchantId, string $sourceImageUrl): ?string
+    {
+        $cacheKey = $merchantId . '|' . $sourceImageUrl;
+        if (array_key_exists($cacheKey, self::$catalogImagePathCache)) {
+            return self::$catalogImagePathCache[$cacheKey] ?: null;
+        }
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            self::$catalogImagePathCache[$cacheKey] = '';
+            return null;
+        }
+
+        $dataUri = $this->buildIfoodUploadImageDataUri($sourceImageUrl);
+        if (!$dataUri) {
+            self::$catalogImagePathCache[$cacheKey] = '';
+            return null;
+        }
+
+        try {
+            $response = $this->httpClient->request('POST',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/image/upload',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type' => 'application/json',
+                    ],
+                    'json' => [
+                        'image' => $dataUri,
+                    ],
+                ]
+            );
+
+            $statusCode = $response->getStatusCode();
+            $body = $response->toArray(false);
+            $imagePath = $this->resolveIfoodUploadedImagePath($body);
+
+            if ($statusCode >= 200 && $statusCode < 300 && $imagePath) {
+                self::$catalogImagePathCache[$cacheKey] = $imagePath;
+                return $imagePath;
+            }
+
+            self::$logger->warning('iFood catalog image upload failed', [
+                'merchant_id' => $merchantId,
+                'image_url' => $sourceImageUrl,
+                'status_code' => $statusCode,
+                'response' => is_array($body) ? $body : [],
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood catalog image upload exception', [
+                'merchant_id' => $merchantId,
+                'image_url' => $sourceImageUrl,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        self::$catalogImagePathCache[$cacheKey] = '';
+        return null;
+    }
+
     private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): bool
     {
         $token = $this->getAccessToken();
@@ -1138,9 +1287,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
-        $imageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
-        if ($imageUrl) {
-            $productBody['imagePath'] = $imageUrl;
+        $sourceImageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
+        if ($sourceImageUrl) {
+            $uploadedImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $sourceImageUrl);
+            if ($uploadedImagePath) {
+                $productBody['imagePath'] = $uploadedImagePath;
+            } else {
+                self::$logger->warning('iFood catalog image upload skipped, proceeding without imagePath', [
+                    'merchant_id' => $merchantId,
+                    'product_id' => $product['id'] ?? null,
+                    'image_url' => $sourceImageUrl,
+                ]);
+            }
         }
 
         $payload = [

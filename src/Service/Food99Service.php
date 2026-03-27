@@ -11,6 +11,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
 class Food99Service extends DefaultFoodService implements EventSubscriberInterface
 {
@@ -1346,6 +1347,63 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
     }
 
+    private function request99MultipartWithResponse(string $method, string $uri, array $payload, array $logContext = []): ?array
+    {
+        $url = $this->getFood99BaseUrl() . $uri;
+        $method = strtoupper($method);
+        $startedAt = microtime(true);
+
+        if ($method !== 'POST') {
+            self::$logger->warning('Food99 multipart request only supports POST', array_merge([
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+            ], $logContext));
+
+            return null;
+        }
+
+        try {
+            $formData = new FormDataPart($payload);
+            $headers = $formData->getPreparedHeaders()->toArray();
+
+            self::$logger->info('Food99 ACTION REQUEST', array_merge([
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'content_type' => 'multipart/form-data',
+                'api_base_url' => $this->getFood99BaseUrl(),
+            ], $logContext));
+
+            $response = $this->httpClient->request($method, $url, [
+                'headers' => $headers,
+                'body' => $formData->bodyToIterable(),
+            ]);
+            $result = $response->toArray(false);
+
+            self::$logger->info('Food99 ACTION RESPONSE', array_merge([
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'status_code' => $response->getStatusCode(),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                'response' => $result,
+            ], $logContext));
+
+            return $result;
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 ACTION ERROR', array_merge([
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                'error' => $e->getMessage(),
+            ], $logContext));
+
+            return null;
+        }
+    }
+
     private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $accessToken = $this->resolveAccessToken($provider);
@@ -1364,6 +1422,28 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $payload['auth_token'] = $accessToken;
 
         return $this->request99WithResponse($method, $uri, $payload, [
+            'provider_id' => $provider?->getId(),
+        ]);
+    }
+
+    private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
+    {
+        $accessToken = $this->resolveAccessToken($provider);
+
+        if (!$accessToken) {
+            self::$logger->warning('Food99 action skipped because access token is unavailable', [
+                'method' => strtoupper($method),
+                'uri' => $uri,
+                'payload' => $payload,
+                'provider_id' => $provider?->getId(),
+                'api_base_url' => $this->getFood99BaseUrl(),
+            ]);
+            return null;
+        }
+
+        $payload['auth_token'] = $accessToken;
+
+        return $this->request99MultipartWithResponse($method, $uri, $payload, [
             'provider_id' => $provider?->getId(),
         ]);
     }
@@ -4106,7 +4186,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v3/image/image/uploadImage', $payload, $provider);
+        return $this->call99StoreMultipartEndpointWithResponse('POST', '/v3/image/image/uploadImage', $payload, $provider);
     }
 
     public function getImageUploadInfoPageList(People $provider, array $payload = []): ?array
@@ -5063,6 +5143,104 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function isHttpImageUrl(?string $url): bool
+    {
+        if (!$url) {
+            return false;
+        }
+
+        return (bool) preg_match('/^https?:\\/\\//i', trim($url));
+    }
+
+    private function buildFood99ImageUploadExt(People $provider, string $appItemId, string $sourceUrl): string
+    {
+        $base = sprintf('%s-%s', (string) $provider->getId(), $appItemId !== '' ? $appItemId : md5($sourceUrl));
+        $base = trim($base);
+
+        if ($base === '') {
+            $base = md5($sourceUrl);
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($base, 0, 255);
+        }
+
+        return substr($base, 0, 255);
+    }
+
+    private function syncStoreMenuHeadImagesToFood99(People $provider, array &$payload): array
+    {
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        if (empty($items)) {
+            return [
+                'uploaded' => 0,
+                'reused' => 0,
+                'failed' => 0,
+                'skipped' => 0,
+            ];
+        }
+
+        $uploadedBySourceUrl = [];
+        $failedSourceUrls = [];
+        $stats = [
+            'uploaded' => 0,
+            'reused' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+        ];
+
+        foreach ($items as $index => $item) {
+            if (!is_array($item)) {
+                $stats['skipped']++;
+                continue;
+            }
+
+            $sourceUrl = trim((string) ($item['head_img'] ?? ''));
+            if (!$this->isHttpImageUrl($sourceUrl)) {
+                $stats['skipped']++;
+                continue;
+            }
+
+            if (isset($uploadedBySourceUrl[$sourceUrl])) {
+                $payload['items'][$index]['head_img'] = $uploadedBySourceUrl[$sourceUrl];
+                $stats['reused']++;
+                continue;
+            }
+
+            if (isset($failedSourceUrls[$sourceUrl])) {
+                $stats['failed']++;
+                continue;
+            }
+
+            $appItemId = trim((string) ($item['app_item_id'] ?? ''));
+            $uploadResponse = $this->uploadImage($provider, [
+                'image_url' => $sourceUrl,
+                'ext' => $this->buildFood99ImageUploadExt($provider, $appItemId, $sourceUrl),
+            ]);
+
+            $uploadedUrl = trim((string) ($uploadResponse['data']['giftUrl'] ?? ''));
+            if ($this->isSuccessfulErrno($uploadResponse['errno'] ?? null) && $uploadedUrl !== '') {
+                $uploadedBySourceUrl[$sourceUrl] = $uploadedUrl;
+                $payload['items'][$index]['head_img'] = $uploadedUrl;
+                $stats['uploaded']++;
+                continue;
+            }
+
+            $failedSourceUrls[$sourceUrl] = true;
+            $stats['failed']++;
+
+            self::$logger->warning('Food99 image upload fallback: keeping source URL in menu payload', [
+                'provider_id' => $provider->getId(),
+                'app_item_id' => $appItemId,
+                'image_url' => $sourceUrl,
+                'errno' => $uploadResponse['errno'] ?? null,
+                'errmsg' => $uploadResponse['errmsg'] ?? null,
+            ]);
+        }
+
+        return $stats;
+    }
+
     public function uploadStoreMenu(People $provider, array $payload): ?array
     {
         $this->init();
@@ -5076,9 +5254,15 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $validationError;
         }
 
+        $imageSyncStats = $this->syncStoreMenuHeadImagesToFood99($provider, $payload);
+
         $response = $this->call99EndpointWithResponse('/v3/item/item/upload', $payload, $provider);
         $taskId = is_array($response['data'] ?? null) ? ($response['data']['taskID'] ?? null) : null;
         $response = is_array($response) ? $this->normalizeMenuTaskResponse($response, $taskId) : $response;
+
+        if (is_array($response)) {
+            $response['image_sync'] = $imageSyncStats;
+        }
 
         if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderMenuUploadSubmission($provider, $response, $taskId);
