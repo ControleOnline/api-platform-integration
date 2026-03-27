@@ -1269,6 +1269,115 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    public function getStoreStatus(People $provider): array
+    {
+        $this->init();
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
+        }
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
+        }
+        try {
+            $response   = $this->httpClient->request('GET',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $statusCode = $response->getStatusCode();
+            $content    = $response->getContent(false);
+            $decoded    = json_decode($content, true);
+            if (!is_array($decoded)) $decoded = [];
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                return [
+                    'errno'  => $statusCode,
+                    'errmsg' => $this->normalizeString($decoded['message'] ?? $decoded['description'] ?? 'Falha ao obter status da loja'),
+                    'data'   => null,
+                ];
+            }
+
+            $available = isset($decoded['available']) ? (bool) $decoded['available'] : null;
+            $stateVal  = strtoupper($this->normalizeString(
+                $decoded['state'] ?? ($available === true ? 'AVAILABLE' : ($available === false ? 'UNAVAILABLE' : null))
+            ));
+
+            return [
+                'errno'  => 0,
+                'errmsg' => 'ok',
+                'data'   => [
+                    'available'   => $available ?? in_array($stateVal, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
+                    'state'       => $stateVal,
+                    'state_label' => $this->normalizeMerchantStatusLabel($stateVal),
+                    'online'      => in_array($stateVal, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
+                    'raw'         => $decoded,
+                ],
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood getStoreStatus failed', ['error' => $e->getMessage()]);
+            return ['errno' => 1, 'errmsg' => 'Falha ao consultar status da loja iFood', 'data' => null];
+        }
+    }
+
+    public function setStoreAvailability(People $provider, bool $available): array
+    {
+        $this->init();
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
+        }
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
+        }
+
+        $newState = $available ? 'AVAILABLE' : 'UNAVAILABLE';
+        try {
+            $response   = $this->httpClient->request('PUT',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
+                [
+                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                    'json'    => ['state' => $newState],
+                ]);
+            $statusCode = $response->getStatusCode();
+            $content    = $response->getContent(false);
+            $decoded    = json_decode($content, true);
+            if (!is_array($decoded)) $decoded = [];
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                return [
+                    'errno'  => $statusCode,
+                    'errmsg' => $this->normalizeString(
+                        $decoded['message'] ?? $decoded['description']
+                            ?? ($available ? 'Falha ao abrir a loja no iFood' : 'Falha ao fechar a loja no iFood')
+                    ),
+                    'data' => null,
+                ];
+            }
+
+            $this->persistProviderIntegrationState($provider, [
+                'merchant_status' => $newState,
+                'last_sync_at'    => date('Y-m-d H:i:s'),
+            ]);
+            $this->entityManager->flush();
+
+            return [
+                'errno'  => 0,
+                'errmsg' => 'ok',
+                'data'   => [
+                    'state'       => $newState,
+                    'state_label' => $this->normalizeMerchantStatusLabel($newState),
+                    'online'      => $available,
+                ],
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood setStoreAvailability failed', ['error' => $e->getMessage(), 'available' => $available]);
+            return ['errno' => 1, 'errmsg' => 'Falha ao alterar disponibilidade da loja iFood', 'data' => null];
+        }
+    }
+
     public function syncIntegrationState(People $provider): array
     {
         $this->init();

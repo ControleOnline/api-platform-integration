@@ -594,6 +594,66 @@ class IntegrationController extends AbstractController
         ));
     }
 
+    #[Route('/marketplace/integrations/ifood/store/status', name: 'marketplace_integrations_ifood_store_status', methods: ['GET'])]
+    public function getStoreStatus(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request, []);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $result = $this->iFoodService->getStoreStatus($provider);
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'store_status', 'result' => $result]
+        ));
+    }
+
+    #[Route('/marketplace/integrations/ifood/store/open', name: 'marketplace_integrations_ifood_store_open', methods: ['POST'])]
+    public function openStore(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $result = $this->iFoodService->setStoreAvailability($provider, true);
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'store_open', 'result' => $result]
+        ));
+    }
+
+    #[Route('/marketplace/integrations/ifood/store/close', name: 'marketplace_integrations_ifood_store_close', methods: ['POST'])]
+    public function closeStore(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $result = $this->iFoodService->setStoreAvailability($provider, false);
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'store_close', 'result' => $result]
+        ));
+    }
+
     #[Route('/marketplace/integrations/ifood/menu/products', name: 'marketplace_integrations_ifood_menu_products', methods: ['GET'])]
     public function getMenuProducts(Request $request): JsonResponse
     {
