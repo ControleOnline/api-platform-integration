@@ -1065,17 +1065,36 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    private function generateUuidV4(): string
+    {
+        return sprintf(
+            '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+            mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+            mt_rand(0, 0xffff),
+            mt_rand(0, 0x0fff) | 0x4000,
+            mt_rand(0, 0x3fff) | 0x8000,
+            mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
+        );
+    }
+
     private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): bool
     {
         $token = $this->getAccessToken();
         if (!$token) return false;
 
-        $ec         = (string) $product['id'];
-        $existingItemId    = $existing['item_id']    ?? null;
-        $existingProductId = $existing['product_id'] ?? null;
-        $usedCategoryId    = ($existing['category_id'] ?? '') !== '' ? $existing['category_id'] : $categoryId;
+        $ec                = (string) $product['id'];
+        $existingItemId    = $this->normalizeString($existing['item_id']    ?? null);
+        $existingProductId = $this->normalizeString($existing['product_id'] ?? null);
+        $usedCategoryId    = ($this->normalizeString($existing['category_id'] ?? null) !== '')
+            ? $existing['category_id']
+            : $categoryId;
+
+        /* Para itens novos geramos UUIDs para ligar item ↔ produto */
+        $productUuid = $existingProductId !== '' ? $existingProductId : $this->generateUuidV4();
+        $itemUuid    = $existingItemId    !== '' ? $existingItemId    : $this->generateUuidV4();
 
         $itemBody = [
+            'id'           => $itemUuid,
             'type'         => 'DEFAULT',
             'categoryId'   => $usedCategoryId,
             'status'       => 'AVAILABLE',
@@ -1084,24 +1103,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'originalValue' => (float) $product['price'],
             ],
             'externalCode' => $ec,
+            'productId'    => $productUuid,
             'index'        => 0,
         ];
-        if ($existingItemId !== null && $existingItemId !== '') {
-            $itemBody['id'] = $existingItemId;
-        }
-        if ($existingProductId !== null && $existingProductId !== '') {
-            $itemBody['productId'] = $existingProductId;
-        }
 
         $productBody = [
+            'id'           => $productUuid,
             'name'         => $product['name'],
             'description'  => $product['description'] ?? '',
             'externalCode' => $ec,
-            'serving'      => 'NOT_APPLICABLE',
+            'serving'      => 'SERVES_1',
         ];
-        if ($existingProductId !== null && $existingProductId !== '') {
-            $productBody['id'] = $existingProductId;
-        }
 
         $payload = [
             'item'         => $itemBody,
