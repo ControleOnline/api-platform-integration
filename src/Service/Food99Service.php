@@ -4335,7 +4335,22 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 c.name AS category_name,
                 pf.file_id AS cover_file_id,
                 ed.data_value AS food99_code,
-                ed_published.data_value AS food99_published
+                ed_published.data_value AS food99_published,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM product_group pg_req
+                    INNER JOIN product_group_product pgp_req
+                        ON pgp_req.product_group_id = pg_req.id
+                    INNER JOIN product child_req
+                        ON child_req.id = pgp_req.product_child_id
+                    WHERE pg_req.parent_product_id = p.id
+                      AND pg_req.active = 1
+                      AND pgp_req.active = 1
+                      AND child_req.active = 1
+                      AND pgp_req.product_type IN ('component', 'package')
+                      AND COALESCE(pg_req.required, 0) = 1
+                      AND COALESCE(pg_req.minimum, 0) >= 1
+                ) THEN 1 ELSE 0 END AS has_required_modifiers
             FROM product p
             LEFT JOIN product_category pc ON pc.id = (
                 SELECT MIN(pc2.id)
@@ -4467,8 +4482,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $categoryId = isset($row['category_id']) && $row['category_id'] !== null ? (int) $row['category_id'] : null;
         $categoryName = $row['category_name'] ? trim((string) $row['category_name']) : null;
         $price = round((float) ($row['price'] ?? 0), 2);
+        $type = strtolower(trim((string) ($row['type'] ?? '')));
         $appItemId = trim((string) ($row['food99_code'] ?? '')) ?: (string) $productId;
         $published = in_array((string) ($row['food99_published'] ?? ''), ['1', 'true'], true);
+        $hasRequiredModifiers = in_array((string) ($row['has_required_modifiers'] ?? ''), ['1', 'true'], true);
+        $allowZeroPriceByGroups = $type === 'custom' && $hasRequiredModifiers;
 
         $blockers = [];
         if ($productName === '') {
@@ -4477,7 +4495,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if (!$categoryId) {
             $blockers[] = 'Produto sem categoria';
         }
-        if ($price <= 0) {
+        if ($price <= 0 && !$allowZeroPriceByGroups) {
             $blockers[] = 'Produto com preco invalido';
         }
 
@@ -4493,6 +4511,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ] : null,
             'food99_code' => trim((string) ($row['food99_code'] ?? '')) ?: null,
             'food99_published' => $published,
+            'has_required_modifiers' => $hasRequiredModifiers,
             'image_url' => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
             'suggested_app_item_id' => $appItemId,
             'eligible' => empty($blockers),
