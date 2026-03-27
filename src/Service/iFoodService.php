@@ -960,6 +960,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 p.description,
                 p.price,
                 p.type,
+                pf.file_id AS cover_file_id,
                 c.id   AS category_id,
                 c.name AS category_name
             FROM product p
@@ -971,6 +972,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                   AND c2.context = 'products'
             )
             LEFT JOIN category c ON c.id = pc.category_id
+            LEFT JOIN product_file pf ON pf.id = (
+                SELECT MIN(pf2.id)
+                FROM product_file pf2
+                WHERE pf2.product_id = p.id
+            )
             WHERE p.company_id = :providerId
               AND p.active = 1
               AND p.type IN ('manufactured', 'custom', 'product')
@@ -1132,6 +1138,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
+        $imageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
+        if ($imageUrl) {
+            $productBody['imagePath'] = $imageUrl;
+        }
 
         $payload = [
             'item'         => $itemBody,
@@ -1140,28 +1150,70 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'options'      => [],
         ];
 
-        try {
-            $response = $this->httpClient->request('PUT',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
-                [
-                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => $payload,
-                ]
-            );
-            $status = $response->getStatusCode();
-            if ($status >= 200 && $status < 300) {
-                return true;
+        $attempts = [$payload];
+        if (isset($payload['products'][0]['imagePath'])) {
+            $fallbackPayload = $payload;
+            unset($fallbackPayload['products'][0]['imagePath']);
+            $attempts[] = $fallbackPayload;
+        }
+
+        $lastStatus = null;
+        $lastBody = '';
+        $lastError = null;
+
+        foreach ($attempts as $attemptIndex => $attemptPayload) {
+            try {
+                $response = $this->httpClient->request('PUT',
+                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
+                    [
+                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                        'json'    => $attemptPayload,
+                    ]
+                );
+                $status = $response->getStatusCode();
+                $body = substr($response->getContent(false), 0, 500);
+                if ($status >= 200 && $status < 300) {
+                    return true;
+                }
+
+                $lastStatus = $status;
+                $lastBody = $body;
+                if ($attemptIndex === 0 && count($attempts) > 1) {
+                    self::$logger->warning('iFood catalog v2 upsert failed with imagePath, retrying without imagePath', [
+                        'status'     => $status,
+                        'product_id' => $product['id'],
+                        'body'       => $body,
+                    ]);
+                    continue;
+                }
+            } catch (\Throwable $e) {
+                $lastError = $e->getMessage();
+                if ($attemptIndex === 0 && count($attempts) > 1) {
+                    self::$logger->warning('iFood catalog v2 upsert exception with imagePath, retrying without imagePath', [
+                        'product_id' => $product['id'],
+                        'error' => $e->getMessage(),
+                    ]);
+                    continue;
+                }
             }
-            self::$logger->warning('iFood catalog v2 upsert non-2xx', [
-                'status'     => $status,
+
+            break;
+        }
+
+        if ($lastError !== null) {
+            self::$logger->error('iFood catalog v2 upsert exception', [
                 'product_id' => $product['id'],
-                'body'       => substr($response->getContent(false), 0, 500),
+                'error' => $lastError,
             ]);
             return false;
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood catalog v2 upsert exception', ['product_id' => $product['id'], 'error' => $e->getMessage()]);
-            return false;
         }
+
+        self::$logger->warning('iFood catalog v2 upsert non-2xx', [
+            'status'     => $lastStatus,
+            'product_id' => $product['id'],
+            'body'       => $lastBody,
+        ]);
+        return false;
     }
 
     public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array

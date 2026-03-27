@@ -99,4 +99,78 @@ class DefaultFoodService
         echo $log;
         self::$logger->$type($log);
     }
+
+    protected function resolvePublicApiEntrypoint(): string
+    {
+        $baseUrl = $_ENV['PUBLIC_API_ENTRYPOINT']
+            ?? $_ENV['API_ENTRYPOINT']
+            ?? $_ENV['API_BASE_URL']
+            ?? $_SERVER['PUBLIC_API_ENTRYPOINT']
+            ?? $_SERVER['API_ENTRYPOINT']
+            ?? $_SERVER['API_BASE_URL']
+            ?? getenv('PUBLIC_API_ENTRYPOINT')
+            ?? getenv('API_ENTRYPOINT')
+            ?? getenv('API_BASE_URL')
+            ?: 'https://api.controleonline.com';
+
+        $baseUrl = trim((string) $baseUrl);
+        if ($baseUrl === '') {
+            $baseUrl = 'https://api.controleonline.com';
+        }
+
+        if (!preg_match('#^https?://#i', $baseUrl)) {
+            $baseUrl = 'https://' . ltrim($baseUrl, '/');
+        }
+
+        return rtrim($baseUrl, '/');
+    }
+
+    protected function resolvePublicAppDomain(): string
+    {
+        $domain = $_ENV['PUBLIC_APP_DOMAIN']
+            ?? $_ENV['APP_DOMAIN']
+            ?? $_ENV['ADMIN_APP_DOMAIN']
+            ?? $_SERVER['PUBLIC_APP_DOMAIN']
+            ?? $_SERVER['APP_DOMAIN']
+            ?? $_SERVER['ADMIN_APP_DOMAIN']
+            ?? getenv('PUBLIC_APP_DOMAIN')
+            ?? getenv('APP_DOMAIN')
+            ?? getenv('ADMIN_APP_DOMAIN')
+            ?: 'admin.controleonline.com';
+
+        $domain = trim((string) $domain);
+        if ($domain === '') {
+            return 'admin.controleonline.com';
+        }
+
+        $host = parse_url($domain, PHP_URL_HOST);
+        if (is_string($host) && $host !== '') {
+            return $host;
+        }
+
+        if (!str_contains($domain, '/')) {
+            return $domain;
+        }
+
+        return 'admin.controleonline.com';
+    }
+
+    protected function buildPublicFileDownloadUrl(mixed $fileId): ?string
+    {
+        if ($fileId === null || $fileId === '') {
+            return null;
+        }
+
+        $normalizedFileId = preg_replace('/\D+/', '', (string) $fileId);
+        if ($normalizedFileId === '') {
+            return null;
+        }
+
+        return sprintf(
+            '%s/files/%s/download?app-domain=%s',
+            $this->resolvePublicApiEntrypoint(),
+            $normalizedFileId,
+            rawurlencode($this->resolvePublicAppDomain())
+        );
+    }
 }

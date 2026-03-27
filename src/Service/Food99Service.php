@@ -4253,6 +4253,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 p.active,
                 c.id AS category_id,
                 c.name AS category_name,
+                pf.file_id AS cover_file_id,
                 ed.data_value AS food99_code,
                 ed_published.data_value AS food99_published
             FROM product p
@@ -4264,6 +4265,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                   AND c2.context = 'products'
             )
             LEFT JOIN category c ON c.id = pc.category_id
+            LEFT JOIN product_file pf ON pf.id = (
+                SELECT MIN(pf2.id)
+                FROM product_file pf2
+                WHERE pf2.product_id = p.id
+            )
             LEFT JOIN extra_fields ef
                 ON ef.context = :food99Context
                AND ef.field_name = :codeFieldName
@@ -4333,6 +4339,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 child.product AS child_product_name,
                 child.description AS child_description,
                 child.price AS child_base_price,
+                child_pf.file_id AS child_cover_file_id,
                 ed_child.data_value AS child_food99_code
             FROM product_group pg
             INNER JOIN product_group_product pgp
@@ -4341,6 +4348,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 ON parent.id = pg.parent_product_id
             INNER JOIN product child
                 ON child.id = pgp.product_child_id
+            LEFT JOIN product_file child_pf ON child_pf.id = (
+                SELECT MIN(pf2.id)
+                FROM product_file pf2
+                WHERE pf2.product_id = child.id
+            )
             LEFT JOIN extra_fields ef_code
                 ON ef_code.context = :food99Context
                AND ef_code.field_name = :codeFieldName
@@ -4401,6 +4413,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ] : null,
             'food99_code' => trim((string) ($row['food99_code'] ?? '')) ?: null,
             'food99_published' => $published,
+            'image_url' => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
             'suggested_app_item_id' => $appItemId,
             'eligible' => empty($blockers),
             'blockers' => $blockers,
@@ -4722,6 +4735,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $existingItem['short_desc'] = $itemData['short_desc'];
             }
 
+            if (!empty($itemData['head_img']) && empty($existingItem['head_img'])) {
+                $existingItem['head_img'] = $itemData['head_img'];
+            }
+
             if (($itemData['is_sold_separately'] ?? false) === true) {
                 $existingItem['is_sold_separately'] = true;
             }
@@ -4744,13 +4761,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $parentItemIdByProductId[(int) $product['id']] = $appItemId;
             $categoriesMap[$categoryId]['app_item_ids'][] = $appItemId;
 
-            $upsertItem($itemsById, $appItemId, [
+            $itemPayload = [
                 'item_name' => $product['name'],
                 'short_desc' => $product['description'],
                 'price' => (int) round($product['price'] * 100),
                 'priority' => $index + 1,
                 'is_sold_separately' => true,
-            ]);
+            ];
+            if (!empty($product['image_url'])) {
+                $itemPayload['head_img'] = (string) $product['image_url'];
+            }
+            $upsertItem($itemsById, $appItemId, $itemPayload);
         }
 
         foreach ($categoriesMap as &$category) {
@@ -4816,13 +4837,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 : (float) $rawChildPrice;
 
             $childPriceCents = max(0, (int) round($childPrice * 100));
+            $childImageUrl = $this->buildPublicFileDownloadUrl($modifierRow['child_cover_file_id'] ?? null);
 
-            $upsertItem($itemsById, $childAppItemId, [
+            $childPayload = [
                 'item_name' => $childName,
                 'short_desc' => trim((string) ($modifierRow['child_description'] ?? '')),
                 'price' => $childPriceCents,
                 'is_sold_separately' => false,
-            ]);
+            ];
+            if ($childImageUrl) {
+                $childPayload['head_img'] = $childImageUrl;
+            }
+            $upsertItem($itemsById, $childAppItemId, $childPayload);
 
             $modifierGroupsMap[$appModifierGroupId]['app_mg_items'][] = [
                 'app_item_id' => $childAppItemId,
