@@ -594,6 +594,26 @@ class IntegrationController extends AbstractController
         ));
     }
 
+    #[Route('/marketplace/integrations/ifood/menu/products', name: 'marketplace_integrations_ifood_menu_products', methods: ['GET'])]
+    public function getMenuProducts(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request, []);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        try {
+            $products = $this->iFoodService->listSelectableMenuProducts($provider);
+        } catch (\Throwable $e) {
+            $products = ['products' => [], 'eligible_product_count' => 0, 'minimum_required_items' => 1];
+        }
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['products' => $products]
+        ));
+    }
+
     #[Route('/marketplace/integrations/ifood/menu/upload', name: 'marketplace_integrations_ifood_menu_upload', methods: ['POST'])]
     public function uploadMenu(Request $request): JsonResponse
     {
@@ -608,18 +628,25 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
+        $rawIds     = $payload['product_ids'] ?? $payload['products'] ?? [];
+        $productIds = is_array($rawIds) ? array_values(array_filter(array_map('intval', $rawIds))) : [];
+
         try {
-            $result = $this->iFoodService->publishMenu($provider);
+            $result = $this->iFoodService->publishMenu($provider, $productIds);
         } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao iniciar upload de cardapio iFood.',
-            ];
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao iniciar upload de cardapio iFood.'];
+        }
+
+        /* recarrega lista de produtos com status atualizado */
+        try {
+            $products = $this->iFoodService->listSelectableMenuProducts($provider);
+        } catch (\Throwable $e) {
+            $products = null;
         }
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
-            ['action' => 'menu_upload', 'result' => $result]
+            ['action' => 'menu_upload', 'result' => $result, 'products' => $products]
         ));
     }
 
@@ -640,15 +667,18 @@ class IntegrationController extends AbstractController
         try {
             $result = $this->iFoodService->syncCatalogFromIfood($provider);
         } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao sincronizar catalogo do iFood.',
-            ];
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao sincronizar catalogo do iFood.'];
+        }
+
+        try {
+            $products = $this->iFoodService->listSelectableMenuProducts($provider);
+        } catch (\Throwable $e) {
+            $products = null;
         }
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
-            ['action' => 'menu_sync', 'result' => $result]
+            ['action' => 'menu_sync', 'result' => $result, 'products' => $products]
         ));
     }
 

@@ -746,7 +746,72 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ]);
     }
 
-    public function publishMenu(People $provider): array
+    /* ------------------------------------------------------------------ */
+    /* Catalog v2                                                          */
+    /* ------------------------------------------------------------------ */
+
+    private const CATALOG_V2_BASE = 'https://merchant-api.ifood.com.br/catalog/v2.0/merchants/';
+
+    public function listSelectableMenuProducts(People $provider): array
+    {
+        $this->init();
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+
+        $rows = $this->fetchCatalogProducts($provider);
+
+        /* mapa de externalCodes já publicados no catálogo iFood */
+        $remoteByEc = [];
+        if ($merchantId !== '') {
+            foreach ($this->fetchIfoodCatalogItemsV2($merchantId) as $item) {
+                $ec = $this->normalizeString($item['externalCode'] ?? null);
+                if ($ec !== '') {
+                    $remoteByEc[$ec] = $this->normalizeString($item['id'] ?? '');
+                }
+            }
+        }
+
+        $products = array_map(
+            fn(array $row) => $this->buildIfoodMenuProductView($row, $remoteByEc),
+            $rows
+        );
+
+        return [
+            'provider_id'           => $provider->getId(),
+            'minimum_required_items' => 1,
+            'eligible_product_count' => count(array_filter($products, fn(array $p) => $p['eligible'])),
+            'products'              => $products,
+        ];
+    }
+
+    private function buildIfoodMenuProductView(array $row, array $remoteByEc): array
+    {
+        $productId = (int) ($row['id'] ?? 0);
+        $name      = trim((string) ($row['name'] ?? ''));
+        $price     = round((float) ($row['price'] ?? 0), 2);
+
+        $blockers = [];
+        if ($name === '') $blockers[] = 'Produto sem nome';
+        if ($price <= 0)  $blockers[] = 'Produto com preco invalido';
+
+        $ec = (string) $productId;
+
+        return [
+            'id'               => $productId,
+            'name'             => $name,
+            'description'      => trim((string) ($row['description'] ?? '')),
+            'price'            => $price,
+            'type'             => (string) ($row['type'] ?? ''),
+            'category'         => null,
+            'eligible'         => empty($blockers),
+            'blockers'         => $blockers,
+            'published_remotely' => isset($remoteByEc[$ec]),
+            'ifood_item_id'    => $remoteByEc[$ec] ?? null,
+        ];
+    }
+
+    public function publishMenu(People $provider, array $productIds = []): array
     {
         $this->init();
 
@@ -756,74 +821,74 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada. Vincule o merchant_id antes de publicar o cardapio.'];
         }
 
-        $products = $this->fetchCatalogProducts($provider);
-        if (empty($products)) {
-            return ['errno' => 10002, 'errmsg' => 'Nenhum produto ativo encontrado para publicar no iFood.'];
+        /* resolve catalogId e categoryId */
+        $catalogId  = $this->fetchIfoodDefaultCatalogId($merchantId);
+        if ($catalogId === null) {
+            return ['errno' => 10003, 'errmsg' => 'Nao foi possivel obter o catalogo iFood da loja.'];
+        }
+        $categoryId = $this->getOrCreateDefaultCatalogCategory($merchantId, $catalogId);
+        if ($categoryId === null) {
+            return ['errno' => 10003, 'errmsg' => 'Nao foi possivel obter ou criar a categoria padrao no iFood.'];
         }
 
-        /* mapa de itens existentes no iFood: externalCode → id */
-        $existingItems = $this->fetchIfoodCatalogItems($merchantId);
-        $byExternalCode = [];
-        foreach ($existingItems as $item) {
+        /* produtos locais */
+        $allProducts = $this->fetchCatalogProducts($provider);
+        if (!empty($productIds)) {
+            $idSet = array_flip(array_map('strval', $productIds));
+            $allProducts = array_values(array_filter(
+                $allProducts,
+                fn(array $p) => isset($idSet[(string) $p['id']])
+            ));
+        }
+        if (empty($allProducts)) {
+            return ['errno' => 10002, 'errmsg' => 'Nenhum produto selecionado para publicar no iFood.'];
+        }
+
+        /* mapa de itens existentes por externalCode */
+        $remoteItems = $this->fetchIfoodCatalogItemsV2($merchantId);
+        $byEc        = [];
+        foreach ($remoteItems as $item) {
             $ec = $this->normalizeString($item['externalCode'] ?? null);
             if ($ec !== '') {
-                $byExternalCode[$ec] = $this->normalizeString($item['id'] ?? null);
+                $byEc[$ec] = [
+                    'item_id'    => $this->normalizeString($item['id'] ?? ''),
+                    'product_id' => $this->normalizeString($item['productId'] ?? ''),
+                    'category_id' => $this->normalizeString($item['_categoryId'] ?? $categoryId),
+                ];
             }
         }
 
         $pushed = 0;
         $errors = [];
-        foreach ($products as $prod) {
-            $externalCode = (string) $prod['id'];
-            $existingId   = $byExternalCode[$externalCode] ?? null;
+        foreach ($allProducts as $prod) {
+            $ec       = (string) $prod['id'];
+            $existing = $byEc[$ec] ?? null;
 
-            $payload = [
-                'externalCode' => $externalCode,
-                'name'         => $prod['name'],
-                'description'  => $prod['description'] ?? '',
-                'price'        => [
-                    'value'         => (int) round((float) $prod['price'] * 100),
-                    'originalValue' => (int) round((float) $prod['price'] * 100),
-                ],
-                'status' => ['availability' => 'AVAILABLE'],
-                'serving' => ['size' => 1, 'unit' => 'UNIT'],
-            ];
-
-            $result = $this->upsertIfoodCatalogItem($merchantId, $payload, $existingId);
-            if ($result && ($result['status'] ?? 0) >= 200 && ($result['status'] ?? 0) < 300) {
+            $ok = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $categoryId);
+            if ($ok) {
                 $pushed++;
-                $newId = $this->normalizeString($result['body']['id'] ?? null);
-                if ($newId !== '') {
-                    $product = $this->entityManager->getRepository(Product::class)->find((int) $prod['id']);
-                    if ($product) {
-                        $this->discoveryFoodCode($product, $newId);
-                    }
-                }
             } else {
-                $errors[] = ['product_id' => $prod['id'], 'name' => $prod['name']];
-                self::$logger->warning('iFood catalog item upsert failed', ['product_id' => $prod['id']]);
+                $errors[] = $prod['id'];
+                self::$logger->warning('iFood catalog v2 upsert failed', ['product_id' => $prod['id']]);
             }
         }
 
+        /* atualiza published_remotely nos produtos locais */
         if ($pushed > 0) {
-            $this->entityManager->flush();
+            $this->syncCatalogFromIfood($provider);
         }
 
-        $publishResult  = $this->triggerIfoodPublish($merchantId);
-        $publishOk      = ($publishResult['status'] ?? 0) >= 200 && ($publishResult['status'] ?? 0) < 300;
-
-        $errno  = ($pushed > 0 && $publishOk) ? 0 : 1;
-        $errmsg = $errno === 0 ? 'ok' : ($pushed === 0 ? 'Nenhum produto publicado com sucesso.' : 'Publicacao disparada com erros.');
+        $errno  = $pushed > 0 ? 0 : 1;
+        $errmsg = $errno === 0 ? 'ok' : 'Nenhum produto publicado com sucesso.';
 
         return [
             'errno'  => $errno,
             'errmsg' => $errmsg,
             'data'   => [
-                'merchant_id'       => $merchantId,
-                'pushed_count'      => $pushed,
-                'total_products'    => count($products),
-                'error_count'       => count($errors),
-                'publish_triggered' => $publishOk,
+                'merchant_id'    => $merchantId,
+                'pushed_count'   => $pushed,
+                'total_products' => count($allProducts),
+                'error_count'    => count($errors),
             ],
         ];
     }
@@ -838,7 +903,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
         }
 
-        $items = $this->fetchIfoodCatalogItems($merchantId);
+        $items = $this->fetchIfoodCatalogItemsV2($merchantId);
         if (empty($items)) {
             return ['errno' => 0, 'errmsg' => 'Nenhum item encontrado no catalogo iFood.', 'data' => ['synced' => 0, 'total' => 0]];
         }
@@ -859,8 +924,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
             if (!$product && $itemName !== '') {
                 $product = $this->entityManager->getRepository(Product::class)->findOneBy([
-                    'company'  => $provider,
-                    'product'  => $itemName,
+                    'company' => $provider,
+                    'product' => $itemName,
                 ]);
             }
 
@@ -881,86 +946,191 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
-    private function fetchCatalogProducts(People $provider): array
+    private function fetchCatalogProducts(People $provider, array $productIds = []): array
     {
         $connection = $this->entityManager->getConnection();
+        $params     = ['providerId' => (int) $provider->getId()];
         $sql = <<<SQL
             SELECT p.id, p.product AS name, p.description, p.price, p.type
             FROM product p
             WHERE p.company_id = :providerId
               AND p.active = 1
               AND p.type IN ('manufactured', 'custom', 'product')
-            ORDER BY p.product
         SQL;
 
-        return $connection->fetchAllAssociative($sql, ['providerId' => (int) $provider->getId()]);
+        if (!empty($productIds)) {
+            $placeholders = [];
+            foreach ($productIds as $i => $pid) {
+                $key = 'pid' . $i;
+                $placeholders[]  = ':' . $key;
+                $params[$key]    = (int) $pid;
+            }
+            $sql .= ' AND p.id IN (' . implode(', ', $placeholders) . ')';
+        }
+
+        $sql .= ' ORDER BY p.product ASC';
+
+        return $connection->fetchAllAssociative($sql, $params);
     }
 
-    private function fetchIfoodCatalogItems(string $merchantId): array
+    /* --- catálogo v2 helpers ------------------------------------------ */
+
+    private function fetchIfoodDefaultCatalogId(string $merchantId): ?string
+    {
+        $token = $this->getAccessToken();
+        if (!$token) return null;
+        try {
+            $response = $this->httpClient->request('GET',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]
+            );
+            if ($response->getStatusCode() !== 200) return null;
+            $catalogs = $response->toArray(false);
+            if (!is_array($catalogs) || empty($catalogs)) return null;
+            $id = $this->normalizeString($catalogs[0]['catalogId'] ?? $catalogs[0]['id'] ?? null);
+            return $id !== '' ? $id : null;
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood catalog v2 list failed', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    private function fetchIfoodCatalogItemsV2(string $merchantId): array
     {
         $token = $this->getAccessToken();
         if (!$token) return [];
         try {
+            $catalogId = $this->fetchIfoodDefaultCatalogId($merchantId);
+            if ($catalogId === null) return [];
+
             $response = $this->httpClient->request('GET',
-                self::API_BASE_URL . '/catalog/v1.0/merchants/' . rawurlencode($merchantId) . '/catalogs',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
+                [
+                    'headers' => ['Authorization' => 'Bearer ' . $token],
+                    'query'   => ['includeItems' => 'true'],
+                ]
             );
             if ($response->getStatusCode() !== 200) return [];
-            $catalogs = $response->toArray(false);
-            if (!is_array($catalogs) || empty($catalogs)) return [];
+            $categories = $response->toArray(false);
+            if (!is_array($categories)) return [];
 
-            /* busca itens do primeiro catálogo */
-            $catalogId = $this->normalizeString($catalogs[0]['catalogId'] ?? $catalogs[0]['id'] ?? null);
-            if ($catalogId === '') return [];
-
-            $itemsResponse = $this->httpClient->request('GET',
-                self::API_BASE_URL . '/catalog/v1.0/merchants/' . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/items',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
-            );
-            if ($itemsResponse->getStatusCode() !== 200) return [];
-            $data = $itemsResponse->toArray(false);
-            return is_array($data) ? $data : [];
+            $allItems = [];
+            foreach ($categories as $cat) {
+                if (!is_array($cat['items'] ?? null)) continue;
+                foreach ($cat['items'] as $item) {
+                    $item['_categoryId']   = $cat['id']   ?? null;
+                    $item['_categoryName'] = $cat['name'] ?? null;
+                    $allItems[]            = $item;
+                }
+            }
+            return $allItems;
         } catch (\Throwable $e) {
-            self::$logger->error('iFood catalog items fetch failed', ['merchant_id' => $merchantId, 'error' => $e->getMessage()]);
+            self::$logger->error('iFood catalog v2 items fetch failed', ['merchant_id' => $merchantId, 'error' => $e->getMessage()]);
             return [];
         }
     }
 
-    private function upsertIfoodCatalogItem(string $merchantId, array $payload, ?string $existingId): ?array
+    private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
     {
         $token = $this->getAccessToken();
         if (!$token) return null;
-        $method = ($existingId !== null && $existingId !== '') ? 'PUT' : 'POST';
-        $url    = self::API_BASE_URL . '/catalog/v1.0/merchants/' . rawurlencode($merchantId) . '/items'
-            . (($existingId !== null && $existingId !== '') ? '/' . rawurlencode($existingId) : '');
         try {
-            $response = $this->httpClient->request($method, $url, [
-                'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                'json'    => $payload,
-            ]);
-            return ['status' => $response->getStatusCode(), 'body' => $response->toArray(false)];
+            $response = $this->httpClient->request('GET',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]
+            );
+            if ($response->getStatusCode() === 200) {
+                $cats = $response->toArray(false);
+                if (!empty($cats) && isset($cats[0]['id'])) {
+                    return $cats[0]['id'];
+                }
+            }
+        } catch (\Throwable $e) {}
+
+        /* cria categoria padrão */
+        try {
+            $response = $this->httpClient->request('POST',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
+                [
+                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                    'json'    => ['name' => 'Produtos', 'status' => 'AVAILABLE', 'template' => 'DEFAULT', 'sequence' => 0],
+                ]
+            );
+            $data = $response->toArray(false);
+            $id   = $this->normalizeString($data['id'] ?? null);
+            return $id !== '' ? $id : null;
         } catch (\Throwable $e) {
-            self::$logger->error('iFood catalog item upsert error', ['error' => $e->getMessage()]);
+            self::$logger->error('iFood create default category failed', ['error' => $e->getMessage()]);
             return null;
         }
     }
 
-    private function triggerIfoodPublish(string $merchantId): ?array
+    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): bool
     {
         $token = $this->getAccessToken();
-        if (!$token) return null;
+        if (!$token) return false;
+
+        $ec         = (string) $product['id'];
+        $existingItemId    = $existing['item_id']    ?? null;
+        $existingProductId = $existing['product_id'] ?? null;
+        $usedCategoryId    = ($existing['category_id'] ?? '') !== '' ? $existing['category_id'] : $categoryId;
+
+        $itemBody = [
+            'type'         => 'DEFAULT',
+            'categoryId'   => $usedCategoryId,
+            'status'       => 'AVAILABLE',
+            'price'        => [
+                'value'         => (float) $product['price'],
+                'originalValue' => (float) $product['price'],
+            ],
+            'externalCode' => $ec,
+            'index'        => 0,
+        ];
+        if ($existingItemId !== null && $existingItemId !== '') {
+            $itemBody['id'] = $existingItemId;
+        }
+        if ($existingProductId !== null && $existingProductId !== '') {
+            $itemBody['productId'] = $existingProductId;
+        }
+
+        $productBody = [
+            'name'         => $product['name'],
+            'description'  => $product['description'] ?? '',
+            'externalCode' => $ec,
+            'serving'      => 'NOT_APPLICABLE',
+        ];
+        if ($existingProductId !== null && $existingProductId !== '') {
+            $productBody['id'] = $existingProductId;
+        }
+
+        $payload = [
+            'item'         => $itemBody,
+            'products'     => [$productBody],
+            'optionGroups' => [],
+            'options'      => [],
+        ];
+
         try {
-            $response = $this->httpClient->request('POST',
-                self::API_BASE_URL . '/catalog/v1.0/merchants/' . rawurlencode($merchantId) . '/publish',
+            $response = $this->httpClient->request('PUT',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => [],
+                    'json'    => $payload,
                 ]
             );
-            return ['status' => $response->getStatusCode(), 'body' => $response->toArray(false)];
+            $status = $response->getStatusCode();
+            if ($status >= 200 && $status < 300) {
+                return true;
+            }
+            self::$logger->warning('iFood catalog v2 upsert non-2xx', [
+                'status'     => $status,
+                'product_id' => $product['id'],
+                'body'       => substr($response->getContent(false), 0, 500),
+            ]);
+            return false;
         } catch (\Throwable $e) {
-            self::$logger->error('iFood catalog publish trigger error', ['error' => $e->getMessage()]);
-            return null;
+            self::$logger->error('iFood catalog v2 upsert exception', ['product_id' => $product['id'], 'error' => $e->getMessage()]);
+            return false;
         }
     }
 
