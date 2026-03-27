@@ -787,13 +787,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function buildIfoodMenuProductView(array $row, array $remoteByEc): array
     {
-        $productId = (int) ($row['id'] ?? 0);
-        $name      = trim((string) ($row['name'] ?? ''));
-        $price     = round((float) ($row['price'] ?? 0), 2);
+        $productId    = (int) ($row['id'] ?? 0);
+        $name         = trim((string) ($row['name'] ?? ''));
+        $price        = round((float) ($row['price'] ?? 0), 2);
+        $categoryId   = isset($row['category_id']) && $row['category_id'] !== null ? (int) $row['category_id'] : null;
+        $categoryName = $categoryId !== null ? trim((string) ($row['category_name'] ?? '')) : null;
 
         $blockers = [];
-        if ($name === '') $blockers[] = 'Produto sem nome';
-        if ($price <= 0)  $blockers[] = 'Produto com preco invalido';
+        if ($name === '')    $blockers[] = 'Produto sem nome';
+        if (!$categoryId)    $blockers[] = 'Produto sem categoria';
+        if ($price <= 0)     $blockers[] = 'Produto com preco invalido';
 
         $ec = (string) $productId;
 
@@ -803,7 +806,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'description'      => trim((string) ($row['description'] ?? '')),
             'price'            => $price,
             'type'             => (string) ($row['type'] ?? ''),
-            'category'         => null,
+            'category'         => $categoryId !== null ? ['id' => $categoryId, 'name' => $categoryName] : null,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
             'published_remotely' => isset($remoteByEc[$ec]),
@@ -951,8 +954,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $connection = $this->entityManager->getConnection();
         $params     = ['providerId' => (int) $provider->getId()];
         $sql = <<<SQL
-            SELECT p.id, p.product AS name, p.description, p.price, p.type
+            SELECT
+                p.id,
+                p.product AS name,
+                p.description,
+                p.price,
+                p.type,
+                c.id   AS category_id,
+                c.name AS category_name
             FROM product p
+            LEFT JOIN product_category pc ON pc.id = (
+                SELECT MIN(pc2.id)
+                FROM product_category pc2
+                INNER JOIN category c2 ON c2.id = pc2.category_id
+                WHERE pc2.product_id = p.id
+                  AND c2.context = 'products'
+            )
+            LEFT JOIN category c ON c.id = pc.category_id
             WHERE p.company_id = :providerId
               AND p.active = 1
               AND p.type IN ('manufactured', 'custom', 'product')
