@@ -880,6 +880,31 @@ class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/marketplace/integrations/ifood/orders/{orderId}/start-preparation', name: 'marketplace_integrations_ifood_order_start_preparation', methods: ['POST'])]
+    public function startPreparationOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderNotFound();
+        }
+
+        if (!$this->isIfoodOrder($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $result = $this->iFoodService->performStartPreparationAction($order);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao iniciar preparo do pedido no iFood.'];
+        }
+
+        return new JsonResponse([
+            'action' => 'start_preparation',
+            'result' => $result,
+            'state'  => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
     private function buildFinancialDetail(array $payload): array
     {
         $order    = is_array($payload['order'] ?? null) ? $payload['order'] : [];

@@ -2185,6 +2185,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    public function performStartPreparationAction(Order $order): array
+    {
+        $this->init();
+        $orderId = $this->resolveRemoteOrderId($order);
+        if (!$orderId) {
+            return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador remoto.');
+        }
+
+        return $this->persistOrderActionResult(
+            $order,
+            'start_preparation',
+            $this->callIfoodOrderAction($orderId, '/startPreparation'),
+            'preparing'
+        );
+    }
+
     private function callIfoodOrderAction(string $orderId, string $actionPath, array $payload = []): ?array
     {
         $token = $this->getAccessToken();
