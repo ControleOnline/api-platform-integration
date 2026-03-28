@@ -933,7 +933,7 @@ class IntegrationController extends AbstractController
         } catch (\Throwable $e) {
             $result = [
                 'errno' => 1,
-                'errmsg' => 'Falha ao executar acao ready no iFood.',
+                'errmsg' => 'Falha ao executar acao ready no iFood: ' . $this->normalizeString($e->getMessage()),
             ];
         }
 
@@ -973,7 +973,7 @@ class IntegrationController extends AbstractController
         } catch (\Throwable $e) {
             $result = [
                 'errno' => 1,
-                'errmsg' => 'Falha ao executar acao cancel no iFood.',
+                'errmsg' => 'Falha ao executar acao cancel no iFood: ' . $this->normalizeString($e->getMessage()),
             ];
         }
 
@@ -1001,7 +1001,7 @@ class IntegrationController extends AbstractController
         } catch (\Throwable $e) {
             $result = [
                 'errno' => 1,
-                'errmsg' => 'Falha ao executar acao delivered no iFood.',
+                'errmsg' => 'Falha ao executar acao delivered no iFood: ' . $this->normalizeString($e->getMessage()),
             ];
         }
 
@@ -1044,7 +1044,10 @@ class IntegrationController extends AbstractController
         try {
             $result = $this->iFoodService->performConfirmAction($order);
         } catch (\Throwable $e) {
-            $result = ['errno' => 1, 'errmsg' => 'Falha ao confirmar pedido no iFood.'];
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao confirmar pedido no iFood: ' . $this->normalizeString($e->getMessage()),
+            ];
         }
 
         return new JsonResponse([
@@ -1069,7 +1072,10 @@ class IntegrationController extends AbstractController
         try {
             $result = $this->iFoodService->performStartPreparationAction($order);
         } catch (\Throwable $e) {
-            $result = ['errno' => 1, 'errmsg' => 'Falha ao iniciar preparo do pedido no iFood.'];
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao iniciar preparo do pedido no iFood: ' . $this->normalizeString($e->getMessage()),
+            ];
         }
 
         return new JsonResponse([

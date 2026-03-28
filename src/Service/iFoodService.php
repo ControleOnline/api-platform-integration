@@ -17,7 +17,6 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
-use Exception;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
@@ -2229,7 +2228,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ];
 
             return $token;
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             self::$logger->error('iFood access token request error', [
                 'error' => $e->getMessage(),
             ]);
@@ -2242,7 +2241,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function fetchOrderDetails(string $orderId): ?array
     {
         try {
-
             $token = $this->getAccessToken();
             if (!$token) {
                 self::$logger->error('iFood order details request skipped because token is unavailable', [
@@ -2251,23 +2249,48 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 return null;
             }
 
-            $response = $this->httpClient->request('GET', self::API_BASE_URL . '/order/v1.0/orders/' . rawurlencode($orderId), [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                ],
-            ]);
+            $encodedOrderId = rawurlencode($orderId);
+            $endpoints = [
+                self::API_BASE_URL . '/orders/' . $encodedOrderId,
+                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
+            ];
 
-            if ($response->getStatusCode() !== 200) {
-                self::$logger->error('iFood order details request failed', [
-                    'order_id' => $orderId,
-                    'status' => $response->getStatusCode(),
-                    'response' => $response->getContent(false),
-                ]);
-                return null;
+            foreach ($endpoints as $endpoint) {
+                try {
+                    $response = $this->httpClient->request('GET', $endpoint, [
+                        'headers' => [
+                            'Authorization' => 'Bearer ' . $token,
+                        ],
+                    ]);
+
+                    $statusCode = $response->getStatusCode();
+                    $rawBody = $response->getContent(false);
+
+                    if ($statusCode !== 200) {
+                        self::$logger->warning('iFood order details request returned non-success status', [
+                            'order_id' => $orderId,
+                            'endpoint' => $endpoint,
+                            'status' => $statusCode,
+                            'response' => $rawBody,
+                        ]);
+                        continue;
+                    }
+
+                    $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
+                    return is_array($data) ? $data : null;
+                } catch (\Throwable $e) {
+                    self::$logger->warning('iFood order details request endpoint error', [
+                        'order_id' => $orderId,
+                        'endpoint' => $endpoint,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
-            $data = $response->toArray(false);
-            return is_array($data) ? $data : null;
+            self::$logger->error('iFood order details request failed on all endpoints', [
+                'order_id' => $orderId,
+            ]);
+            return null;
         } catch (\Throwable $e) {
             self::$logger->error('iFood order details request error', [
                 'order_id' => $orderId,
@@ -2527,6 +2550,34 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador remoto.');
         }
 
+        $storedState = $this->getStoredOrderIntegrationState($order);
+        $remoteState = strtolower($this->normalizeString($storedState['remote_order_state'] ?? null));
+        $shouldAutoConfirmBeforeDispatch = in_array($remoteState, [
+            '',
+            'new',
+            'placed',
+            'order_created',
+            'pending',
+        ], true);
+
+        if ($shouldAutoConfirmBeforeDispatch) {
+            $confirmResult = $this->persistOrderActionResult(
+                $order,
+                'confirm',
+                $this->confirmOrder($orderId),
+                'confirmed'
+            );
+
+            if ((string) ($confirmResult['errno'] ?? '') !== '0') {
+                return [
+                    'errno' => $confirmResult['errno'] ?? 1,
+                    'errmsg' => 'Falha ao confirmar pedido antes do despacho: ' . $this->normalizeString($confirmResult['errmsg'] ?? null),
+                    'status' => (int) ($confirmResult['status'] ?? 500),
+                    'data' => is_array($confirmResult['data'] ?? null) ? $confirmResult['data'] : [],
+                ];
+            }
+        }
+
         return $this->persistOrderActionResult(
             $order,
             'ready',
@@ -2567,56 +2618,112 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
-    private function callIfoodOrderAction(string $orderId, string $actionPath, array $payload = []): ?array
+    private function decodeIfoodActionResponseBody(string $rawBody): array
     {
-        $token = $this->getAccessToken();
-        if (!$token) {
-            self::$logger->warning('iFood order action skipped because token is unavailable', [
-                'order_id' => $orderId,
-                'action' => $actionPath,
-            ]);
-            return null;
+        if ($rawBody === '') {
+            return [];
         }
 
-        try {
-            $response = $this->httpClient->request(
-                'POST',
-                self::API_BASE_URL . '/order/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type' => 'application/json',
-                    ],
-                    'json' => $payload,
-                ]
-            );
+        $decoded = json_decode($rawBody, true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+            return $decoded;
+        }
 
-            return [
-                'status' => $response->getStatusCode(),
-                'body' => $response->toArray(false),
+        return ['message' => $rawBody];
+    }
+
+    private function callIfoodOrderAction(string $orderId, string $actionPath, array $payload = []): ?array
+    {
+        try {
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->warning('iFood order action skipped because token is unavailable', [
+                    'order_id' => $orderId,
+                    'action' => $actionPath,
+                ]);
+                return null;
+            }
+
+            $encodedOrderId = rawurlencode($orderId);
+            $endpoints = [
+                self::API_BASE_URL . '/orders/' . $encodedOrderId . $actionPath,
+                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath,
             ];
+
+            $lastResponse = null;
+
+            foreach ($endpoints as $endpoint) {
+                try {
+                    $response = $this->httpClient->request(
+                        'POST',
+                        $endpoint,
+                        [
+                            'headers' => [
+                                'Authorization' => 'Bearer ' . $token,
+                                'Content-Type' => 'application/json',
+                            ],
+                            'json' => $payload,
+                        ]
+                    );
+
+                    $statusCode = $response->getStatusCode();
+                    $rawBody = $response->getContent(false);
+
+                    $currentResponse = [
+                        'status' => $statusCode,
+                        'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
+                    ];
+
+                    if (!$this->shouldFallbackActionEndpoint($currentResponse)) {
+                        return $currentResponse;
+                    }
+
+                    $lastResponse = $currentResponse;
+                } catch (\Throwable $e) {
+                    self::$logger->error('iFood order action endpoint error', [
+                        'order_id' => $orderId,
+                        'action' => $actionPath,
+                        'endpoint' => $endpoint,
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    $lastResponse = [
+                        'status' => 500,
+                        'body' => [
+                            'message' => $e->getMessage(),
+                        ],
+                    ];
+                }
+            }
+
+            return $lastResponse;
         } catch (\Throwable $e) {
             self::$logger->error('iFood order action error', [
                 'order_id' => $orderId,
                 'action' => $actionPath,
                 'error' => $e->getMessage(),
             ]);
-            return null;
+            return [
+                'status' => 500,
+                'body' => [
+                    'message' => $e->getMessage(),
+                ],
+            ];
         }
     }
 
     private function callIfoodShippingAction(string $orderId, string $actionPath, array $payload = []): ?array
     {
-        $token = $this->getAccessToken();
-        if (!$token) {
-            self::$logger->warning('iFood shipping action skipped because token is unavailable', [
-                'order_id' => $orderId,
-                'action' => $actionPath,
-            ]);
-            return null;
-        }
-
         try {
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->warning('iFood shipping action skipped because token is unavailable', [
+                    'order_id' => $orderId,
+                    'action' => $actionPath,
+                ]);
+                return null;
+            }
+
             $response = $this->httpClient->request(
                 'POST',
                 self::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
@@ -2629,9 +2736,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ]
             );
 
+            $statusCode = $response->getStatusCode();
+            $rawBody = $response->getContent(false);
+
             return [
-                'status' => $response->getStatusCode(),
-                'body' => $response->toArray(false),
+                'status' => $statusCode,
+                'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
             ];
         } catch (\Throwable $e) {
             self::$logger->error('iFood shipping action error', [
@@ -2639,7 +2749,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'action' => $actionPath,
                 'error' => $e->getMessage(),
             ]);
-            return null;
+            return [
+                'status' => 500,
+                'body' => [
+                    'message' => $e->getMessage(),
+                ],
+            ];
         }
     }
 
