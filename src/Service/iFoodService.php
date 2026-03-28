@@ -2971,7 +2971,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 continue;
             }
 
-            $code = $this->normalizeString($reason['cancelCode'] ?? $reason['code'] ?? null);
+            $code = $this->normalizeString(
+                $reason['cancelCodeId'] ?? $reason['cancelCode'] ?? $reason['code'] ?? null
+            );
             if ($code !== '') {
                 return $code;
             }
@@ -2993,6 +2995,30 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function extractCancellationReasonListFromResponse(array $data): array
     {
+        if (array_is_list($data)) {
+            $hasReasonShape = false;
+            foreach ($data as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                $code = $this->normalizeString(
+                    $entry['cancelCodeId'] ?? $entry['cancelCode'] ?? $entry['code'] ?? null
+                );
+                $description = $this->normalizeString(
+                    $entry['description'] ?? $entry['reason'] ?? $entry['title'] ?? $entry['name'] ?? null
+                );
+                if ($code !== '' || $description !== '') {
+                    $hasReasonShape = true;
+                    break;
+                }
+            }
+
+            if ($hasReasonShape) {
+                return $data;
+            }
+        }
+
         if (is_array($data['cancellationReasons'] ?? null)) {
             return $data['cancellationReasons'];
         }
@@ -3058,12 +3084,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $this->init();
         $orderId = $order ? $this->resolveRemoteOrderId($order) : null;
         $raw = $this->fetchIfoodCancellationReasons($orderId);
-        return array_map(fn(array $r) => [
-            'reason_id'            => $this->normalizeString($r['cancelCode'] ?? $r['code'] ?? null),
-            'description'          => $this->normalizeString($r['description'] ?? null),
+
+        $mapped = array_map(fn(array $r) => [
+            'reason_id'            => $this->normalizeString(
+                $r['cancelCodeId'] ?? $r['cancelCode'] ?? $r['code'] ?? null
+            ),
+            'description'          => $this->normalizeString(
+                $r['description'] ?? $r['reason'] ?? $r['title'] ?? $r['name'] ?? null
+            ),
             'applicable'           => true,
             'requires_description' => false,
         ], $raw);
+
+        return array_values(array_filter(
+            $mapped,
+            static fn(array $reason): bool => $reason['reason_id'] !== ''
+        ));
     }
 
     public function performConfirmAction(Order $order): array
