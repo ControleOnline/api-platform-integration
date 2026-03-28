@@ -2410,7 +2410,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function resolveRemoteOrderId(Order $order): ?string
     {
-        $orderId = $this->normalizeString($this->discoveryFoodCodeByEntity($order));
+        $orderId = '';
+        try {
+            $orderId = $this->normalizeString($this->discoveryFoodCodeByEntity($order));
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood remote order id lookup via extraDataService failed, using fallback state', [
+                'local_order_id' => $order->getId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         if ($orderId !== '') {
             return $orderId;
         }
@@ -2892,7 +2901,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Envia para iFood o novo status do pedido (pronto, entregue, cancelado)
     public function changeStatus(Order $order)
     {
-        $orderId = $this->normalizeString($this->discoveryFoodCodeByEntity($order));
+        $orderId = $this->resolveRemoteOrderId($order) ?? '';
         if ($orderId === '') {
             return null;
         }
