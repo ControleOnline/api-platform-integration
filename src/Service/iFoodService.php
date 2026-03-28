@@ -79,11 +79,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $this->appendOrderEventPayload($order, $eventCode, $event);
         $this->persistIncomingEventState($order, $integration, $event);
 
-        if ($eventCode === 'CANCELLED') {
+        if ($this->isCancellationEventCode($eventCode)) {
             $this->applyLocalCanceledStatus($order);
         }
 
-        if ($eventCode === 'CONCLUDED') {
+        if ($this->isConclusionEventCode($eventCode)) {
             $this->applyLocalClosedStatus($order);
         }
 
@@ -142,9 +142,37 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $code = $event['fullCode']
             ?? $event['code']
+            ?? $event['type']
+            ?? $event['eventType']
             ?? ($event['__webhook']['event_type'] ?? null);
 
         return strtoupper($this->normalizeString($code));
+    }
+
+    private function isCancellationEventCode(string $eventCode): bool
+    {
+        $normalized = strtoupper($this->normalizeString($eventCode));
+        return in_array($normalized, [
+            'CANCELLED',
+            'CANCELED',
+            'ORDER_CANCELLED',
+            'ORDER_CANCELED',
+            'ORDER_CANCELLED_BY_CUSTOMER',
+            'ORDER_CANCELED_BY_CUSTOMER',
+            'CANCELLATION_REQUESTED',
+            'ORDER_CANCELLATION_REQUESTED',
+        ], true);
+    }
+
+    private function isConclusionEventCode(string $eventCode): bool
+    {
+        $normalized = strtoupper($this->normalizeString($eventCode));
+        return in_array($normalized, [
+            'CONCLUDED',
+            'ORDER_CONCLUDED',
+            'ORDER_FINISHED',
+            'DELIVERY_CONCLUDED',
+        ], true);
     }
 
     private function findOrderByExternalId(string $orderId): ?Order
@@ -220,17 +248,110 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function resolveRemoteOrderStateByEventCode(string $eventCode): string
     {
-        return match ($eventCode) {
-            'PLACED' => 'new',
-            'CONFIRMED' => 'confirmed',
-            'STARTED' => 'preparing',
-            'READY' => 'ready',
-            'DISPATCHED' => 'dispatching',
-            'CONCLUDED' => 'concluded',
-            'CANCELLED' => 'cancelled',
-            'CANCELLATION_REQUESTED' => 'cancellation_requested',
-            default => strtolower($eventCode),
+        $normalized = strtoupper(str_replace(['.', '-', ' '], '_', $this->normalizeString($eventCode)));
+        if ($normalized === '') {
+            return 'unknown';
+        }
+
+        return match ($normalized) {
+            'PLACED', 'ORDER_CREATED', 'CREATED', 'PENDING', 'ORDER_PENDING' => 'new',
+            'CONFIRMED', 'ORDER_CONFIRMED', 'ACCEPTED', 'ORDER_ACCEPTED' => 'confirmed',
+            'STARTED', 'PREPARING', 'START_PREPARATION', 'ORDER_PREPARATION_STARTED', 'ORDER_IN_PREPARATION' => 'preparing',
+            'READY', 'READY_TO_PICKUP', 'ORDER_READY_TO_PICKUP' => 'ready',
+            'DISPATCHING', 'DISPATCHED', 'ORDER_DISPATCHED', 'ORDER_PICKED_UP', 'ORDER_IN_TRANSIT', 'DELIVERY_STARTED' => 'dispatching',
+            'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
+            'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
+            'CANCELLATION_REQUESTED', 'ORDER_CANCELLATION_REQUESTED' => 'cancellation_requested',
+            default => strtolower($normalized),
         };
+    }
+
+    private function composeAddressDisplayFromPieces(
+        ?string $streetName,
+        ?string $streetNumber,
+        ?string $district,
+        ?string $city
+    ): string {
+        $firstLine = trim(implode(', ', array_filter([
+            $this->normalizeString($streetName),
+            $this->normalizeString($streetNumber),
+        ], fn($value) => $value !== '')));
+
+        $secondLine = trim(implode(' - ', array_filter([
+            $this->normalizeString($district),
+            $this->normalizeString($city),
+        ], fn($value) => $value !== '')));
+
+        return trim(implode(', ', array_filter([$firstLine, $secondLine], fn($value) => $value !== '')));
+    }
+
+    private function extractOrderDetailSnapshot(array $orderPayload): array
+    {
+        if (!$orderPayload) {
+            return [];
+        }
+
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
+        $phone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+
+        $streetName = $this->normalizeString($deliveryAddress['streetName'] ?? null);
+        $streetNumber = $this->normalizeString($deliveryAddress['streetNumber'] ?? null);
+        $district = $this->normalizeString($deliveryAddress['neighborhood'] ?? null);
+        $city = $this->normalizeString($deliveryAddress['city'] ?? null);
+        $state = $this->normalizeString($deliveryAddress['state'] ?? null);
+        $postalCode = $this->normalizeString($deliveryAddress['postalCode'] ?? null);
+        $reference = $this->normalizeString($deliveryAddress['reference'] ?? null);
+        $complement = $this->normalizeString($deliveryAddress['complement'] ?? null);
+
+        $addressDisplay = $this->composeAddressDisplayFromPieces(
+            $streetName !== '' ? $streetName : null,
+            $streetNumber !== '' ? $streetNumber : null,
+            $district !== '' ? $district : null,
+            $city !== '' ? $city : null
+        );
+
+        $additionalInfo = $orderPayload['additionalInfo'] ?? null;
+        $remark = '';
+        if (is_array($additionalInfo)) {
+            $remark = $this->normalizeString($additionalInfo['notes'] ?? $additionalInfo['observation'] ?? null);
+        } else {
+            $remark = $this->normalizeString($additionalInfo);
+        }
+
+        if ($remark === '') {
+            $remark = $this->normalizeString($orderPayload['orderComment'] ?? null);
+        }
+
+        $snapshot = [
+            'delivered_by' => strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null)),
+            'delivery_mode' => $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null)),
+            'pickup_code' => $this->normalizeString($orderPayload['pickup']['code'] ?? null),
+            'virtual_phone' => $this->normalizeString($phone['localizer'] ?? null),
+            'customer_name' => $this->normalizeString($customer['name'] ?? null),
+            'customer_phone' => $this->normalizeString($phone['number'] ?? null),
+            'address_display' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
+            'address_poi_address' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
+            'address_street_name' => $streetName,
+            'address_street_number' => $streetNumber,
+            'address_district' => $district,
+            'address_city' => $city,
+            'address_state' => $state,
+            'address_postal_code' => $postalCode,
+            'address_reference' => $reference,
+            'address_complement' => $complement,
+            'remark' => $remark,
+        ];
+
+        if (($snapshot['address_display'] ?? '') === '' && $addressDisplay !== '') {
+            $snapshot['address_display'] = $addressDisplay;
+        }
+
+        return array_filter(
+            $snapshot,
+            static fn($value) => $value !== null && $value !== ''
+        );
     }
 
     private function persistIncomingEventState(Order $order, Integration $integration, array $payload): void
@@ -241,7 +362,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $orderId = $this->normalizeString($payload['orderId'] ?? ($meta['order_id'] ?? null));
         $merchantId = $this->normalizeString($payload['merchantId'] ?? ($meta['shop_id'] ?? null));
 
-        $this->persistOrderIntegrationState($order, [
+        $statePayload = [
             'id' => $orderId,
             'code' => $orderId,
             'merchant_id' => $merchantId,
@@ -254,7 +375,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'webhook_received_at' => $meta['received_at'],
             'webhook_processed_at' => date('Y-m-d H:i:s'),
             'last_integration_id' => (string) $integration->getId(),
-        ]);
+        ];
+
+        $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        if ($orderPayload) {
+            $statePayload = array_merge($statePayload, $this->extractOrderDetailSnapshot($orderPayload));
+        }
+
+        $this->persistOrderIntegrationState($order, $statePayload);
     }
 
     private function applyLocalCanceledStatus(Order $order): void
@@ -524,6 +652,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'ifood_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'code'),
             'merchant_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'merchant_id'),
             'remote_order_state' => $this->getIfoodExtraDataValue('Order', $orderId, 'remote_order_state'),
+            'delivered_by' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivered_by'),
+            'delivery_mode' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_mode'),
+            'pickup_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_code'),
+            'virtual_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'virtual_phone'),
+            'customer_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_name'),
+            'customer_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_phone'),
+            'address_display' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_display'),
+            'address_poi_address' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_poi_address'),
+            'address_street_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_street_name'),
+            'address_street_number' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_street_number'),
+            'address_district' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_district'),
+            'address_city' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_city'),
+            'address_state' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_state'),
+            'address_postal_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_postal_code'),
+            'address_reference' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_reference'),
+            'address_complement' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_complement'),
+            'remark' => $this->getIfoodExtraDataValue('Order', $orderId, 'remark'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
             'last_event_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_at'),
             'last_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_action'),
@@ -549,6 +694,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($payload['orderId'] ?? null);
             $state['merchant_id'] = $state['merchant_id'] ?: $this->normalizeString($payload['merchantId'] ?? null);
             $state['remote_order_state'] = $state['remote_order_state'] ?: $this->resolveRemoteOrderStateByEventCode($latestEventType);
+
+            if (is_array($payload['order'] ?? null)) {
+                $snapshot = $this->extractOrderDetailSnapshot($payload['order']);
+                foreach ($snapshot as $fieldName => $fieldValue) {
+                    if (($state[$fieldName] ?? '') === '' && $fieldValue !== '') {
+                        $state[$fieldName] = $fieldValue;
+                    }
+                }
+            }
         }
 
         return $state;
@@ -1871,18 +2025,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $this->entityManager->persist($order);
         $this->entityManager->flush();
 
-        $pickupCode    = $this->normalizeString($orderDetails['pickup']['code'] ?? null);
-        $virtualPhone  = $this->normalizeString($orderDetails['customer']['phone']['localizer'] ?? null);
         $extendedState = ['id' => $orderId, 'code' => $orderId, 'merchant_id' => $merchantId,
             'last_event_type' => $snapshotKey, 'last_event_at' => $this->extractEventTimestamp($json),
             'remote_order_state' => $this->resolveRemoteOrderStateByEventCode($snapshotKey),
         ];
-        if ($pickupCode !== '') {
-            $extendedState['pickup_code'] = $pickupCode;
-        }
-        if ($virtualPhone !== '') {
-            $extendedState['virtual_phone'] = $virtualPhone;
-        }
+        $extendedState = array_merge($extendedState, $this->extractOrderDetailSnapshot($orderDetails));
         $this->persistOrderIntegrationState($order, $extendedState);
         $this->entityManager->flush();
 
@@ -1933,26 +2080,35 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Define endereço de entrega e, se entrega for por terceiros, cria taxa de entrega
     private function addDelivery(Order &$order, array $orderDetails)
     {
-        $delivery = $orderDetails['delivery'];
-        $deliveryAddress = $delivery['deliveryAddress'];
-        if ($delivery['deliveredBy'] != 'MERCHANT')
-            $this->addDeliveryFee($order, $orderDetails['total']);
+        $delivery = is_array($orderDetails['delivery'] ?? null) ? $orderDetails['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        if (!$deliveryAddress) {
+            return;
+        }
 
-        $deliveryAddress = $this->addressService->discoveryAddress(
+        if ($this->normalizeString($delivery['deliveredBy'] ?? null) !== 'MERCHANT') {
+            $this->addDeliveryFee($order, $orderDetails['total']);
+        }
+
+        $latitude = $deliveryAddress['coordinates']['latitude'] ?? 0;
+        $longitude = $deliveryAddress['coordinates']['longitude'] ?? 0;
+        $postalCode = preg_replace('/\D+/', '', (string) ($deliveryAddress['postalCode'] ?? ''));
+
+        $deliveryAddressEntity = $this->addressService->discoveryAddress(
             $order->getClient(),
-            (int) $deliveryAddress['postalCode'],
-            (int) $deliveryAddress['streetNumber'],
-            $deliveryAddress['streetName'],
-            $deliveryAddress['neighborhood'],
-            $deliveryAddress['city'],
-            $deliveryAddress['state'],
-            $deliveryAddress['country'],
-            $deliveryAddress['complement'],
-            (int) $deliveryAddress['coordinates']['latitude'],
-            (int) $deliveryAddress['coordinates']['longitude'],
+            $postalCode,
+            $deliveryAddress['streetNumber'] ?? null,
+            $deliveryAddress['streetName'] ?? null,
+            $deliveryAddress['neighborhood'] ?? null,
+            $deliveryAddress['city'] ?? null,
+            $deliveryAddress['state'] ?? null,
+            $deliveryAddress['country'] ?? null,
+            $deliveryAddress['complement'] ?? null,
+            $latitude,
+            $longitude,
         );
 
-        $order->setAddressDestination($deliveryAddress);
+        $order->setAddressDestination($deliveryAddressEntity);
     }
 
     // TAXA DE ENTREGA
@@ -2374,8 +2530,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->persistOrderActionResult(
             $order,
             'ready',
-            $this->readyOrder($orderId),
-            'ready'
+            $this->dispatchOrderByDeliveryMode($order, $orderId),
+            'dispatching'
         );
     }
 
@@ -2390,7 +2546,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->persistOrderActionResult(
             $order,
             'delivered',
-            $this->deliveredOrder($orderId),
+            $this->dispatchOrderByDeliveryMode($order, $orderId),
             'dispatching'
         );
     }
@@ -2449,6 +2605,101 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    private function callIfoodShippingAction(string $orderId, string $actionPath, array $payload = []): ?array
+    {
+        $token = $this->getAccessToken();
+        if (!$token) {
+            self::$logger->warning('iFood shipping action skipped because token is unavailable', [
+                'order_id' => $orderId,
+                'action' => $actionPath,
+            ]);
+            return null;
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'POST',
+                self::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type' => 'application/json',
+                    ],
+                    'json' => $payload,
+                ]
+            );
+
+            return [
+                'status' => $response->getStatusCode(),
+                'body' => $response->toArray(false),
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood shipping action error', [
+                'order_id' => $orderId,
+                'action' => $actionPath,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    private function shouldFallbackActionEndpoint(?array $response): bool
+    {
+        if (!$response) {
+            return true;
+        }
+
+        $statusCode = (int) ($response['status'] ?? 0);
+        if ($statusCode >= 200 && $statusCode < 300) {
+            return false;
+        }
+
+        return in_array($statusCode, [404, 405, 500, 502, 503, 504], true);
+    }
+
+    private function resolveDispatchFlowForOrder(Order $order): string
+    {
+        $storedState = $this->getStoredOrderIntegrationState($order);
+        $deliveredBy = strtoupper($this->normalizeString($storedState['delivered_by'] ?? null));
+        if ($deliveredBy === 'MERCHANT') {
+            return 'merchant';
+        }
+
+        if ($deliveredBy === 'IFOOD') {
+            return 'ifood';
+        }
+
+        $deliveryMode = strtolower($this->normalizeString($storedState['delivery_mode'] ?? null));
+        if (in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true)) {
+            return 'merchant';
+        }
+
+        return 'ifood';
+    }
+
+    private function dispatchOrderByDeliveryMode(Order $order, string $orderId): ?array
+    {
+        $flow = $this->resolveDispatchFlowForOrder($order);
+
+        if ($flow === 'merchant') {
+            $shippingResponse = $this->callIfoodShippingAction($orderId, '/dispatch');
+            if (!$this->shouldFallbackActionEndpoint($shippingResponse)) {
+                return $shippingResponse;
+            }
+
+            $orderResponse = $this->callIfoodOrderAction($orderId, '/dispatch');
+            return $orderResponse ?: $shippingResponse;
+        }
+
+        $orderResponse = $this->callIfoodOrderAction($orderId, '/dispatch');
+        if (!$this->shouldFallbackActionEndpoint($orderResponse)) {
+            return $orderResponse;
+        }
+
+        $shippingResponse = $this->callIfoodShippingAction($orderId, '/dispatch');
+        return $shippingResponse ?: $orderResponse;
+    }
+
     private function cancelByShop(string $orderId, ?string $cancellationCode = null): ?array
     {
         $payload = [];
@@ -2460,7 +2711,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function confirmOrder(string $orderId): ?array
     {
-        return $this->callIfoodOrderAction($orderId, '/confirm');
+        $response = $this->callIfoodOrderAction($orderId, '/accept');
+        if (!$this->shouldFallbackActionEndpoint($response)) {
+            return $response;
+        }
+
+        $fallbackResponse = $this->callIfoodOrderAction($orderId, '/confirm');
+        return $fallbackResponse ?: $response;
     }
 
     private function fetchIfoodCancellationReasons(): array
@@ -2529,8 +2786,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         match ($realStatus) {
             'cancelled', 'canceled' => $this->cancelByShop($orderId),
-            'ready' => $this->readyOrder($orderId),
-            'delivered', 'closed' => $this->deliveredOrder($orderId),
+            'ready' => $this->dispatchOrderByDeliveryMode($order, $orderId),
+            'delivered', 'closed' => null,
             default => null,
         };
 

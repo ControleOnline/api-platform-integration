@@ -66,21 +66,34 @@ class OrderActionService
         if ($this->ehIfood($order)) {
             $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
             $remoteOrderState = strtolower(trim((string) ($storedState['remote_order_state'] ?? '')));
+            $remoteOrderState = str_replace(['.', '-', ' '], '_', $remoteOrderState);
             $isTerminalRemoteState = in_array($remoteOrderState, ['concluded', 'cancelled', 'canceled'], true);
             $isTerminal = $terminal || $isTerminalRemoteState;
 
-            $canReadyStates = ['', 'new', 'placed', 'confirmed', 'preparing', 'started'];
-            $canDeliveredStates = ['ready', 'dispatching', 'dispatched'];
+            $canReadyStates = [
+                '',
+                'new',
+                'order_created',
+                'placed',
+                'confirmed',
+                'accepted',
+                'preparing',
+                'started',
+                'ready',
+                'ready_to_pickup',
+            ];
+            $canConfirmStates = ['', 'new', 'order_created', 'placed'];
+            $dispatchFlow = strtolower(trim((string) ($storedState['delivered_by'] ?? '')));
 
-            $canConfirmStates = ['', 'new', 'placed'];
             return array_merge($base, [
                 'can_confirm'             => !$isTerminal && in_array($remoteOrderState, $canConfirmStates, true),
                 'can_cancel'              => !$isTerminal,
                 'can_ready'               => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
-                'can_delivered'           => !$isTerminal && in_array($remoteOrderState, $canDeliveredStates, true),
+                'can_delivered'           => false,
                 'requires_cancel_reasons' => true,
                 'is_terminal'             => $isTerminal,
                 'remote_state'            => $remoteOrderState !== '' ? $remoteOrderState : null,
+                'delivery_flow'           => $dispatchFlow !== '' ? $dispatchFlow : null,
             ]);
         }
 

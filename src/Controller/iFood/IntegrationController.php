@@ -305,13 +305,25 @@ class IntegrationController extends AbstractController
         return $firstEventPayload;
     }
 
-    private function resolveDeliveryContext(Order $order, array $payload): array
+    private function resolveDeliveryContext(Order $order, array $payload, array $storedState): array
     {
         $delivery = is_array($payload['order']['delivery'] ?? null) ? $payload['order']['delivery'] : [];
-        $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
+        $deliveredBy = strtoupper($this->normalizeString(
+            $delivery['deliveredBy']
+                ?? $storedState['delivered_by']
+                ?? null
+        ));
+        $deliveryMode = strtolower($this->normalizeString(
+            $delivery['mode']
+                ?? $delivery['deliveryMode']
+                ?? $storedState['delivery_mode']
+                ?? null
+        ));
 
-        $isStoreDelivery = $deliveredBy === 'MERCHANT';
-        $isPlatformDelivery = $deliveredBy === 'IFOOD';
+        $isStoreDelivery = $deliveredBy === 'MERCHANT'
+            || in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true);
+        $isPlatformDelivery = $deliveredBy === 'IFOOD'
+            || in_array($deliveryMode, ['ifood', 'platform', 'marketplace'], true);
 
         $deliveryLabel = 'Entrega indefinida';
         if ($isStoreDelivery) {
@@ -324,6 +336,165 @@ class IntegrationController extends AbstractController
             'delivery_label' => $deliveryLabel,
             'is_store_delivery' => $isStoreDelivery,
             'is_platform_delivery' => $isPlatformDelivery,
+            'delivered_by' => $deliveredBy !== '' ? $deliveredBy : null,
+            'delivery_mode' => $deliveryMode !== '' ? $deliveryMode : null,
+        ];
+    }
+
+    private function preferredText(mixed ...$values): ?string
+    {
+        foreach ($values as $value) {
+            $normalized = $this->normalizeString($value);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractAddressFromOrderEntity(Order $order): array
+    {
+        $address = method_exists($order, 'getAddressDestination') ? $order->getAddressDestination() : null;
+        if (!is_object($address)) {
+            return [];
+        }
+
+        $read = function (array $methods) use ($address): ?string {
+            foreach ($methods as $method) {
+                if (!method_exists($address, $method)) {
+                    continue;
+                }
+
+                $value = $this->normalizeString($address->{$method}());
+                if ($value !== '') {
+                    return $value;
+                }
+            }
+
+            return null;
+        };
+
+        return [
+            'display' => $this->preferredText(
+                $read(['getDisplay', 'getFormattedAddress']),
+                $read(['getAddress']),
+            ),
+            'street_name' => $read(['getStreetName', 'getStreet', 'getAddress']),
+            'street_number' => $read(['getStreetNumber', 'getNumber']),
+            'district' => $read(['getDistrict', 'getNeighborhood']),
+            'city' => $read(['getCity']),
+            'state' => $read(['getState']),
+            'postal_code' => $read(['getPostalCode', 'getZipCode', 'getZip']),
+            'reference' => $read(['getReference']),
+            'complement' => $read(['getComplement']),
+            'poi_address' => $read(['getFormattedAddress', 'getAddress']),
+        ];
+    }
+
+    private function buildAddressDetail(Order $order, array $payload, array $storedState): array
+    {
+        $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        $entityAddress = $this->extractAddressFromOrderEntity($order);
+
+        $streetName = $this->preferredText(
+            $deliveryAddress['streetName'] ?? null,
+            $storedState['address_street_name'] ?? null,
+            $entityAddress['street_name'] ?? null
+        );
+        $streetNumber = $this->preferredText(
+            $deliveryAddress['streetNumber'] ?? null,
+            $storedState['address_street_number'] ?? null,
+            $entityAddress['street_number'] ?? null
+        );
+        $district = $this->preferredText(
+            $deliveryAddress['neighborhood'] ?? null,
+            $storedState['address_district'] ?? null,
+            $entityAddress['district'] ?? null
+        );
+        $city = $this->preferredText(
+            $deliveryAddress['city'] ?? null,
+            $storedState['address_city'] ?? null,
+            $entityAddress['city'] ?? null
+        );
+        $state = $this->preferredText(
+            $deliveryAddress['state'] ?? null,
+            $storedState['address_state'] ?? null,
+            $entityAddress['state'] ?? null
+        );
+
+        $display = $this->preferredText(
+            $deliveryAddress['formattedAddress'] ?? null,
+            $storedState['address_display'] ?? null,
+            $entityAddress['display'] ?? null
+        );
+
+        if ($display === null) {
+            $addressPieces = array_filter([$streetName, $streetNumber], fn($value) => $value !== null && $value !== '');
+            $neighborhoodPieces = array_filter([$district, $city], fn($value) => $value !== null && $value !== '');
+            $display = trim(implode(', ', array_filter([
+                implode(', ', $addressPieces),
+                implode(' - ', $neighborhoodPieces),
+            ], fn($value) => $value !== '')));
+            $display = $display !== '' ? $display : null;
+        }
+
+        return [
+            'display' => $display,
+            'street_name' => $streetName,
+            'street_number' => $streetNumber,
+            'district' => $district,
+            'city' => $city,
+            'state' => $state,
+            'postal_code' => $this->preferredText(
+                $deliveryAddress['postalCode'] ?? null,
+                $storedState['address_postal_code'] ?? null,
+                $entityAddress['postal_code'] ?? null
+            ),
+            'reference' => $this->preferredText(
+                $deliveryAddress['reference'] ?? null,
+                $storedState['address_reference'] ?? null,
+                $entityAddress['reference'] ?? null
+            ),
+            'complement' => $this->preferredText(
+                $deliveryAddress['complement'] ?? null,
+                $storedState['address_complement'] ?? null,
+                $entityAddress['complement'] ?? null
+            ),
+            'poi_address' => $this->preferredText(
+                $deliveryAddress['formattedAddress'] ?? null,
+                $storedState['address_poi_address'] ?? null,
+                $entityAddress['poi_address'] ?? null
+            ),
+        ];
+    }
+
+    private function buildCustomerDetail(array $payload, array $storedState, Order $order): array
+    {
+        $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
+        $phone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+        $client = $order->getClient();
+        $clientName = is_object($client) && method_exists($client, 'getName')
+            ? $this->normalizeString($client->getName())
+            : null;
+
+        $name = $this->preferredText(
+            $customer['name'] ?? null,
+            $storedState['customer_name'] ?? null,
+            $clientName
+        );
+
+        $customerPhone = $this->preferredText(
+            $phone['number'] ?? null,
+            $storedState['customer_phone'] ?? null
+        );
+
+        return [
+            'name' => $name,
+            'phone' => $customerPhone,
         ];
     }
 
@@ -396,7 +567,7 @@ class IntegrationController extends AbstractController
         $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
         $capabilities = $this->orderActionService->getCapabilities($order);
         $payload = $this->resolveLatestOrderPayload($order);
-        $deliveryContext = $this->resolveDeliveryContext($order, $payload);
+        $deliveryContext = $this->resolveDeliveryContext($order, $payload, $storedState);
         $remoteState = $this->normalizeString($storedState['remote_order_state'] ?? null);
         $orderComments = method_exists($order, 'getComments')
             ? $this->normalizeString($order->getComments())
@@ -413,6 +584,7 @@ class IntegrationController extends AbstractController
             $payload['order']['additionalInfo']['notes']
                 ?? $payload['order']['additionalInfo']
                 ?? $payload['order']['orderComment']
+                ?? $storedState['remark']
                 ?? $orderComments
                 ?? null
         );
@@ -448,6 +620,8 @@ class IntegrationController extends AbstractController
                 'webhook_processed_at' => $storedState['webhook_processed_at'] ?? null,
                 'last_integration_id' => $storedState['last_integration_id'] ?? null,
             ],
+            'customer' => $this->buildCustomerDetail($payload, $storedState, $order),
+            'address' => $this->buildAddressDetail($order, $payload, $storedState),
             'delivery'      => $this->buildDeliveryDetail($payload, $storedState, $remoteState, $deliveryContext, $capabilities),
             'financial'     => $this->buildFinancialDetail($payload),
             'observability' => [
@@ -1010,6 +1184,8 @@ class IntegrationController extends AbstractController
             'remote_delivery_status'          => $remoteState,
             'expected_arrived_eta'            => $expectedEta !== '' ? $expectedEta : null,
             'pickup_code'                     => $pickupCode !== '' ? $pickupCode : null,
+            'delivered_by'                    => $deliveryContext['delivered_by'] ?? null,
+            'delivery_mode'                   => $deliveryContext['delivery_mode'] ?? null,
             'handover_code'                   => null,
             'locator'                         => null,
             'handover_page_url'               => null,
