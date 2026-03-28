@@ -2527,17 +2527,27 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador remoto.');
         }
 
+        $normalizedReason = $this->normalizeString($reason);
+        $normalizedCancellationCode = $this->normalizeString($cancellationCode);
+        if ($normalizedCancellationCode === '') {
+            $normalizedCancellationCode = $this->resolveDefaultIfoodCancellationCode() ?? '';
+        }
+
         $result = $this->persistOrderActionResult(
             $order,
             'cancel',
-            $this->cancelByShop($orderId, $cancellationCode),
+            $this->cancelByShop(
+                $orderId,
+                $normalizedCancellationCode !== '' ? $normalizedCancellationCode : null,
+                $normalizedReason !== '' ? $normalizedReason : null,
+            ),
             'cancelled'
         );
 
-        if ((string) ($result['errno'] ?? '') === '0' && ($reason !== null || $cancellationCode !== null)) {
+        if ((string) ($result['errno'] ?? '') === '0' && ($normalizedReason !== '' || $normalizedCancellationCode !== '')) {
             try {
                 $this->persistOrderIntegrationState($order, [
-                    'cancel_reason' => $cancellationCode ?? $reason,
+                    'cancel_reason' => $normalizedCancellationCode !== '' ? $normalizedCancellationCode : $normalizedReason,
                 ]);
                 $this->entityManager->flush();
             } catch (\Throwable $e) {
@@ -2641,6 +2651,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return ['message' => $rawBody];
     }
 
+    private function normalizeIfoodRequestPayload(array $payload): mixed
+    {
+        if (empty($payload)) {
+            return (object) [];
+        }
+
+        return $payload;
+    }
+
     private function callIfoodOrderAction(string $orderId, string $actionPath, array $payload = []): ?array
     {
         try {
@@ -2671,7 +2690,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                                 'Authorization' => 'Bearer ' . $token,
                                 'Content-Type' => 'application/json',
                             ],
-                            'json' => $payload,
+                            'json' => $this->normalizeIfoodRequestPayload($payload),
                         ]
                     );
 
@@ -2741,7 +2760,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'Authorization' => 'Bearer ' . $token,
                         'Content-Type' => 'application/json',
                     ],
-                    'json' => $payload,
+                    'json' => $this->normalizeIfoodRequestPayload($payload),
                 ]
             );
 
@@ -2824,13 +2843,33 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $shippingResponse ?: $orderResponse;
     }
 
-    private function cancelByShop(string $orderId, ?string $cancellationCode = null): ?array
+    private function cancelByShop(string $orderId, ?string $cancellationCode = null, ?string $reason = null): ?array
     {
         $payload = [];
         if ($cancellationCode !== null && $cancellationCode !== '') {
             $payload['cancellationCode'] = $cancellationCode;
         }
+        if ($reason !== null && $reason !== '') {
+            $payload['reason'] = $reason;
+        }
         return $this->callIfoodOrderAction($orderId, '/requestCancellation', $payload);
+    }
+
+    private function resolveDefaultIfoodCancellationCode(): ?string
+    {
+        $rawReasons = $this->fetchIfoodCancellationReasons();
+        foreach ($rawReasons as $reason) {
+            if (!is_array($reason)) {
+                continue;
+            }
+
+            $code = $this->normalizeString($reason['cancelCode'] ?? $reason['code'] ?? null);
+            if ($code !== '') {
+                return $code;
+            }
+        }
+
+        return null;
     }
 
     private function confirmOrder(string $orderId): ?array
