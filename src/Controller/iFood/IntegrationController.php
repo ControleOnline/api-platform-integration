@@ -19,6 +19,8 @@ use Symfony\Component\Security\Http\Attribute\Security as SecurityAttribute;
 #[SecurityAttribute("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
 class IntegrationController extends AbstractController
 {
+    private const IFOOD_SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
+
     public function __construct(
         private EntityManagerInterface $manager,
         private Security $security,
@@ -77,6 +79,66 @@ class IntegrationController extends AbstractController
         }
 
         return $json;
+    }
+
+    private function decodeArrayValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($value)) {
+            return [];
+        }
+
+        $normalized = trim($value);
+        if ($normalized === '') {
+            return [];
+        }
+
+        $decoded = json_decode($normalized, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+            return [];
+        }
+
+        return $decoded;
+    }
+
+    private function resolvePayloadSources(array $otherInformations): array
+    {
+        $sources = [];
+        if ($otherInformations) {
+            $sources[] = $otherInformations;
+        }
+
+        foreach (['iFood', 'ifood', 'IFOOD'] as $contextKey) {
+            $contextPayload = $this->decodeArrayValue($otherInformations[$contextKey] ?? null);
+            if ($contextPayload) {
+                $sources[] = $contextPayload;
+            }
+        }
+
+        return $sources;
+    }
+
+    private function resolveOrderPayload(array $payload): array
+    {
+        $orderPayload = $this->decodeArrayValue($payload['order'] ?? null);
+        if ($orderPayload) {
+            return $orderPayload;
+        }
+
+        if (
+            isset($payload['displayId'])
+            || isset($payload['delivery'])
+            || isset($payload['items'])
+            || isset($payload['payments'])
+            || isset($payload['total'])
+        ) {
+            return $payload;
+        }
+
+        return [];
     }
 
     private function canAccessProvider(People $provider): bool
@@ -258,11 +320,11 @@ class IntegrationController extends AbstractController
 
     private function payloadHasOrderData(array $payload): bool
     {
-        if (!is_array($payload['order'] ?? null)) {
+        $orderData = $this->resolveOrderPayload($payload);
+        if (!$orderData) {
             return false;
         }
 
-        $orderData = $payload['order'];
         if (!empty($orderData['displayId'])) {
             return true;
         }
@@ -281,23 +343,33 @@ class IntegrationController extends AbstractController
             return [];
         }
 
-        $latestEventType = $this->normalizeString($otherInformations['latest_event_type'] ?? null);
-        if ($latestEventType !== '' && is_array($otherInformations[$latestEventType] ?? null)) {
-            $latestPayload = $otherInformations[$latestEventType];
-            if ($this->payloadHasOrderData($latestPayload)) {
-                return $latestPayload;
-            }
-        }
-
         $firstEventPayload = [];
-        foreach ($otherInformations as $value) {
-            if (is_array($value) && isset($value['orderId'])) {
-                if ($firstEventPayload === []) {
-                    $firstEventPayload = $value;
+
+        foreach ($this->resolvePayloadSources($otherInformations) as $source) {
+            $latestEventType = $this->normalizeString(
+                $source['latest_event_type']
+                    ?? $otherInformations['latest_event_type']
+                    ?? null
+            );
+            if ($latestEventType !== '') {
+                $latestPayload = $this->decodeArrayValue($source[$latestEventType] ?? null);
+                if ($latestPayload && $this->payloadHasOrderData($latestPayload)) {
+                    return $latestPayload;
+                }
+            }
+
+            foreach ($source as $value) {
+                $eventPayload = $this->decodeArrayValue($value);
+                if (!$eventPayload || !isset($eventPayload['orderId'])) {
+                    continue;
                 }
 
-                if ($this->payloadHasOrderData($value)) {
-                    return $value;
+                if ($firstEventPayload === []) {
+                    $firstEventPayload = $eventPayload;
+                }
+
+                if ($this->payloadHasOrderData($eventPayload)) {
+                    return $eventPayload;
                 }
             }
         }
@@ -567,6 +639,7 @@ class IntegrationController extends AbstractController
         $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
         $capabilities = $this->orderActionService->getCapabilities($order);
         $payload = $this->resolveLatestOrderPayload($order);
+        $orderPayload = $this->resolveOrderPayload($payload);
         $deliveryContext = $this->resolveDeliveryContext($order, $payload, $storedState);
         $remoteState = $this->normalizeString($storedState['remote_order_state'] ?? null);
         $orderComments = method_exists($order, 'getComments')
@@ -574,16 +647,16 @@ class IntegrationController extends AbstractController
             : '';
 
         $orderIndex = $this->normalizeString(
-            $payload['order']['displayId']
+            $orderPayload['displayId']
                 ?? $payload['displayId']
                 ?? $storedState['ifood_code']
                 ?? null
         );
 
         $remark = $this->normalizeString(
-            $payload['order']['additionalInfo']['notes']
-                ?? $payload['order']['additionalInfo']
-                ?? $payload['order']['orderComment']
+            $orderPayload['additionalInfo']['notes']
+                ?? $orderPayload['additionalInfo']
+                ?? $orderPayload['orderComment']
                 ?? $storedState['remark']
                 ?? $orderComments
                 ?? null
@@ -1087,7 +1160,7 @@ class IntegrationController extends AbstractController
 
     private function buildFinancialDetail(array $payload): array
     {
-        $order    = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        $order    = $this->resolveOrderPayload($payload);
         $total    = is_array($order['total'] ?? null) ? $order['total'] : [];
         $methods  = is_array($order['payments']['methods'] ?? null) ? $order['payments']['methods'] : [];
         $benefits = is_array($order['benefits'] ?? null) ? $order['benefits'] : [];
@@ -1149,7 +1222,8 @@ class IntegrationController extends AbstractController
 
     private function extractItemRemarks(array $payload): array
     {
-        $items = is_array($payload['order']['items'] ?? null) ? $payload['order']['items'] : [];
+        $orderPayload = $this->resolveOrderPayload($payload);
+        $items = is_array($orderPayload['items'] ?? null) ? $orderPayload['items'] : [];
         $remarks = [];
         foreach ($items as $item) {
             $obs = $this->normalizeString($item['observations'] ?? $item['notes'] ?? null);
@@ -1170,18 +1244,84 @@ class IntegrationController extends AbstractController
         array $deliveryContext,
         array $capabilities
     ): array {
-        $liveTracking = is_array($payload['order']['delivery']['liveTracking'] ?? null)
-            ? $payload['order']['delivery']['liveTracking'] : [];
+        $orderPayload = $this->resolveOrderPayload($payload);
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
+        $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
+        $customerPhone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+        $liveTracking = is_array($delivery['liveTracking'] ?? null)
+            ? $delivery['liveTracking'] : [];
         $riderData    = is_array($liveTracking['rider'] ?? null) ? $liveTracking['rider'] : [];
 
-        $pickupCode    = $this->normalizeString($payload['order']['pickup']['code'] ?? $storedState['pickup_code'] ?? null);
-        $virtualPhone  = $this->normalizeString($payload['order']['customer']['phone']['localizer'] ?? $storedState['virtual_phone'] ?? null);
+        $pickupCode = $this->normalizeString(
+            $pickup['code']
+                ?? $delivery['pickupCode']
+                ?? $storedState['pickup_code']
+                ?? null
+        );
+        $handoverCode = $this->normalizeString(
+            $storedState['handover_code']
+                ?? $pickupCode
+                ?? null
+        );
+        $locator = $this->normalizeString(
+            $delivery['locator']
+                ?? $delivery['localizer']
+                ?? $deliveryAddress['locator']
+                ?? $deliveryAddress['localizer']
+                ?? $customerPhone['localizer']
+                ?? $storedState['locator']
+                ?? null
+        );
+        $handoverPageUrl = $this->normalizeString(
+            $delivery['handoverPageUrl']
+                ?? $delivery['handover_page_url']
+                ?? $deliveryAddress['handoverPageUrl']
+                ?? $deliveryAddress['handover_page_url']
+                ?? $storedState['handover_page_url']
+                ?? null
+        );
+        $handoverConfirmationUrl = $this->normalizeString(
+            $delivery['handoverConfirmationUrl']
+                ?? $delivery['handover_confirmation_url']
+                ?? $deliveryAddress['handoverConfirmationUrl']
+                ?? $deliveryAddress['handover_confirmation_url']
+                ?? $delivery['confirmationUrl']
+                ?? $delivery['confirmation_url']
+                ?? $deliveryAddress['confirmationUrl']
+                ?? $deliveryAddress['confirmation_url']
+                ?? $storedState['handover_confirmation_url']
+                ?? null
+        );
+
+        if ($handoverConfirmationUrl === '' && $handoverPageUrl !== '') {
+            $handoverConfirmationUrl = $handoverPageUrl;
+        }
+        if ($handoverPageUrl === '' && $handoverConfirmationUrl !== '') {
+            $handoverPageUrl = $handoverConfirmationUrl;
+        }
+        if (
+            $handoverConfirmationUrl === ''
+            && ($deliveryContext['is_store_delivery'] ?? false)
+        ) {
+            $handoverConfirmationUrl = self::IFOOD_SELF_DELIVERY_CONFIRMATION_URL;
+            $handoverPageUrl = $handoverPageUrl !== '' ? $handoverPageUrl : $handoverConfirmationUrl;
+        }
+
+        $virtualPhone  = $this->normalizeString(
+            $customerPhone['localizer']
+                ?? $deliveryAddress['localizer']
+                ?? $storedState['virtual_phone']
+                ?? null
+        );
         $riderName     = $this->normalizeString($riderData['name'] ?? null);
         $riderPhone    = $this->normalizeString($riderData['phone']['number'] ?? null);
         $riderToStore  = $this->normalizeString($liveTracking['riderToStoreEta'] ?? null);
         $expectedEta   = $this->normalizeString(
-            $payload['order']['delivery']['deliveryDateTime']
-                ?? $payload['order']['delivery']['estimatedDeliveryDate']
+            $delivery['deliveryDateTime']
+                ?? $delivery['estimatedDeliveryDate']
+                ?? $storedState['expected_arrived_eta']
                 ?? null
         );
 
@@ -1192,10 +1332,10 @@ class IntegrationController extends AbstractController
             'pickup_code'                     => $pickupCode !== '' ? $pickupCode : null,
             'delivered_by'                    => $deliveryContext['delivered_by'] ?? null,
             'delivery_mode'                   => $deliveryContext['delivery_mode'] ?? null,
-            'handover_code'                   => null,
-            'locator'                         => null,
-            'handover_page_url'               => null,
-            'handover_confirmation_url'       => null,
+            'handover_code'                   => $handoverCode !== '' ? $handoverCode : null,
+            'locator'                         => $locator !== '' ? $locator : null,
+            'handover_page_url'               => $handoverPageUrl !== '' ? $handoverPageUrl : null,
+            'handover_confirmation_url'       => $handoverConfirmationUrl !== '' ? $handoverConfirmationUrl : null,
             'virtual_phone_number'            => $virtualPhone !== '' ? $virtualPhone : null,
             'rider_name'                      => $riderName !== '' ? $riderName : null,
             'rider_phone'                     => $riderPhone !== '' ? $riderPhone : null,

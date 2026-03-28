@@ -70,6 +70,22 @@ class OrderActionService
             $isTerminalRemoteState = in_array($remoteOrderState, ['concluded', 'cancelled', 'canceled'], true);
             $isTerminal = $terminal || $isTerminalRemoteState;
 
+            $canCancelStates = [
+                '',
+                'new',
+                'order_created',
+                'placed',
+                'confirmed',
+                'accepted',
+                'preparing',
+                'started',
+                'ready',
+                'ready_to_pickup',
+                'dispatching',
+                'dispatched',
+                'order_dispatched',
+                'order_in_transit',
+            ];
             $canReadyStates = [
                 '',
                 'new',
@@ -84,12 +100,19 @@ class OrderActionService
             ];
             $canConfirmStates = ['', 'new', 'order_created', 'placed'];
             $dispatchFlow = strtolower(trim((string) ($storedState['delivered_by'] ?? '')));
+            $isStoreDeliveryFlow = $dispatchFlow === 'merchant';
+            $canOpenHandoverFlow = !$isTerminal
+                && $isStoreDeliveryFlow
+                && in_array($remoteOrderState, ['dispatching', 'dispatched', 'order_dispatched', 'order_in_transit'], true);
 
             return array_merge($base, [
                 'can_confirm'             => !$isTerminal && in_array($remoteOrderState, $canConfirmStates, true),
-                'can_cancel'              => !$isTerminal,
+                'can_cancel'              => !$isTerminal && in_array($remoteOrderState, $canCancelStates, true),
                 'can_ready'               => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
                 'can_delivered'           => false,
+                'can_open_handover_flow'  => $canOpenHandoverFlow,
+                'requires_delivery_locator' => $canOpenHandoverFlow,
+                'delivery_locator_length' => 8,
                 'requires_cancel_reasons' => true,
                 'is_terminal'             => $isTerminal,
                 'remote_state'            => $remoteOrderState !== '' ? $remoteOrderState : null,
@@ -114,7 +137,7 @@ class OrderActionService
         }
 
         if ($this->ehIfood($order)) {
-            $reasons = $this->iFoodService->getIfoodCancellationReasons();
+            $reasons = $this->iFoodService->getIfoodCancellationReasons($order);
             return ['data' => ['reasons' => $reasons]];
         }
 

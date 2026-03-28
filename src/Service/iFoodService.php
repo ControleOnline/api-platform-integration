@@ -24,6 +24,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 {
     private const APP_CONTEXT = 'iFood';
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
+    private const SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
     private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB
     private static array $authTokenCache = [];
     private static array $catalogImagePathCache = [];
@@ -284,6 +285,49 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return trim(implode(', ', array_filter([$firstLine, $secondLine], fn($value) => $value !== '')));
     }
 
+    private function extractOrderPayloadValue(array $payload, array $paths): string
+    {
+        foreach ($paths as $path) {
+            $cursor = $payload;
+            $found = true;
+
+            foreach ($path as $segment) {
+                if (!is_array($cursor) || !array_key_exists($segment, $cursor)) {
+                    $found = false;
+                    break;
+                }
+
+                $cursor = $cursor[$segment];
+            }
+
+            if (!$found) {
+                continue;
+            }
+
+            $value = $this->normalizeString($cursor);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function isMerchantDeliveryContext(string $deliveredBy, string $deliveryMode): bool
+    {
+        if ($deliveredBy === 'MERCHANT') {
+            return true;
+        }
+
+        $normalizedDeliveryMode = strtolower($deliveryMode);
+        return in_array($normalizedDeliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true);
+    }
+
+    private function resolveDefaultSelfDeliveryConfirmationUrl(): string
+    {
+        return self::SELF_DELIVERY_CONFIRMATION_URL;
+    }
+
     private function extractOrderDetailSnapshot(array $orderPayload): array
     {
         if (!$orderPayload) {
@@ -323,10 +367,69 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $remark = $this->normalizeString($orderPayload['orderComment'] ?? null);
         }
 
+        $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
+        $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
+        $pickupCode = $this->extractOrderPayloadValue($orderPayload, [
+            ['pickup', 'code'],
+            ['delivery', 'pickupCode'],
+            ['delivery', 'pickup_code'],
+            ['pickupCode'],
+        ]);
+        $locator = $this->extractOrderPayloadValue($orderPayload, [
+            ['delivery', 'locator'],
+            ['delivery', 'localizer'],
+            ['delivery', 'deliveryAddress', 'locator'],
+            ['delivery', 'deliveryAddress', 'localizer'],
+            ['customer', 'phone', 'localizer'],
+            ['customer', 'phone', 'localizerId'],
+            ['phone', 'localizer'],
+            ['phone', 'localizerId'],
+        ]);
+        $handoverPageUrl = $this->extractOrderPayloadValue($orderPayload, [
+            ['delivery', 'handoverPageUrl'],
+            ['delivery', 'handover_page_url'],
+            ['delivery', 'confirmationUrl'],
+            ['delivery', 'confirmation_url'],
+            ['delivery', 'confirmation', 'url'],
+            ['handoverPageUrl'],
+            ['handover_page_url'],
+        ]);
+        $handoverConfirmationUrl = $this->extractOrderPayloadValue($orderPayload, [
+            ['delivery', 'handoverConfirmationUrl'],
+            ['delivery', 'handover_confirmation_url'],
+            ['delivery', 'deliveryConfirmationUrl'],
+            ['delivery', 'delivery_confirmation_url'],
+            ['delivery', 'confirmationUrl'],
+            ['delivery', 'confirmation_url'],
+            ['delivery', 'confirmation', 'url'],
+            ['handoverConfirmationUrl'],
+            ['handover_confirmation_url'],
+        ]);
+
+        if ($handoverConfirmationUrl === '' && $handoverPageUrl !== '') {
+            $handoverConfirmationUrl = $handoverPageUrl;
+        }
+
+        if ($handoverPageUrl === '' && $handoverConfirmationUrl !== '') {
+            $handoverPageUrl = $handoverConfirmationUrl;
+        }
+
+        if (
+            $handoverConfirmationUrl === ''
+            && $this->isMerchantDeliveryContext($deliveredBy, $deliveryMode)
+        ) {
+            $handoverConfirmationUrl = $this->resolveDefaultSelfDeliveryConfirmationUrl();
+            $handoverPageUrl = $handoverPageUrl !== '' ? $handoverPageUrl : $handoverConfirmationUrl;
+        }
+
         $snapshot = [
-            'delivered_by' => strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null)),
-            'delivery_mode' => $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null)),
-            'pickup_code' => $this->normalizeString($orderPayload['pickup']['code'] ?? null),
+            'delivered_by' => $deliveredBy,
+            'delivery_mode' => $deliveryMode,
+            'pickup_code' => $pickupCode,
+            'handover_code' => $pickupCode,
+            'locator' => $locator,
+            'handover_page_url' => $handoverPageUrl,
+            'handover_confirmation_url' => $handoverConfirmationUrl,
             'virtual_phone' => $this->normalizeString($phone['localizer'] ?? null),
             'customer_name' => $this->normalizeString($customer['name'] ?? null),
             'customer_phone' => $this->normalizeString($phone['number'] ?? null),
@@ -654,6 +757,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'delivered_by' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivered_by'),
             'delivery_mode' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_mode'),
             'pickup_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_code'),
+            'handover_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'handover_code'),
+            'locator' => $this->getIfoodExtraDataValue('Order', $orderId, 'locator'),
+            'handover_page_url' => $this->getIfoodExtraDataValue('Order', $orderId, 'handover_page_url'),
+            'handover_confirmation_url' => $this->getIfoodExtraDataValue('Order', $orderId, 'handover_confirmation_url'),
             'virtual_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'virtual_phone'),
             'customer_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_name'),
             'customer_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_phone'),
@@ -705,6 +812,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return $state;
+    }
+
+    public function getSelfDeliveryConfirmationUrl(): string
+    {
+        return self::SELF_DELIVERY_CONFIRMATION_URL;
     }
 
     private function persistProviderIntegrationState(People $provider, array $fields): void
@@ -2530,7 +2642,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $normalizedReason = $this->normalizeString($reason);
         $normalizedCancellationCode = $this->normalizeString($cancellationCode);
         if ($normalizedCancellationCode === '') {
-            $normalizedCancellationCode = $this->resolveDefaultIfoodCancellationCode() ?? '';
+            $normalizedCancellationCode = $this->resolveDefaultIfoodCancellationCode($orderId) ?? '';
         }
 
         $result = $this->persistOrderActionResult(
@@ -2538,8 +2650,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'cancel',
             $this->cancelByShop(
                 $orderId,
-                $normalizedCancellationCode !== '' ? $normalizedCancellationCode : null,
-                $normalizedReason !== '' ? $normalizedReason : null,
+                $normalizedCancellationCode !== '' ? $normalizedCancellationCode : null
             ),
             'cancelled'
         );
@@ -2843,21 +2954,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $shippingResponse ?: $orderResponse;
     }
 
-    private function cancelByShop(string $orderId, ?string $cancellationCode = null, ?string $reason = null): ?array
+    private function cancelByShop(string $orderId, ?string $cancellationCode = null): ?array
     {
         $payload = [];
         if ($cancellationCode !== null && $cancellationCode !== '') {
             $payload['cancellationCode'] = $cancellationCode;
         }
-        if ($reason !== null && $reason !== '') {
-            $payload['reason'] = $reason;
-        }
         return $this->callIfoodOrderAction($orderId, '/requestCancellation', $payload);
     }
 
-    private function resolveDefaultIfoodCancellationCode(): ?string
+    private function resolveDefaultIfoodCancellationCode(?string $orderId = null): ?string
     {
-        $rawReasons = $this->fetchIfoodCancellationReasons();
+        $rawReasons = $this->fetchIfoodCancellationReasons($orderId);
         foreach ($rawReasons as $reason) {
             if (!is_array($reason)) {
                 continue;
@@ -2883,33 +2991,75 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $fallbackResponse ?: $response;
     }
 
-    private function fetchIfoodCancellationReasons(): array
+    private function extractCancellationReasonListFromResponse(array $data): array
+    {
+        if (is_array($data['cancellationReasons'] ?? null)) {
+            return $data['cancellationReasons'];
+        }
+
+        if (is_array($data['reasons'] ?? null)) {
+            return $data['reasons'];
+        }
+
+        if (is_array($data['data'] ?? null)) {
+            if (is_array($data['data']['cancellationReasons'] ?? null)) {
+                return $data['data']['cancellationReasons'];
+            }
+
+            if (is_array($data['data']['reasons'] ?? null)) {
+                return $data['data']['reasons'];
+            }
+        }
+
+        return [];
+    }
+
+    private function fetchIfoodCancellationReasons(?string $orderId = null): array
     {
         $token = $this->getAccessToken();
         if (!$token) {
             return [];
         }
+
+        $endpoints = [];
+        $normalizedOrderId = $this->normalizeString($orderId);
+        if ($normalizedOrderId !== '') {
+            $encodedOrderId = rawurlencode($normalizedOrderId);
+            $endpoints[] = self::API_BASE_URL . '/orders/' . $encodedOrderId . '/cancellationReasons';
+            $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
+        }
+        $endpoints[] = self::API_BASE_URL . '/order/v1.0/cancellation/reasons';
+
         try {
-            $response = $this->httpClient->request('GET', self::API_BASE_URL . '/order/v1.0/cancellation/reasons', [
-                'headers' => ['Authorization' => 'Bearer ' . $token],
-            ]);
-            if ($response->getStatusCode() !== 200) {
-                return [];
+            foreach ($endpoints as $endpoint) {
+                $response = $this->httpClient->request('GET', $endpoint, [
+                    'headers' => ['Authorization' => 'Bearer ' . $token],
+                ]);
+                if ($response->getStatusCode() !== 200) {
+                    continue;
+                }
+
+                $data = $response->toArray(false);
+                $reasons = $this->extractCancellationReasonListFromResponse($data);
+                if ($reasons !== []) {
+                    return $reasons;
+                }
             }
-            $data = $response->toArray(false);
-            return is_array($data['cancellationReasons'] ?? null) ? $data['cancellationReasons'] : [];
+
+            return [];
         } catch (\Throwable $e) {
             self::$logger->error('iFood cancellation reasons fetch failed', ['error' => $e->getMessage()]);
             return [];
         }
     }
 
-    public function getIfoodCancellationReasons(): array
+    public function getIfoodCancellationReasons(?Order $order = null): array
     {
         $this->init();
-        $raw = $this->fetchIfoodCancellationReasons();
+        $orderId = $order ? $this->resolveRemoteOrderId($order) : null;
+        $raw = $this->fetchIfoodCancellationReasons($orderId);
         return array_map(fn(array $r) => [
-            'reason_id'            => $this->normalizeString($r['cancelCode'] ?? null),
+            'reason_id'            => $this->normalizeString($r['cancelCode'] ?? $r['code'] ?? null),
             'description'          => $this->normalizeString($r['description'] ?? null),
             'applicable'           => true,
             'requires_description' => false,
