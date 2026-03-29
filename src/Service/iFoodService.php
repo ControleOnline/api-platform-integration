@@ -1034,7 +1034,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             foreach ($this->fetchIfoodCatalogItemsV2($merchantId) as $item) {
                 $ec = $this->normalizeString($item['externalCode'] ?? null);
                 if ($ec !== '') {
-                    $remoteByEc[$ec] = $this->normalizeString($item['id'] ?? '');
+                    $remoteByEc[$ec] = [
+                        'item_id' => $this->normalizeString($item['id'] ?? ''),
+                        'status'  => $this->normalizeString($item['status'] ?? 'AVAILABLE'),
+                    ];
                 }
             }
         }
@@ -1067,6 +1070,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $ec = (string) $productId;
 
+        $remoteEntry = $remoteByEc[$ec] ?? null;
+
         return [
             'id'               => $productId,
             'name'             => $name,
@@ -1076,8 +1081,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'category'         => $categoryId !== null ? ['id' => $categoryId, 'name' => $categoryName] : null,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
-            'published_remotely' => isset($remoteByEc[$ec]),
-            'ifood_item_id'    => $remoteByEc[$ec] ?? null,
+            'published_remotely' => $remoteEntry !== null,
+            'ifood_item_id'    => $remoteEntry['item_id'] ?? null,
+            'ifood_status'     => $remoteEntry['status'] ?? null,
+            'cover_image_url'  => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
         ];
     }
 
@@ -3141,6 +3148,146 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         };
 
         return null;
+    }
+
+    // ATUALIZA PRECO DO ITEM NO CATALOGO IFOOD
+    // PATCH /catalog/v2.0/merchants/{merchantId}/items/price
+    public function updateItemPrice(People $provider, string $itemId, float $price): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        $normalizedItemId = $this->normalizeString($itemId);
+        if ($normalizedItemId === '') {
+            return ['errno' => 10003, 'errmsg' => 'item_id nao informado.'];
+        }
+
+        $roundedPrice = round($price, 2);
+        if ($roundedPrice <= 0) {
+            return ['errno' => 10004, 'errmsg' => 'Preco deve ser maior que zero.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'PATCH',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/price',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type'  => 'application/json',
+                    ],
+                    'json' => [
+                        'itemId' => $normalizedItemId,
+                        'price'  => [
+                            'value'         => $roundedPrice,
+                            'originalValue' => $roundedPrice,
+                        ],
+                    ],
+                ]
+            );
+
+            $status = $response->getStatusCode();
+            if ($status >= 200 && $status < 300) {
+                return ['errno' => 0, 'errmsg' => '', 'data' => ['item_id' => $normalizedItemId, 'price' => $roundedPrice]];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood updateItemPrice falhou', [
+                'merchant_id' => $merchantId,
+                'item_id'     => $normalizedItemId,
+                'status'      => $status,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $status, 'errmsg' => 'Erro ao atualizar preco no iFood. Status: ' . $status];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood updateItemPrice excecao', [
+                'merchant_id' => $merchantId,
+                'item_id'     => $normalizedItemId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao atualizar preco: ' . $e->getMessage()];
+        }
+    }
+
+    // ATUALIZA STATUS DO ITEM NO CATALOGO IFOOD
+    // PATCH /catalog/v2.0/merchants/{merchantId}/items/status
+    public function updateItemStatus(People $provider, string $itemId, string $status): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        $normalizedItemId = $this->normalizeString($itemId);
+        if ($normalizedItemId === '') {
+            return ['errno' => 10003, 'errmsg' => 'item_id nao informado.'];
+        }
+
+        $allowedStatuses = ['AVAILABLE', 'UNAVAILABLE'];
+        $normalizedStatus = strtoupper($this->normalizeString($status));
+        if (!in_array($normalizedStatus, $allowedStatuses, true)) {
+            return ['errno' => 10005, 'errmsg' => 'Status invalido. Use AVAILABLE ou UNAVAILABLE.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'PATCH',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/status',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type'  => 'application/json',
+                    ],
+                    'json' => [
+                        'itemId' => $normalizedItemId,
+                        'status' => $normalizedStatus,
+                    ],
+                ]
+            );
+
+            $httpStatus = $response->getStatusCode();
+            if ($httpStatus >= 200 && $httpStatus < 300) {
+                return ['errno' => 0, 'errmsg' => '', 'data' => ['item_id' => $normalizedItemId, 'status' => $normalizedStatus]];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood updateItemStatus falhou', [
+                'merchant_id' => $merchantId,
+                'item_id'     => $normalizedItemId,
+                'status'      => $httpStatus,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $httpStatus, 'errmsg' => 'Erro ao atualizar status no iFood. Status HTTP: ' . $httpStatus];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood updateItemStatus excecao', [
+                'merchant_id' => $merchantId,
+                'item_id'     => $normalizedItemId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao atualizar status: ' . $e->getMessage()];
+        }
     }
 }
 
