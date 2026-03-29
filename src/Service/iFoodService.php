@@ -1141,12 +1141,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $ec       = (string) $prod['id'];
             $existing = $byEc[$ec] ?? null;
 
-            $ok = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $categoryId);
-            if ($ok) {
+            $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $categoryId);
+            if ($result['ok']) {
                 $pushed++;
             } else {
-                $errors[] = $prod['id'];
-                self::$logger->warning('iFood catalog v2 upsert failed', ['product_id' => $prod['id']]);
+                $errors[] = [
+                    'product_id'   => $prod['id'],
+                    'product_name' => $prod['name'] ?? '',
+                    'http_status'  => $result['http_status'],
+                    'ifood_body'   => $result['ifood_body'],
+                    'error'        => $result['error'],
+                    'sent_payload' => $result['sent_payload'] ?? null,
+                ];
+                self::$logger->warning('iFood catalog v2 upsert failed', [
+                    'product_id'  => $prod['id'],
+                    'http_status' => $result['http_status'],
+                    'ifood_body'  => $result['ifood_body'],
+                    'error'       => $result['error'],
+                ]);
             }
         }
 
@@ -1166,6 +1178,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'pushed_count'   => $pushed,
                 'total_products' => count($allProducts),
                 'error_count'    => count($errors),
+                'errors'         => $errors,
             ],
         ];
     }
@@ -1522,10 +1535,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return null;
     }
 
-    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): bool
+    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): array
     {
         $token = $this->getAccessToken();
-        if (!$token) return false;
+        if (!$token) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];
 
         $ec                = (string) $product['id'];
         $existingItemId    = $this->normalizeString($existing['item_id']    ?? null);
@@ -1590,8 +1603,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $lastStatus = null;
         $lastBody = '';
         $lastError = null;
+        $lastPayload = null;
 
         foreach ($attempts as $attemptIndex => $attemptPayload) {
+            $lastPayload = $attemptPayload;
             try {
                 $response = $this->httpClient->request('PUT',
                     self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
@@ -1601,9 +1616,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ]
                 );
                 $status = $response->getStatusCode();
-                $body = substr($response->getContent(false), 0, 500);
+                $body = substr($response->getContent(false), 0, 2000);
                 if ($status >= 200 && $status < 300) {
-                    return true;
+                    return ['ok' => true, 'http_status' => $status, 'ifood_body' => null, 'error' => null];
                 }
 
                 $lastStatus = $status;
@@ -1632,18 +1647,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         if ($lastError !== null) {
             self::$logger->error('iFood catalog v2 upsert exception', [
-                'product_id' => $product['id'],
-                'error' => $lastError,
+                'product_id'   => $product['id'],
+                'error'        => $lastError,
+                'sent_payload' => $lastPayload,
             ]);
-            return false;
+            return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => $lastError, 'sent_payload' => $lastPayload];
         }
 
         self::$logger->warning('iFood catalog v2 upsert non-2xx', [
-            'status'     => $lastStatus,
-            'product_id' => $product['id'],
-            'body'       => $lastBody,
+            'status'       => $lastStatus,
+            'product_id'   => $product['id'],
+            'body'         => $lastBody,
+            'sent_payload' => $lastPayload,
         ]);
-        return false;
+        return ['ok' => false, 'http_status' => $lastStatus, 'ifood_body' => $lastBody, 'error' => null, 'sent_payload' => $lastPayload];
     }
 
     public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array
