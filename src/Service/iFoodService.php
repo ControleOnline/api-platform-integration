@@ -2091,9 +2091,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $merchantId, People::class);
-        if (!$provider instanceof People && ctype_digit($merchantId)) {
-            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
+        $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'merchant_id', $merchantId, People::class);
+        if (!$provider instanceof People) {
+            $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $merchantId, People::class);
         }
 
         if (!$provider instanceof People) {
