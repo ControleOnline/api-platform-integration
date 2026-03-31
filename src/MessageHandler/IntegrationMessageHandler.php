@@ -2,7 +2,6 @@
 
 namespace ControleOnline\MessageHandler;
 
-use ControleOnline\Entity\Connection;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Message\SendIntegrationMessage;
 use ControleOnline\Service\IntegrationService;
@@ -24,7 +23,7 @@ class IntegrationMessageHandler
 
     public function __invoke(SendIntegrationMessage $message)
     {
-        $integration = $this->em->getRepository(Connection::class)->find($message->integrationId);
+        $integration = $this->em->getRepository(Integration::class)->find($message->integrationId);
         if (!$integration)
             return;
 

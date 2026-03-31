@@ -159,6 +159,12 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
+        $this->bus->dispatch(
+            new SendIntegrationMessage(
+                integrationId: $integration->getId()
+            )
+        );
+
         return $integration;
     }
 

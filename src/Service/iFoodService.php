@@ -2225,14 +2225,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->addDeliveryFee($order, $orderDetails['total']);
         }
 
-        $latitude = $deliveryAddress['coordinates']['latitude'] ?? 0;
-        $longitude = $deliveryAddress['coordinates']['longitude'] ?? 0;
-        $postalCode = preg_replace('/\D+/', '', (string) ($deliveryAddress['postalCode'] ?? ''));
+        $latitude = (int) ($deliveryAddress['coordinates']['latitude'] ?? 0);
+        $longitude = (int) ($deliveryAddress['coordinates']['longitude'] ?? 0);
+        $postalCode = (int) preg_replace('/\D+/', '', (string) ($deliveryAddress['postalCode'] ?? ''));
 
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
             $order->getClient(),
             $postalCode,
-            $deliveryAddress['streetNumber'] ?? null,
+            (int) ($deliveryAddress['streetNumber'] ?? 0),
             $deliveryAddress['streetName'] ?? null,
             $deliveryAddress['neighborhood'] ?? null,
             $deliveryAddress['city'] ?? null,
