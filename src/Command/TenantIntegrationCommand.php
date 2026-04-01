@@ -6,6 +6,7 @@ use ControleOnline\Entity\Integration;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -35,6 +36,7 @@ class TenantIntegrationCommand extends DefaultCommand
         private StatusService $statusService,
         private DomainService $domainService,
         private ContainerInterface $container,
+        private ManagerRegistry $managerRegistry,
     ) {
         $this->skyNetService = $skyNetService;
         $this->lockFactory = $lockFactory;
@@ -65,13 +67,26 @@ class TenantIntegrationCommand extends DefaultCommand
                 $this->addLog('Service: ' . $serviceName);
                 $this->integrationService->executeIntegration($integration);
             } catch (Throwable $e) {
-                $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                 $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
                 $this->addLog($e->getLine());
                 $this->addLog($e->getFile());
-                $integration->setStatus($statusError);
-                $this->entityManager->persist($integration);
-                $this->entityManager->flush();
+
+                if (!$this->entityManager->isOpen()) {
+                    $this->managerRegistry->resetManager();
+                    $this->entityManager = $this->managerRegistry->getManager();
+                }
+
+                try {
+                    $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
+                    $integration = $this->entityManager->find(Integration::class, $integration->getId());
+                    if ($integration) {
+                        $integration->setStatus($statusError);
+                        $this->entityManager->persist($integration);
+                        $this->entityManager->flush();
+                    }
+                } catch (Throwable $persistError) {
+                    $this->addLog(sprintf('<error>Erro ao salvar status de erro para ID %d: %s</error>', $integration->getId(), $persistError->getMessage()));
+                }
             }
 
 
