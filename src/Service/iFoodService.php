@@ -1755,7 +1755,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->persistProviderIntegrationState($provider, [
             'code' => $normalizedMerchantId,
-            'merchant_id' => $normalizedMerchantId,
             'merchant_name' => $merchantName,
             'merchant_status' => $merchantStatus,
             'remote_connected' => $remoteConnected,
@@ -1781,7 +1780,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->persistProviderIntegrationState($provider, [
             'code' => '',
-            'merchant_id' => '',
             'merchant_name' => '',
             'merchant_status' => '',
             'remote_connected' => '0',
@@ -2123,10 +2121,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $provider = $this->findEntityByExtraData('People', 'merchant_id', $merchantId, People::class);
-        if (!$provider instanceof People) {
-            $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
-        }
+        $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
 
         if (!$provider instanceof People) {
             self::$logger->warning('iFood order ignored because provider mapping was not found', [
