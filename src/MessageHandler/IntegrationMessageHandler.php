@@ -27,9 +27,18 @@ class IntegrationMessageHandler
         if (!$integration)
             return;
 
-        if ($this->lock->acquire()) {
+        // Bloqueia ate obter o lock para evitar consumir e descartar mensagens
+        // quando outro webhook estiver em processamento.
+        if (!$this->lock->acquire(true)) {
+            return;
+        }
+
+        try {
             $this->integrationService->executeIntegration($integration);
-            $this->lock->release();
+        } finally {
+            if ($this->lock->isAcquired()) {
+                $this->lock->release();
+            }
         }
     }
 }
