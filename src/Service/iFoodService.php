@@ -2212,8 +2212,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 true
             );
             $status = $allPrepaid
-                ? $this->resolveMappedOrderStatus('paid', 'open', $orderId, $merchantId)
-                : $this->resolveMappedOrderStatus('waiting payment', 'pending', $orderId, $merchantId);
+                ? $this->resolveMappedOrderStatus('paid', 'paid', $orderId, $merchantId)
+                : $this->resolveMappedOrderStatus('pending', 'pending', $orderId, $merchantId);
             if (!$status) {
                 self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
                 return null;
@@ -2311,8 +2311,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $normalizedStatus = strtolower(trim($status));
         $normalizedRealStatus = strtolower(trim($realStatus));
 
-        if ($normalizedStatus === 'waiting payment' || $normalizedRealStatus === 'pending') {
-            return ['pending payment', 'pending', 'open'];
+        if ($normalizedStatus === 'pending' || $normalizedRealStatus === 'pending') {
+            return ['pending payment', 'open'];
         }
 
         if ($normalizedStatus === 'paid') {
