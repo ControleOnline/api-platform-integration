@@ -11,6 +11,7 @@ use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
+use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
@@ -2139,10 +2140,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $orderDetails = $this->fetchOrderDetails($orderId);
         if (!$orderDetails) {
-            self::$logger->error('iFood order details could not be fetched', [
+            self::$logger->error('iFood order details could not be fetched after retries', [
                 'order_id' => $orderId,
+                'merchant_id' => $merchantId,
             ]);
-            return null;
+            // For PLACED events this is commonly transient (eventual consistency / temporary API failure).
+            // Throwing here lets Messenger retry instead of silently closing the integration item.
+            throw new \RuntimeException(sprintf(
+                'iFood order details unavailable for order %s',
+                $orderId
+            ));
         }
 
         $json['order'] = $orderDetails;
@@ -2153,8 +2160,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             true
         );
         $status = $allPrepaid
-            ? $this->resolveOrderStatusSafely('open', 'paid', $orderId, $merchantId)
-            : $this->resolveOrderStatusSafely('open', 'waiting payment', $orderId, $merchantId);
+            ? $this->resolveMappedOrderStatus('paid', 'open', $orderId, $merchantId)
+            : $this->resolveMappedOrderStatus('waiting payment', 'pending', $orderId, $merchantId);
         if (!$status) {
             self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
             return null;
@@ -2209,44 +2216,51 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $order;
     }
 
-    private function resolveOrderStatusSafely(string $status, string $realStatus, string $orderId, string $merchantId): mixed
+    private function resolveMappedOrderStatus(string $status, string $realStatus, string $orderId, string $merchantId): ?Status
     {
-        try {
-            return $this->statusService->discoveryStatus($status, $realStatus, 'order');
-        } catch (\Throwable $e) {
-            if (!$this->isStatusUniqueConstraintViolation($e)) {
-                throw $e;
-            }
-
-            self::$logger->warning('iFood status race detected while resolving order status, retrying lookup', [
-                'order_id' => $orderId,
-                'merchant_id' => $merchantId,
-                'status' => $status,
-                'real_status' => $realStatus,
-                'error' => $e->getMessage(),
-            ]);
-
-            return $this->statusService->discoveryStatus($status, $realStatus, 'order');
+        $resolved = $this->findMappedOrderStatus($status, $realStatus);
+        if ($resolved instanceof Status) {
+            return $resolved;
         }
+
+        self::$logger->error('iFood order status mapping not found in local status table', [
+            'order_id' => $orderId,
+            'merchant_id' => $merchantId,
+            'status' => $status,
+            'real_status' => $realStatus,
+        ]);
+
+        return null;
     }
 
-    private function isStatusUniqueConstraintViolation(\Throwable $e): bool
+    private function findMappedOrderStatus(string $status, ?string $realStatus = null): ?Status
     {
-        $current = $e;
-        while ($current instanceof \Throwable) {
-            if ($current instanceof \Doctrine\DBAL\Exception\UniqueConstraintViolationException) {
-                return true;
-            }
+        $repository = $this->entityManager->getRepository(Status::class);
+        $criteria = [
+            'status' => $status,
+            'context' => 'order',
+        ];
 
-            $message = strtolower((string) $current->getMessage());
-            if (str_contains($message, 'duplicate entry') && str_contains($message, "for key 'status'")) {
-                return true;
-            }
-
-            $current = $current->getPrevious();
+        if ($realStatus !== null) {
+            $criteria['realStatus'] = $realStatus;
         }
 
-        return false;
+        $resolved = $repository->findOneBy($criteria);
+        if ($resolved instanceof Status) {
+            return $resolved;
+        }
+
+        if ($realStatus !== null) {
+            $fallback = $repository->findOneBy([
+                'status' => $status,
+                'context' => 'order',
+            ]);
+            if ($fallback instanceof Status) {
+                return $fallback;
+            }
+        }
+
+        return null;
     }
 
     private function autoConfirmOrder(Order $order, string $orderId): void
@@ -2445,18 +2459,26 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function fetchOrderDetails(string $orderId): ?array
     {
         try {
-            $token = $this->getAccessToken();
-            if (!$token) {
-                self::$logger->error('iFood order details request skipped because token is unavailable', [
-                    'order_id' => $orderId,
-                ]);
-                return null;
-            }
-
             $encodedOrderId = rawurlencode($orderId);
             $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
+            $maxAttempts = 4;
 
-            {
+            for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+                $token = $this->getAccessToken();
+                if (!$token) {
+                    self::$logger->warning('iFood order details request skipped because token is unavailable', [
+                        'order_id' => $orderId,
+                        'attempt' => $attempt,
+                        'max_attempts' => $maxAttempts,
+                    ]);
+
+                    if ($attempt < $maxAttempts) {
+                        usleep(300000 * $attempt);
+                        continue;
+                    }
+                    break;
+                }
+
                 try {
                     $response = $this->httpClient->request('GET', $endpoint, [
                         'headers' => [
@@ -2472,8 +2494,21 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                             'order_id' => $orderId,
                             'endpoint' => $endpoint,
                             'status' => $statusCode,
+                            'attempt' => $attempt,
+                            'max_attempts' => $maxAttempts,
                             'response' => $rawBody,
                         ]);
+
+                        $isRetryableStatus = in_array($statusCode, [401, 404, 409, 425, 429, 500, 502, 503, 504], true);
+                        if ($statusCode === 401) {
+                            // Force token refresh on next attempt.
+                            self::$authTokenCache = [];
+                        }
+
+                        if ($isRetryableStatus && $attempt < $maxAttempts) {
+                            usleep(300000 * $attempt);
+                            continue;
+                        }
                     } else {
                         $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
                         return is_array($data) ? $data : null;
@@ -2482,13 +2517,21 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     self::$logger->warning('iFood order details request endpoint error', [
                         'order_id' => $orderId,
                         'endpoint' => $endpoint,
+                        'attempt' => $attempt,
+                        'max_attempts' => $maxAttempts,
                         'error' => $e->getMessage(),
                     ]);
+
+                    if ($attempt < $maxAttempts) {
+                        usleep(300000 * $attempt);
+                        continue;
+                    }
                 }
             }
 
             self::$logger->error('iFood order details request failed', [
                 'order_id' => $orderId,
+                'endpoint' => $endpoint,
             ]);
             return null;
         } catch (\Throwable $e) {

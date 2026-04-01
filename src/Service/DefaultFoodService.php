@@ -68,7 +68,43 @@ class DefaultFoodService
 
     protected function discoveryFoodCodeByEntity(object $entity)
     {
-        return $this->extraDataService->getByExtraFieldByEntity(self::$app, $entity)?->getValue();
+        $entityId = method_exists($entity, 'getId') ? (int) $entity->getId() : 0;
+        if ($entityId <= 0) {
+            return null;
+        }
+
+        $entityName = null;
+        if (method_exists($entity, 'getEntityName')) {
+            $entityName = trim((string) $entity->getEntityName());
+        }
+        if ($entityName === null || $entityName === '') {
+            $entityName = (new \ReflectionClass($entity))->getShortName();
+        }
+
+        $sql = <<<SQL
+            SELECT ed.data_value
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND LOWER(ed.entity_name) = LOWER(:entityName)
+              AND ed.entity_id = :entityId
+              AND ef.field_name IN ('id', 'code')
+            ORDER BY CASE ef.field_name WHEN 'id' THEN 0 ELSE 1 END, ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $value = $this->entityManager->getConnection()->fetchOne($sql, [
+            'context' => self::$app,
+            'entityName' => $entityName,
+            'entityId' => (string) $entityId,
+        ]);
+
+        if ($value === false || $value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized !== '' ? $normalized : null;
     }
 
 

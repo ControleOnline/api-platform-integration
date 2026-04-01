@@ -100,16 +100,36 @@ class OrderActionService
             ];
             $canConfirmStates = ['', 'new', 'order_created', 'placed'];
             $dispatchFlow = strtolower(trim((string) ($storedState['delivered_by'] ?? '')));
+            $deliveryMode = strtolower(trim((string) ($storedState['delivery_mode'] ?? '')));
+            $handoverConfirmationUrl = trim((string) ($storedState['handover_confirmation_url'] ?? ''));
+            $handoverPageUrl = trim((string) ($storedState['handover_page_url'] ?? ''));
+            $locator = trim((string) ($storedState['locator'] ?? ''));
+
+            if ($dispatchFlow === '') {
+                if (in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true)) {
+                    $dispatchFlow = 'merchant';
+                } elseif (in_array($deliveryMode, ['ifood', 'platform', 'marketplace'], true)) {
+                    $dispatchFlow = 'ifood';
+                } elseif ($handoverConfirmationUrl !== '' || $handoverPageUrl !== '' || $locator !== '') {
+                    $dispatchFlow = 'merchant';
+                }
+            }
+
             $isStoreDeliveryFlow = $dispatchFlow === 'merchant';
             $canOpenHandoverFlow = !$isTerminal
-                && $isStoreDeliveryFlow
-                && in_array($remoteOrderState, ['dispatching', 'dispatched', 'order_dispatched', 'order_in_transit'], true);
+                && in_array($remoteOrderState, ['dispatching', 'dispatched', 'order_dispatched', 'order_in_transit'], true)
+                && (
+                    $isStoreDeliveryFlow
+                    || $handoverConfirmationUrl !== ''
+                    || $handoverPageUrl !== ''
+                    || $locator !== ''
+                );
 
             return array_merge($base, [
                 'can_confirm'             => !$isTerminal && in_array($remoteOrderState, $canConfirmStates, true),
                 'can_cancel'              => !$isTerminal && in_array($remoteOrderState, $canCancelStates, true),
                 'can_ready'               => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
-                'can_delivered'           => false,
+                'can_delivered'           => $canOpenHandoverFlow,
                 'can_open_handover_flow'  => $canOpenHandoverFlow,
                 'requires_delivery_locator' => $canOpenHandoverFlow,
                 'delivery_locator_length' => 8,
