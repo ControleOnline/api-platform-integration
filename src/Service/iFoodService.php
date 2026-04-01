@@ -2414,12 +2414,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             $encodedOrderId = rawurlencode($orderId);
-            $endpoints = [
-                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
-                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
-            ];
+            $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
 
-            foreach ($endpoints as $endpoint) {
+            {
                 try {
                     $response = $this->httpClient->request('GET', $endpoint, [
                         'headers' => [
@@ -2437,11 +2434,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                             'status' => $statusCode,
                             'response' => $rawBody,
                         ]);
-                        continue;
+                    } else {
+                        $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
+                        return is_array($data) ? $data : null;
                     }
-
-                    $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
-                    return is_array($data) ? $data : null;
                 } catch (\Throwable $e) {
                     self::$logger->warning('iFood order details request endpoint error', [
                         'order_id' => $orderId,
@@ -2451,7 +2447,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 }
             }
 
-            self::$logger->error('iFood order details request failed on all endpoints', [
+            self::$logger->error('iFood order details request failed', [
                 'order_id' => $orderId,
             ]);
             return null;
@@ -2836,58 +2832,42 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             $encodedOrderId = rawurlencode($orderId);
-            $endpoints = [
-                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath,
-                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath,
-            ];
+            $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
 
-            $lastResponse = null;
-
-            foreach ($endpoints as $endpoint) {
-                try {
-                    $response = $this->httpClient->request(
-                        'POST',
-                        $endpoint,
-                        [
-                            'headers' => [
-                                'Authorization' => 'Bearer ' . $token,
-                                'Content-Type' => 'application/json',
-                            ],
-                            'json' => $this->normalizeIfoodRequestPayload($payload),
-                        ]
-                    );
-
-                    $statusCode = $response->getStatusCode();
-                    $rawBody = $response->getContent(false);
-
-                    $currentResponse = [
-                        'status' => $statusCode,
-                        'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
-                    ];
-
-                    if (!$this->shouldFallbackActionEndpoint($currentResponse)) {
-                        return $currentResponse;
-                    }
-
-                    $lastResponse = $currentResponse;
-                } catch (\Throwable $e) {
-                    self::$logger->error('iFood order action endpoint error', [
-                        'order_id' => $orderId,
-                        'action' => $actionPath,
-                        'endpoint' => $endpoint,
-                        'error' => $e->getMessage(),
-                    ]);
-
-                    $lastResponse = [
-                        'status' => 500,
-                        'body' => [
-                            'message' => $e->getMessage(),
+            try {
+                $response = $this->httpClient->request(
+                    'POST',
+                    $endpoint,
+                    [
+                        'headers' => [
+                            'Authorization' => 'Bearer ' . $token,
+                            'Content-Type' => 'application/json',
                         ],
-                    ];
-                }
-            }
+                        'json' => $this->normalizeIfoodRequestPayload($payload),
+                    ]
+                );
 
-            return $lastResponse;
+                $statusCode = $response->getStatusCode();
+                $rawBody = $response->getContent(false);
+
+                return [
+                    'status' => $statusCode,
+                    'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
+                ];
+            } catch (\Throwable $e) {
+                self::$logger->error('iFood order action endpoint error', [
+                    'order_id' => $orderId,
+                    'action' => $actionPath,
+                    'endpoint' => $endpoint,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return [
+                    'status' => 500,
+                    'body' => [
+                        'message' => $e->getMessage(),
+                    ],
+                ];
         } catch (\Throwable $e) {
             self::$logger->error('iFood order action error', [
                 'order_id' => $orderId,
