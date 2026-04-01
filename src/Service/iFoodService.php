@@ -2414,8 +2414,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $encodedOrderId = rawurlencode($orderId);
             $endpoints = [
-                self::API_BASE_URL . '/orders/' . $encodedOrderId,
                 self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
+                self::API_BASE_URL . '/orders/' . $encodedOrderId,
             ];
 
             foreach ($endpoints as $endpoint) {
