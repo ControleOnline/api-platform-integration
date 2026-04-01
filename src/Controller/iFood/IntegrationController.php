@@ -578,9 +578,18 @@ class IntegrationController extends AbstractController
         }
 
         $storesResponse = $this->iFoodService->listMerchants();
-        $stores = is_array($storesResponse['data']['merchants'] ?? null)
+        $rawStores = is_array($storesResponse['data']['merchants'] ?? null)
             ? $storesResponse['data']['merchants']
             : [];
+        $stores = array_map(function (array $store): array {
+            $status = strtoupper((string) ($store['status'] ?? ''));
+            $store['status_label'] = match ($status) {
+                'AVAILABLE', 'ONLINE', 'OPEN' => 'Online',
+                'UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE' => 'Offline',
+                default => 'Indefinido',
+            };
+            return $store;
+        }, $rawStores);
 
         $integrationState = $this->iFoodService->getStoredIntegrationState($provider, true);
         $merchantId = $this->normalizeString($integrationState['merchant_id'] ?? null);
@@ -736,7 +745,15 @@ class IntegrationController extends AbstractController
         }
 
         $storesResponse = $this->iFoodService->listMerchants();
-        $stores = is_array($storesResponse['data']['merchants'] ?? null) ? $storesResponse['data']['merchants'] : [];
+        $stores = array_map(function (array $store): array {
+            $status = strtoupper((string) ($store['status'] ?? ''));
+            $store['status_label'] = match ($status) {
+                'AVAILABLE', 'ONLINE', 'OPEN' => 'Online',
+                'UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE' => 'Offline',
+                default => 'Indefinido',
+            };
+            return $store;
+        }, is_array($storesResponse['data']['merchants'] ?? null) ? $storesResponse['data']['merchants'] : []);
 
         return new JsonResponse([
             'provider' => [
