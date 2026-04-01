@@ -175,18 +175,50 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ], true);
     }
 
+    private function findEntityByExtraData(string $entityName, string $fieldName, string $value, string $entityClass): ?object
+    {
+        if ($value === '') {
+            return null;
+        }
+
+        $sql = <<<SQL
+            SELECT ed.entity_id
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND ef.field_name = :fieldName
+              AND LOWER(ed.entity_name) = LOWER(:entityName)
+              AND ed.data_value = :value
+            ORDER BY ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
+            'context'    => self::APP_CONTEXT,
+            'fieldName'  => $fieldName,
+            'entityName' => $entityName,
+            'value'      => $value,
+        ]);
+
+        if (!is_numeric($entityId)) {
+            return null;
+        }
+
+        return $this->entityManager->getRepository($entityClass)->find((int) $entityId);
+    }
+
     private function findOrderByExternalId(string $orderId): ?Order
     {
         if ($orderId === '') {
             return null;
         }
 
-        $order = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $orderId, Order::class);
+        $order = $this->findEntityByExtraData('Order', 'code', $orderId, Order::class);
         if ($order instanceof Order) {
             return $order;
         }
 
-        $order = $this->extraDataService->getEntityByExtraData(self::$app, 'id', $orderId, Order::class);
+        $order = $this->findEntityByExtraData('Order', 'id', $orderId, Order::class);
         if ($order instanceof Order) {
             return $order;
         }
@@ -2091,9 +2123,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'merchant_id', $merchantId, People::class);
+        $provider = $this->findEntityByExtraData('People', 'merchant_id', $merchantId, People::class);
         if (!$provider instanceof People) {
-            $provider = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $merchantId, People::class);
+            $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
         }
 
         if (!$provider instanceof People) {
@@ -2446,7 +2478,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $codClienteiFood = $customerData['id'];
 
-        $client = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $codClienteiFood, People::class);
+        $client = $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class);
 
         $phone = [
             'ddd' => '11',
@@ -2469,7 +2501,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
     {
         $codProductiFood = $item['id'];
-        $product = $this->extraDataService->getEntityByExtraData(self::$app, 'code', $codProductiFood, Product::class);
+        $product = $this->findEntityByExtraData('Product', 'code', $codProductiFood, Product::class);
 
         if (!$product && !empty($item['externalCode']))
             $product = $this->entityManager->getRepository(Product::class)->findOneBy([
