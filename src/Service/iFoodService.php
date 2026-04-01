@@ -227,6 +227,53 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return null;
     }
 
+    private function buildOrderIntegrationLockKey(string $orderId): string
+    {
+        return sprintf('ifood-order-integrate:%s', strtolower(trim($orderId)));
+    }
+
+    private function acquireOrderIntegrationLock(string $orderId): bool
+    {
+        try {
+            $result = $this->entityManager->getConnection()->fetchOne(
+                'SELECT GET_LOCK(:lockKey, 5)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+
+            $acquired = (int) $result === 1;
+            if (!$acquired) {
+                self::$logger->warning('iFood could not acquire order integration lock in time', [
+                    'order_id' => $orderId,
+                    'lock_key' => $this->buildOrderIntegrationLockKey($orderId),
+                ]);
+            }
+
+            return $acquired;
+        } catch (\Throwable $exception) {
+            self::$logger->warning('iFood could not acquire order integration lock', [
+                'order_id' => $orderId,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function releaseOrderIntegrationLock(string $orderId): void
+    {
+        try {
+            $this->entityManager->getConnection()->executeQuery(
+                'SELECT RELEASE_LOCK(:lockKey)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+        } catch (\Throwable $exception) {
+            self::$logger->warning('iFood could not release order integration lock', [
+                'order_id' => $orderId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
     private function appendOrderEventPayload(Order $order, string $eventCode, array $payload): void
     {
         $entryKey = $eventCode !== '' ? $eventCode : 'UNKNOWN';
@@ -2133,94 +2180,120 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $order = $this->findOrderByExternalId($orderId);
-        if ($order instanceof Order) {
+        if (!$this->acquireOrderIntegrationLock($orderId)) {
+            return $this->findOrderByExternalId($orderId);
+        }
+
+        try {
+            $order = $this->findOrderByExternalId($orderId);
+            if ($order instanceof Order) {
+                return $order;
+            }
+
+            $orderDetails = $this->fetchOrderDetails($orderId);
+            if (!$orderDetails) {
+                self::$logger->error('iFood order details could not be fetched after retries', [
+                    'order_id' => $orderId,
+                    'merchant_id' => $merchantId,
+                ]);
+                // For PLACED events this is commonly transient (eventual consistency / temporary API failure).
+                // Throwing here lets Messenger retry instead of silently closing the integration item.
+                throw new \RuntimeException(sprintf(
+                    'iFood order details unavailable for order %s',
+                    $orderId
+                ));
+            }
+
+            $json['order'] = $orderDetails;
+            $paymentMethods = is_array($orderDetails['payments']['methods'] ?? null) ? $orderDetails['payments']['methods'] : [];
+            $allPrepaid = !empty($paymentMethods) && array_reduce(
+                $paymentMethods,
+                fn(bool $carry, array $m) => $carry && ($m['prepaid'] ?? false),
+                true
+            );
+            $status = $allPrepaid
+                ? $this->resolveMappedOrderStatus('paid', 'open', $orderId, $merchantId)
+                : $this->resolveMappedOrderStatus('waiting payment', 'pending', $orderId, $merchantId);
+            if (!$status) {
+                self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
+                return null;
+            }
+
+            $client = $this->discoveryClient($provider, is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []);
+            if (!$client instanceof People) {
+                self::$logger->error('iFood order ignored because client could not be resolved', [
+                    'order_id' => $orderId,
+                    'merchant_id' => $merchantId,
+                ]);
+                return null;
+            }
+
+            $orderAmount = isset($orderDetails['total']['orderAmount']) ? (float) $orderDetails['total']['orderAmount'] : 0.0;
+            $eventCode = $this->resolveEventCode($json);
+            $snapshotKey = $eventCode !== '' ? $eventCode : 'PLACED';
+            $order = $this->createOrder($client, $provider, $orderAmount, $status, [
+                $snapshotKey => $json,
+                'latest_event_type' => $snapshotKey,
+            ]);
+
+            $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
+            if (is_array($orderDetails['delivery'] ?? null)) {
+                $this->addDelivery($order, $orderDetails);
+            }
+            if (is_array($orderDetails['payments']['methods'] ?? null) && is_array($orderDetails['total'] ?? null)) {
+                $this->addPayments($order, $orderDetails);
+            }
+
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+
+            $extendedState = [
+                'id' => $orderId,
+                'code' => $orderId,
+                'merchant_id' => $merchantId,
+                'last_event_type' => $snapshotKey,
+                'last_event_at' => $this->extractEventTimestamp($json),
+                'remote_order_state' => $this->resolveRemoteOrderStateByEventCode($snapshotKey),
+            ];
+            $extendedState = array_merge($extendedState, $this->extractOrderDetailSnapshot($orderDetails));
+            $this->persistOrderIntegrationState($order, $extendedState);
+            $this->entityManager->flush();
+
+            self::$logger->info('iFood order integrated successfully', [
+                'order_id' => $orderId,
+                'merchant_id' => $merchantId,
+                'local_order_id' => $order->getId(),
+            ]);
+
+            $this->discoveryFoodCode($order, $orderId, 'id');
+            $this->discoveryFoodCode($order, $orderId, 'code');
+            $this->printOrder($order);
+            $this->autoConfirmOrder($order, $orderId);
             return $order;
+        } finally {
+            $this->releaseOrderIntegrationLock($orderId);
         }
-
-        $orderDetails = $this->fetchOrderDetails($orderId);
-        if (!$orderDetails) {
-            self::$logger->error('iFood order details could not be fetched after retries', [
-                'order_id' => $orderId,
-                'merchant_id' => $merchantId,
-            ]);
-            // For PLACED events this is commonly transient (eventual consistency / temporary API failure).
-            // Throwing here lets Messenger retry instead of silently closing the integration item.
-            throw new \RuntimeException(sprintf(
-                'iFood order details unavailable for order %s',
-                $orderId
-            ));
-        }
-
-        $json['order'] = $orderDetails;
-        $paymentMethods = is_array($orderDetails['payments']['methods'] ?? null) ? $orderDetails['payments']['methods'] : [];
-        $allPrepaid = !empty($paymentMethods) && array_reduce(
-            $paymentMethods,
-            fn(bool $carry, array $m) => $carry && ($m['prepaid'] ?? false),
-            true
-        );
-        $status = $allPrepaid
-            ? $this->resolveMappedOrderStatus('paid', 'open', $orderId, $merchantId)
-            : $this->resolveMappedOrderStatus('waiting payment', 'pending', $orderId, $merchantId);
-        if (!$status) {
-            self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
-            return null;
-        }
-
-        $client = $this->discoveryClient($provider, is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []);
-        if (!$client instanceof People) {
-            self::$logger->error('iFood order ignored because client could not be resolved', [
-                'order_id' => $orderId,
-                'merchant_id' => $merchantId,
-            ]);
-            return null;
-        }
-
-        $orderAmount = isset($orderDetails['total']['orderAmount']) ? (float) $orderDetails['total']['orderAmount'] : 0.0;
-        $eventCode = $this->resolveEventCode($json);
-        $snapshotKey = $eventCode !== '' ? $eventCode : 'PLACED';
-        $order = $this->createOrder($client, $provider, $orderAmount, $status, [
-            $snapshotKey => $json,
-            'latest_event_type' => $snapshotKey,
-        ]);
-
-        $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
-        if (is_array($orderDetails['delivery'] ?? null)) {
-            $this->addDelivery($order, $orderDetails);
-        }
-        if (is_array($orderDetails['payments']['methods'] ?? null) && is_array($orderDetails['total'] ?? null)) {
-            $this->addPayments($order, $orderDetails);
-        }
-
-        $this->entityManager->persist($order);
-        $this->entityManager->flush();
-
-        $extendedState = ['id' => $orderId, 'code' => $orderId, 'merchant_id' => $merchantId,
-            'last_event_type' => $snapshotKey, 'last_event_at' => $this->extractEventTimestamp($json),
-            'remote_order_state' => $this->resolveRemoteOrderStateByEventCode($snapshotKey),
-        ];
-        $extendedState = array_merge($extendedState, $this->extractOrderDetailSnapshot($orderDetails));
-        $this->persistOrderIntegrationState($order, $extendedState);
-        $this->entityManager->flush();
-
-        self::$logger->info('iFood order integrated successfully', [
-            'order_id' => $orderId,
-            'merchant_id' => $merchantId,
-            'local_order_id' => $order->getId(),
-        ]);
-
-        $this->discoveryFoodCode($order, $orderId, 'id');
-        $this->discoveryFoodCode($order, $orderId, 'code');
-        $this->printOrder($order);
-        $this->autoConfirmOrder($order, $orderId);
-        return $order;
     }
 
     private function resolveMappedOrderStatus(string $status, string $realStatus, string $orderId, string $merchantId): ?Status
     {
-        $resolved = $this->findMappedOrderStatus($status, $realStatus);
-        if ($resolved instanceof Status) {
-            return $resolved;
+        $attempts = [[$status, $realStatus]];
+
+        foreach ($this->resolveStatusAliases($status, $realStatus) as $alias) {
+            $attempts[] = [$alias, $realStatus];
+            $attempts[] = [$alias, null];
+        }
+
+        foreach ($attempts as [$candidateStatus, $candidateRealStatus]) {
+            $resolved = $this->findMappedOrderStatus((string) $candidateStatus, $candidateRealStatus);
+            if ($resolved instanceof Status) {
+                return $resolved;
+            }
+        }
+
+        $resolvedByRealStatus = $this->findMappedOrderStatusByRealStatus($realStatus);
+        if ($resolvedByRealStatus instanceof Status) {
+            return $resolvedByRealStatus;
         }
 
         self::$logger->error('iFood order status mapping not found in local status table', [
@@ -2231,6 +2304,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ]);
 
         return null;
+    }
+
+    private function resolveStatusAliases(string $status, string $realStatus): array
+    {
+        $normalizedStatus = strtolower(trim($status));
+        $normalizedRealStatus = strtolower(trim($realStatus));
+
+        if ($normalizedStatus === 'waiting payment' || $normalizedRealStatus === 'pending') {
+            return ['pending payment', 'pending', 'open'];
+        }
+
+        if ($normalizedStatus === 'paid') {
+            return ['open', 'confirmed'];
+        }
+
+        return [];
     }
 
     private function findMappedOrderStatus(string $status, ?string $realStatus = null): ?Status
@@ -2261,6 +2350,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return null;
+    }
+
+    private function findMappedOrderStatusByRealStatus(string $realStatus): ?Status
+    {
+        if ($realStatus === '') {
+            return null;
+        }
+
+        return $this->entityManager->getRepository(Status::class)->createQueryBuilder('status')
+            ->andWhere('status.context = :context')
+            ->andWhere('LOWER(status.realStatus) = :realStatus')
+            ->setParameter('context', 'order')
+            ->setParameter('realStatus', strtolower(trim($realStatus)))
+            ->orderBy('status.id', 'ASC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
     }
 
     private function autoConfirmOrder(Order $order, string $orderId): void
