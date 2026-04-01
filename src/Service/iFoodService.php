@@ -2868,6 +2868,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'message' => $e->getMessage(),
                     ],
                 ];
+            }
         } catch (\Throwable $e) {
             self::$logger->error('iFood order action error', [
                 'order_id' => $orderId,
