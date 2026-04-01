@@ -2153,8 +2153,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             true
         );
         $status = $allPrepaid
-            ? $this->statusService->discoveryStatus('open', 'paid', 'order')
-            : $this->statusService->discoveryStatus('open', 'waiting payment', 'order');
+            ? $this->resolveOrderStatusSafely('open', 'paid', $orderId, $merchantId)
+            : $this->resolveOrderStatusSafely('open', 'waiting payment', $orderId, $merchantId);
         if (!$status) {
             self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
             return null;
@@ -2207,6 +2207,46 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $this->printOrder($order);
         $this->autoConfirmOrder($order, $orderId);
         return $order;
+    }
+
+    private function resolveOrderStatusSafely(string $status, string $realStatus, string $orderId, string $merchantId): mixed
+    {
+        try {
+            return $this->statusService->discoveryStatus($status, $realStatus, 'order');
+        } catch (\Throwable $e) {
+            if (!$this->isStatusUniqueConstraintViolation($e)) {
+                throw $e;
+            }
+
+            self::$logger->warning('iFood status race detected while resolving order status, retrying lookup', [
+                'order_id' => $orderId,
+                'merchant_id' => $merchantId,
+                'status' => $status,
+                'real_status' => $realStatus,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->statusService->discoveryStatus($status, $realStatus, 'order');
+        }
+    }
+
+    private function isStatusUniqueConstraintViolation(\Throwable $e): bool
+    {
+        $current = $e;
+        while ($current instanceof \Throwable) {
+            if ($current instanceof \Doctrine\DBAL\Exception\UniqueConstraintViolationException) {
+                return true;
+            }
+
+            $message = strtolower((string) $current->getMessage());
+            if (str_contains($message, 'duplicate entry') && str_contains($message, "for key 'status'")) {
+                return true;
+            }
+
+            $current = $current->getPrevious();
+        }
+
+        return false;
     }
 
     private function autoConfirmOrder(Order $order, string $orderId): void
