@@ -1701,8 +1701,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $providerId = (int) $provider->getId();
         $merchantId = $this->normalizeString(
-            $this->getIfoodExtraDataValue('People', $providerId, 'merchant_id')
-                ?? $this->getIfoodExtraDataValue('People', $providerId, 'code')
+            $this->getIfoodExtraDataValue('People', $providerId, 'code')
+                ?? $this->getIfoodExtraDataValue('People', $providerId, 'merchant_id')
                 ?? null
         );
         $merchantStatus = strtoupper($this->normalizeString(
@@ -1780,6 +1780,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->persistProviderIntegrationState($provider, [
             'code' => '',
+            'merchant_id' => '',
             'merchant_name' => '',
             'merchant_status' => '',
             'remote_connected' => '0',
@@ -2415,7 +2416,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $encodedOrderId = rawurlencode($orderId);
             $endpoints = [
                 self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
-                self::API_BASE_URL . '/orders/' . $encodedOrderId,
+                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId,
             ];
 
             foreach ($endpoints as $endpoint) {
@@ -2836,7 +2837,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $encodedOrderId = rawurlencode($orderId);
             $endpoints = [
-                self::API_BASE_URL . '/orders/' . $encodedOrderId . $actionPath,
+                self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath,
                 self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath,
             ];
 
@@ -3102,7 +3103,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $normalizedOrderId = $this->normalizeString($orderId);
         if ($normalizedOrderId !== '') {
             $encodedOrderId = rawurlencode($normalizedOrderId);
-            $endpoints[] = self::API_BASE_URL . '/orders/' . $encodedOrderId . '/cancellationReasons';
+            $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
             $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
         }
         $endpoints[] = self::API_BASE_URL . '/order/v1.0/cancellation/reasons';
