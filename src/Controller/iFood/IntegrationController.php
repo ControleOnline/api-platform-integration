@@ -565,9 +565,16 @@ class IntegrationController extends AbstractController
             $storedState['customer_phone'] ?? null
         );
 
+        $documentNumber = $this->preferredText(
+            $customer['documentNumber'] ?? null,
+            $customer['document_number'] ?? null,
+            $storedState['customer_document'] ?? null
+        );
+
         return [
-            'name' => $name,
-            'phone' => $customerPhone,
+            'name'            => $name,
+            'phone'           => $customerPhone,
+            'document_number' => $documentNumber,
         ];
     }
 
@@ -734,7 +741,6 @@ class IntegrationController extends AbstractController
         $start = $this->normalizeString(
             $schedule['deliveryDateTimeStart']
                 ?? $schedule['scheduledDateTimeStart']
-                ?? $orderPayload['preparationStartDateTime']
                 ?? null
         );
         $end = $this->normalizeString(
@@ -742,12 +748,23 @@ class IntegrationController extends AbstractController
                 ?? $schedule['scheduledDateTimeEnd']
                 ?? null
         );
+        $deliveryDateTime = $this->normalizeString(
+            $orderPayload['delivery']['deliveryDateTime']
+                ?? $orderPayload['delivery']['estimatedDeliveryDate']
+                ?? null
+        );
+        $preparationStart = $this->normalizeString(
+            $orderPayload['preparationStartDateTime']
+                ?? null
+        );
 
         return [
-            'order_timing'        => $orderTiming !== '' ? $orderTiming : null,
-            'is_scheduled'        => $orderTiming === 'SCHEDULED',
-            'scheduled_start'     => $start !== '' ? $start : null,
-            'scheduled_end'       => $end !== '' ? $end : null,
+            'order_timing'             => $orderTiming !== '' ? $orderTiming : null,
+            'is_scheduled'             => $orderTiming === 'SCHEDULED',
+            'scheduled_start'          => $start !== '' ? $start : null,
+            'scheduled_end'            => $end !== '' ? $end : null,
+            'delivery_date_time'       => $deliveryDateTime !== '' ? $deliveryDateTime : null,
+            'preparation_start'        => $preparationStart !== '' ? $preparationStart : null,
         ];
     }
 
