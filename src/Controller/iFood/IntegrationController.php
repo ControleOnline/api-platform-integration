@@ -722,6 +722,32 @@ class IntegrationController extends AbstractController
                 'item_remarks'    => $this->extractItemRemarks($payload),
             ],
             'capabilities' => $capabilities,
+            'scheduling'   => $this->buildSchedulingDetail($orderPayload),
+        ];
+    }
+
+    private function buildSchedulingDetail(array $orderPayload): array
+    {
+        $orderTiming = strtoupper($this->normalizeString($orderPayload['orderTiming'] ?? null));
+        $schedule    = is_array($orderPayload['schedule'] ?? null) ? $orderPayload['schedule'] : [];
+
+        $start = $this->normalizeString(
+            $schedule['deliveryDateTimeStart']
+                ?? $schedule['scheduledDateTimeStart']
+                ?? $orderPayload['preparationStartDateTime']
+                ?? null
+        );
+        $end = $this->normalizeString(
+            $schedule['deliveryDateTimeEnd']
+                ?? $schedule['scheduledDateTimeEnd']
+                ?? null
+        );
+
+        return [
+            'order_timing'        => $orderTiming !== '' ? $orderTiming : null,
+            'is_scheduled'        => $orderTiming === 'SCHEDULED',
+            'scheduled_start'     => $start !== '' ? $start : null,
+            'scheduled_end'       => $end !== '' ? $end : null,
         ];
     }
 
