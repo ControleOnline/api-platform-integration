@@ -81,6 +81,8 @@ class OrderActionService
                 'started',
                 'ready',
                 'ready_to_pickup',
+                'delivery_drop_code_requested',
+                'delivery_drop_code_validating',
                 'dispatching',
                 'dispatched',
                 'order_dispatched',
@@ -97,6 +99,8 @@ class OrderActionService
                 'started',
                 'ready',
                 'ready_to_pickup',
+                'delivery_drop_code_requested',
+                'delivery_drop_code_validating',
             ];
             $canConfirmStates = ['', 'new', 'order_created', 'placed'];
             $dispatchFlow = strtolower(trim((string) ($storedState['delivered_by'] ?? '')));
@@ -122,14 +126,11 @@ class OrderActionService
                     'dispatched',
                     'order_dispatched',
                     'order_in_transit',
-                    'delivery_drop_code_requested',
-                    'delivery_drop_code_validating',
                 ], true)
                 && (
                     $isStoreDeliveryFlow
                     || $handoverConfirmationUrl !== ''
                     || $handoverPageUrl !== ''
-                    || $locator !== ''
                 );
 
             return array_merge($base, [

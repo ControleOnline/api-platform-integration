@@ -339,6 +339,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'STARTED', 'PREPARING', 'START_PREPARATION', 'ORDER_PREPARATION_STARTED', 'ORDER_IN_PREPARATION' => 'preparing',
             'READY', 'READY_TO_PICKUP', 'ORDER_READY_TO_PICKUP' => 'ready',
             'DISPATCHING', 'DISPATCHED', 'ORDER_DISPATCHED', 'ORDER_PICKED_UP', 'ORDER_IN_TRANSIT', 'DELIVERY_STARTED' => 'dispatching',
+            'DELIVERY_DROP_CODE_REQUESTED', 'DELIVERY_DROP_CODE_VALIDATING' => 'ready',
             'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
             'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
             'CANCELLATION_REQUESTED', 'ORDER_CANCELLATION_REQUESTED' => 'cancellation_requested',
@@ -1202,14 +1203,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada. Vincule o merchant_id antes de publicar o cardapio.'];
         }
 
-        /* resolve catalogId e categoryId */
+        /* resolve catalogId */
         $catalogId  = $this->fetchIfoodDefaultCatalogId($merchantId);
         if ($catalogId === null) {
             return ['errno' => 10003, 'errmsg' => 'Nao foi possivel obter o catalogo iFood da loja.'];
-        }
-        $categoryId = $this->getOrCreateDefaultCatalogCategory($merchantId, $catalogId);
-        if ($categoryId === null) {
-            return ['errno' => 10003, 'errmsg' => 'Nao foi possivel obter ou criar a categoria padrao no iFood.'];
         }
 
         /* produtos locais */
@@ -1225,6 +1222,33 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10002, 'errmsg' => 'Nenhum produto selecionado para publicar no iFood.'];
         }
 
+        $remoteCategories = $this->fetchIfoodCatalogCategoriesV2($merchantId, $catalogId);
+        $remoteCategoriesByName = [];
+        foreach ($remoteCategories as $remoteCategory) {
+            $remoteCategoryName = $this->normalizeString($remoteCategory['name'] ?? null);
+            $remoteCategoryId   = $this->normalizeString($remoteCategory['id'] ?? null);
+            if ($remoteCategoryName !== '' && $remoteCategoryId !== '') {
+                $remoteCategoriesByName[$this->normalizeText($remoteCategoryName)] = $remoteCategoryId;
+            }
+        }
+
+        $groupedProducts = [];
+        foreach ($allProducts as $prod) {
+            $groupCategoryId   = $this->normalizeString($prod['category_id'] ?? null);
+            $groupCategoryName = $this->normalizeString($prod['category_name'] ?? null);
+            $groupKey          = $groupCategoryId !== '' ? $groupCategoryId : ($groupCategoryName !== '' ? $groupCategoryName : '__default__');
+
+            if (!isset($groupedProducts[$groupKey])) {
+                $groupedProducts[$groupKey] = [
+                    'category_id'   => $groupCategoryId,
+                    'category_name' => $groupCategoryName !== '' ? $groupCategoryName : 'Produtos',
+                    'products'      => [],
+                ];
+            }
+
+            $groupedProducts[$groupKey]['products'][] = $prod;
+        }
+
         /* mapa de itens existentes por externalCode */
         $remoteItems = $this->fetchIfoodCatalogItemsV2($merchantId);
         $byEc        = [];
@@ -1234,35 +1258,59 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $byEc[$ec] = [
                     'item_id'    => $this->normalizeString($item['id'] ?? ''),
                     'product_id' => $this->normalizeString($item['productId'] ?? ''),
-                    'category_id' => $this->normalizeString($item['_categoryId'] ?? $categoryId),
+                    'category_id' => $this->normalizeString($item['_categoryId'] ?? null),
                 ];
             }
         }
 
         $pushed = 0;
         $errors = [];
-        foreach ($allProducts as $prod) {
-            $ec       = (string) $prod['id'];
-            $existing = $byEc[$ec] ?? null;
+        $sequence = 0;
+        foreach ($groupedProducts as $group) {
+            $sequence++;
+            $resolvedCategoryId = $this->resolveIfoodCatalogCategoryId(
+                $merchantId,
+                $catalogId,
+                $group['category_name'],
+                $remoteCategoriesByName,
+                $sequence
+            );
 
-            $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $categoryId);
-            if ($result['ok']) {
-                $pushed++;
-            } else {
+            if ($resolvedCategoryId === null) {
                 $errors[] = [
-                    'product_id'   => $prod['id'],
-                    'product_name' => $prod['name'] ?? '',
-                    'http_status'  => $result['http_status'],
-                    'ifood_body'   => $result['ifood_body'],
-                    'error'        => $result['error'],
-                    'sent_payload' => $result['sent_payload'] ?? null,
+                    'product_id'   => null,
+                    'product_name' => $group['category_name'],
+                    'http_status'  => null,
+                    'ifood_body'   => null,
+                    'error'        => 'Nao foi possivel obter ou criar a categoria no iFood.',
+                    'sent_payload' => null,
                 ];
-                self::$logger->warning('iFood catalog v2 upsert failed', [
-                    'product_id'  => $prod['id'],
-                    'http_status' => $result['http_status'],
-                    'ifood_body'  => $result['ifood_body'],
-                    'error'       => $result['error'],
-                ]);
+                continue;
+            }
+
+            foreach ($group['products'] as $prod) {
+                $ec       = (string) $prod['id'];
+                $existing = $byEc[$ec] ?? null;
+
+                $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $resolvedCategoryId);
+                if ($result['ok']) {
+                    $pushed++;
+                } else {
+                    $errors[] = [
+                        'product_id'   => $prod['id'],
+                        'product_name' => $prod['name'] ?? '',
+                        'http_status'  => $result['http_status'],
+                        'ifood_body'   => $result['ifood_body'],
+                        'error'        => $result['error'],
+                        'sent_payload' => $result['sent_payload'] ?? null,
+                    ];
+                    self::$logger->warning('iFood catalog v2 upsert failed', [
+                        'product_id'  => $prod['id'],
+                        'http_status' => $result['http_status'],
+                        'ifood_body'  => $result['ifood_body'],
+                        'error'       => $result['error'],
+                    ]);
+                }
             }
         }
 
@@ -1360,7 +1408,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 FROM product_category pc2
                 INNER JOIN category c2 ON c2.id = pc2.category_id
                 WHERE pc2.product_id = p.id
-                  AND c2.context = 'products'
             )
             LEFT JOIN category c ON c.id = pc.category_id
             LEFT JOIN product_file pf ON pf.id = (
@@ -1447,37 +1494,86 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
     {
+        return $this->resolveIfoodCatalogCategoryId($merchantId, $catalogId, 'Produtos', [], 0);
+    }
+
+    private function fetchIfoodCatalogCategoriesV2(string $merchantId, string $catalogId): array
+    {
         $token = $this->getAccessToken();
-        if (!$token) return null;
+        if (!$token) {
+            return [];
+        }
+
         try {
             $response = $this->httpClient->request('GET',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]
             );
-            if ($response->getStatusCode() === 200) {
-                $cats = $response->toArray(false);
-                if (!empty($cats) && isset($cats[0]['id'])) {
-                    return $cats[0]['id'];
-                }
+            if ($response->getStatusCode() !== 200) {
+                return [];
             }
-        } catch (\Throwable $e) {}
 
-        /* cria categoria padrão */
+            $cats = $response->toArray(false);
+            return is_array($cats) ? $cats : [];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood catalog v2 categories fetch failed', [
+                'merchant_id' => $merchantId,
+                'catalog_id' => $catalogId,
+                'error' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
+    private function resolveIfoodCatalogCategoryId(
+        string $merchantId,
+        string $catalogId,
+        string $categoryName,
+        array &$remoteCategoriesByName,
+        int $sequence = 0
+    ): ?string {
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return null;
+        }
+
+        $effectiveName = trim($categoryName) !== '' ? trim($categoryName) : 'Produtos';
+        $normalizedName = $this->normalizeText($effectiveName);
+
+        if ($normalizedName !== '' && isset($remoteCategoriesByName[$normalizedName])) {
+            return $remoteCategoriesByName[$normalizedName];
+        }
+
         try {
             $response = $this->httpClient->request('POST',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => ['name' => 'Produtos', 'status' => 'AVAILABLE', 'template' => 'DEFAULT', 'sequence' => 0],
+                    'json'    => [
+                        'name'     => $effectiveName,
+                        'status'   => 'AVAILABLE',
+                        'template' => 'DEFAULT',
+                        'sequence'  => max(0, $sequence),
+                    ],
                 ]
             );
+
             $data = $response->toArray(false);
             $id   = $this->normalizeString($data['id'] ?? null);
-            return $id !== '' ? $id : null;
+            if ($id !== '') {
+                $remoteCategoriesByName[$normalizedName] = $id;
+                return $id;
+            }
         } catch (\Throwable $e) {
-            self::$logger->error('iFood create default category failed', ['error' => $e->getMessage()]);
-            return null;
+            self::$logger->error('iFood create category failed', [
+                'merchant_id' => $merchantId,
+                'catalog_id' => $catalogId,
+                'category_name' => $effectiveName,
+                'error' => $e->getMessage(),
+            ]);
         }
+
+        return null;
     }
 
     private function generateUuidV4(): string
@@ -1647,9 +1743,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $ec                = (string) $product['id'];
         $existingItemId    = $this->normalizeString($existing['item_id']    ?? null);
         $existingProductId = $this->normalizeString($existing['product_id'] ?? null);
-        $usedCategoryId    = ($this->normalizeString($existing['category_id'] ?? null) !== '')
-            ? $existing['category_id']
-            : $categoryId;
+        $usedCategoryId    = $this->normalizeString($categoryId) !== ''
+            ? $categoryId
+            : $this->normalizeString($existing['category_id'] ?? null);
 
         /* Para itens novos geramos UUIDs para ligar item ↔ produto */
         $productUuid = $existingProductId !== '' ? $existingProductId : $this->generateUuidV4();
@@ -2973,7 +3069,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $order,
             'ready',
             $this->dispatchOrderByDeliveryMode($order, $orderId),
-            'dispatching'
+            'ready'
         );
     }
 
