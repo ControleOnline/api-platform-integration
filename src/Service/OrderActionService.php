@@ -117,7 +117,14 @@ class OrderActionService
 
             $isStoreDeliveryFlow = $dispatchFlow === 'merchant';
             $canOpenHandoverFlow = !$isTerminal
-                && in_array($remoteOrderState, ['dispatching', 'dispatched', 'order_dispatched', 'order_in_transit'], true)
+                && in_array($remoteOrderState, [
+                    'dispatching',
+                    'dispatched',
+                    'order_dispatched',
+                    'order_in_transit',
+                    'delivery_drop_code_requested',
+                    'delivery_drop_code_validating',
+                ], true)
                 && (
                     $isStoreDeliveryFlow
                     || $handoverConfirmationUrl !== ''

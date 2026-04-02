@@ -444,8 +444,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if ($remark === '') {
+            $remark = $this->normalizeString($delivery['observations'] ?? null);
+        }
+
+        if ($remark === '') {
             $remark = $this->normalizeString($orderPayload['orderComment'] ?? null);
         }
+
+        $payments = is_array($orderPayload['payments'] ?? null) ? $orderPayload['payments'] : [];
+        $methods = is_array($payments['methods'] ?? null) ? $payments['methods'] : [];
+        $firstMethod = is_array($methods[0] ?? null) ? $methods[0] : [];
+        $methodCode = strtoupper($this->normalizeString($firstMethod['method'] ?? null));
+        $methodType = strtoupper($this->normalizeString($firstMethod['type'] ?? null));
+        $brand = strtoupper($this->normalizeString($firstMethod['card']['brand'] ?? null));
+        $amountPaid = (float) ($payments['prepaid'] ?? 0.0);
+        $amountPending = (float) ($payments['pending'] ?? 0.0);
+        $changeFor = (float) ($firstMethod['cash']['changeFor'] ?? 0.0);
+        $selectedPaymentLabel = trim($methodCode . ($brand !== '' ? " ({$brand})" : ''));
 
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
@@ -524,6 +539,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'address_reference' => $reference,
             'address_complement' => $complement,
             'remark' => $remark,
+            'pay_type' => $methodType !== '' ? strtolower($methodType) : '',
+            'pay_method' => $methodCode !== '' ? strtolower($methodCode) : '',
+            'pay_channel' => $brand !== '' ? $brand : $methodCode,
+            'selected_payment_label' => $selectedPaymentLabel,
+            'amount_paid' => (string) $amountPaid,
+            'amount_pending' => (string) $amountPending,
+            'customer_need_paying_money' => (string) $amountPending,
+            'collect_on_delivery_amount' => (string) ($amountPending > 0.0 ? $amountPending : 0.0),
+            'change_for' => (string) $changeFor,
         ];
 
         if (($snapshot['address_display'] ?? '') === '' && $addressDisplay !== '') {

@@ -11,6 +11,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
 class Food99Service extends DefaultFoodService implements EventSubscriberInterface
@@ -5232,17 +5233,32 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $appItemId = trim((string) ($item['app_item_id'] ?? ''));
-            $uploadResponse = $this->uploadImage($provider, [
-                'image_url' => $sourceUrl,
+            $normalizedImagePath = $this->normalizeImageForFood99Upload($sourceUrl, (int) $provider->getId(), $appItemId);
+            $uploadPayload = [
                 'ext' => $this->buildFood99ImageUploadExt($provider, $appItemId, $sourceUrl),
-            ]);
+            ];
+
+            if ($normalizedImagePath) {
+                $uploadPayload['image_file'] = DataPart::fromPath($normalizedImagePath, basename($normalizedImagePath), 'image/jpeg');
+            } else {
+                $uploadPayload['image_url'] = $sourceUrl;
+            }
+
+            $uploadResponse = $this->uploadImage($provider, $uploadPayload);
 
             $uploadedUrl = trim((string) ($uploadResponse['data']['giftUrl'] ?? ''));
             if ($this->isSuccessfulErrno($uploadResponse['errno'] ?? null) && $uploadedUrl !== '') {
                 $uploadedBySourceUrl[$sourceUrl] = $uploadedUrl;
                 $payload['items'][$index]['head_img'] = $uploadedUrl;
                 $stats['uploaded']++;
+                if ($normalizedImagePath && file_exists($normalizedImagePath)) {
+                    @unlink($normalizedImagePath);
+                }
                 continue;
+            }
+
+            if ($normalizedImagePath && file_exists($normalizedImagePath)) {
+                @unlink($normalizedImagePath);
             }
 
             $failedSourceUrls[$sourceUrl] = true;
@@ -5258,6 +5274,108 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return $stats;
+    }
+
+    private function normalizeImageForFood99Upload(string $sourceUrl, int $providerId, string $appItemId): ?string
+    {
+        try {
+            if (!$this->isHttpImageUrl($sourceUrl) || !function_exists('imagecreatefromstring')) {
+                return null;
+            }
+
+            $response = $this->httpClient->request('GET', $sourceUrl);
+            if ($response->getStatusCode() >= 400) {
+                return null;
+            }
+
+            $raw = $response->getContent(false);
+            if (!$raw) {
+                return null;
+            }
+
+            $image = @imagecreatefromstring($raw);
+            if (!$image) {
+                return null;
+            }
+
+            $width = imagesx($image);
+            $height = imagesy($image);
+
+            if ($width <= 0 || $height <= 0) {
+                imagedestroy($image);
+                return null;
+            }
+
+            $maxDimension = 3000;
+            $minDimension = 150;
+            $targetWidth = $width;
+            $targetHeight = $height;
+
+            if ($targetWidth > $maxDimension || $targetHeight > $maxDimension) {
+                $scale = min($maxDimension / $targetWidth, $maxDimension / $targetHeight);
+                $targetWidth = (int) max(1, floor($targetWidth * $scale));
+                $targetHeight = (int) max(1, floor($targetHeight * $scale));
+            }
+
+            if ($targetWidth < $minDimension || $targetHeight < $minDimension) {
+                $scale = max($minDimension / max(1, $targetWidth), $minDimension / max(1, $targetHeight));
+                $targetWidth = (int) max($minDimension, ceil($targetWidth * $scale));
+                $targetHeight = (int) max($minDimension, ceil($targetHeight * $scale));
+            }
+
+            $normalized = imagecreatetruecolor($targetWidth, $targetHeight);
+            imagealphablending($normalized, true);
+            imagesavealpha($normalized, false);
+            $white = imagecolorallocate($normalized, 255, 255, 255);
+            imagefilledrectangle($normalized, 0, 0, $targetWidth, $targetHeight, $white);
+            imagecopyresampled($normalized, $image, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height);
+            imagedestroy($image);
+
+            $tempBase = tempnam(sys_get_temp_dir(), 'food99_img_');
+            if (!$tempBase) {
+                imagedestroy($normalized);
+                return null;
+            }
+
+            $targetPath = $tempBase . '.jpg';
+            @unlink($tempBase);
+
+            $quality = 90;
+            $saved = false;
+
+            while ($quality >= 70) {
+                $saved = imagejpeg($normalized, $targetPath, $quality);
+                if ($saved && file_exists($targetPath) && filesize($targetPath) <= 10 * 1024 * 1024) {
+                    break;
+                }
+                $quality -= 5;
+            }
+
+            imagedestroy($normalized);
+
+            if (!$saved || !file_exists($targetPath)) {
+                if (file_exists($targetPath)) {
+                    @unlink($targetPath);
+                }
+                return null;
+            }
+
+            if (filesize($targetPath) > 10 * 1024 * 1024) {
+                @unlink($targetPath);
+                return null;
+            }
+
+            return $targetPath;
+        } catch (\Throwable $e) {
+            self::$logger->warning('Food99 image normalization failed before upload', [
+                'provider_id' => $providerId,
+                'app_item_id' => $appItemId,
+                'image_url' => $sourceUrl,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     public function uploadStoreMenu(People $provider, array $payload): ?array

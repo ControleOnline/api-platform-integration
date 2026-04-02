@@ -291,7 +291,7 @@ class IntegrationController extends AbstractController
             'confirmed' => 'Confirmado',
             'preparing', 'started' => 'Preparando',
             'ready' => 'Pronto',
-            'dispatching', 'dispatched' => 'Em entrega',
+            'dispatching', 'dispatched', 'delivery_drop_code_requested', 'delivery_drop_code_validating' => 'Em entrega',
             'concluded', 'closed' => 'Concluido',
             'cancelled', 'canceled' => 'Cancelado',
             'cancellation_requested' => 'Cancelamento solicitado',
@@ -664,7 +664,7 @@ class IntegrationController extends AbstractController
 
         $remark = $this->normalizeString(
             $orderPayload['additionalInfo']['notes']
-                ?? $orderPayload['additionalInfo']
+                ?? $orderPayload['delivery']['observations']
                 ?? $orderPayload['orderComment']
                 ?? $storedState['remark']
                 ?? $orderComments
@@ -705,7 +705,8 @@ class IntegrationController extends AbstractController
             'customer' => $this->buildCustomerDetail($payload, $storedState, $order),
             'address' => $this->buildAddressDetail($order, $payload, $storedState),
             'delivery'      => $this->buildDeliveryDetail($payload, $storedState, $remoteState, $deliveryContext, $capabilities),
-            'financial'     => $this->buildFinancialDetail($payload),
+            'payment'       => $this->buildPaymentDetail($payload, $storedState),
+            'financial'     => $this->buildFinancialDetail($payload, $storedState),
             'observability' => [
                 'has_action_error' => $this->hasErrnoError($storedState['last_action_errno'] ?? null),
                 'is_healthy' => !$this->hasErrnoError($storedState['last_action_errno'] ?? null),
@@ -1241,17 +1242,73 @@ class IntegrationController extends AbstractController
         ]);
     }
 
-    private function buildFinancialDetail(array $payload): array
+    private function mapIfoodPaymentMethodLabel(string $method): string
+    {
+        return match (strtoupper($method)) {
+            'CASH' => 'Dinheiro',
+            'DEBIT' => 'Cartao de debito',
+            'CREDIT' => 'Cartao de credito',
+            'MEAL_VOUCHER' => 'Vale refeicao',
+            'FOOD_VOUCHER' => 'Vale alimentacao',
+            'PIX' => 'Pix',
+            default => $method !== '' ? $method : 'Nao informado',
+        };
+    }
+
+    private function buildPaymentDetail(array $payload, array $storedState = []): array
+    {
+        $order = $this->resolveOrderPayload($payload);
+        $payments = is_array($order['payments'] ?? null) ? $order['payments'] : [];
+        $methods = is_array($payments['methods'] ?? null) ? $payments['methods'] : [];
+
+        $method = is_array($methods[0] ?? null) ? $methods[0] : [];
+        $methodCode = strtoupper($this->normalizeString($method['method'] ?? null));
+        $methodLabel = $this->mapIfoodPaymentMethodLabel($methodCode);
+        $methodType = strtoupper($this->normalizeString($method['type'] ?? null));
+        $brand = strtoupper($this->normalizeString($method['card']['brand'] ?? null));
+
+        $amountPaid = (float) ($payments['prepaid'] ?? ($storedState['amount_paid'] ?? 0.0));
+        $amountPending = (float) ($payments['pending'] ?? ($storedState['amount_pending'] ?? 0.0));
+        $changeFor = (float) ($method['cash']['changeFor'] ?? ($storedState['change_for'] ?? 0.0));
+
+        $selectedPaymentLabel = trim($methodLabel . ($brand !== '' ? " ({$brand})" : ''));
+        $isPaidOnline = $amountPending <= 0.009;
+
+        return [
+            'pay_type' => $this->normalizeString($storedState['pay_type'] ?? ($methodType !== '' ? strtolower($methodType) : null)),
+            'pay_type_label' => $this->normalizeString(
+                $storedState['pay_type_label']
+                ?? ($methodType === 'ONLINE' ? 'Pagamento online' : ($methodType === 'OFFLINE' ? 'Pagamento na entrega' : null))
+            ),
+            'pay_method' => $this->normalizeString($storedState['pay_method'] ?? ($methodCode !== '' ? strtolower($methodCode) : null)),
+            'pay_method_label' => $this->normalizeString($storedState['pay_method_label'] ?? $methodLabel),
+            'pay_channel' => $this->normalizeString($storedState['pay_channel'] ?? ($brand !== '' ? $brand : $methodCode)),
+            'pay_channel_label' => $this->normalizeString($storedState['pay_channel_label'] ?? ($brand !== '' ? $brand : $methodLabel)),
+            'selected_payment_label' => $this->normalizeString($storedState['selected_payment_label'] ?? $selectedPaymentLabel),
+            'amount_paid' => $amountPaid,
+            'amount_pending' => $amountPending,
+            'customer_need_paying_money' => (float) ($storedState['customer_need_paying_money'] ?? $amountPending),
+            'collect_on_delivery_amount' => (float) ($storedState['collect_on_delivery_amount'] ?? ($isPaidOnline ? 0.0 : $amountPending)),
+            'shop_paid_money' => (float) ($storedState['shop_paid_money'] ?? $amountPaid),
+            'change_for' => $changeFor,
+            'change_amount' => max(0.0, $changeFor - $amountPending),
+            'needs_change' => $changeFor > 0.009,
+            'is_fully_paid' => $amountPending <= 0.009,
+            'is_paid_online' => $isPaidOnline,
+        ];
+    }
+
+    private function buildFinancialDetail(array $payload, array $storedState = []): array
     {
         $order    = $this->resolveOrderPayload($payload);
         $total    = is_array($order['total'] ?? null) ? $order['total'] : [];
         $methods  = is_array($order['payments']['methods'] ?? null) ? $order['payments']['methods'] : [];
         $benefits = is_array($order['benefits'] ?? null) ? $order['benefits'] : [];
 
-        $itemsTotal    = (float) ($total['itemsPrice'] ?? $total['subTotal'] ?? 0.0);
-        $deliveryFee   = (float) ($total['deliveryFee'] ?? 0.0);
-        $additionalFees = (float) ($total['additionalFees'] ?? 0.0);
-        $orderAmount   = (float) ($total['orderAmount'] ?? 0.0);
+        $itemsTotal    = (float) ($total['itemsPrice'] ?? $total['subTotal'] ?? ($storedState['items_total'] ?? 0.0));
+        $deliveryFee   = (float) ($total['deliveryFee'] ?? ($storedState['delivery_fee'] ?? 0.0));
+        $additionalFees = (float) ($total['additionalFees'] ?? ($storedState['additional_fees'] ?? 0.0));
+        $orderAmount   = (float) ($total['orderAmount'] ?? ($storedState['order_amount'] ?? 0.0));
 
         /* descontos separados: iFood vs loja */
         $ifoodSubsidy    = 0.0;
@@ -1294,7 +1351,7 @@ class IntegrationController extends AbstractController
             'delivery_fee'     => $deliveryFee,
             'additional_fees'  => $additionalFees,
             'order_amount'     => $orderAmount,
-            'discount_total'   => $discountTotal,
+            'discount_total'   => $discountTotal > 0 ? $discountTotal : (float) ($storedState['discount_total'] ?? 0.0),
             'ifood_subsidy'    => $ifoodSubsidy,
             'merchant_subsidy' => $merchantSubsidy,
             'payment_brand'    => $paymentBrand,
