@@ -1156,10 +1156,10 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $shifts = $this->decodeArrayValue($payload['shifts'] ?? null);
-        if (empty($shifts)) {
-            return new JsonResponse(['error' => 'shifts obrigatorio e nao pode ser vazio'], Response::HTTP_BAD_REQUEST);
+        if (!array_key_exists('shifts', $payload)) {
+            return new JsonResponse(['error' => 'shifts obrigatorio'], Response::HTTP_BAD_REQUEST);
         }
+        $shifts = $this->decodeArrayValue($payload['shifts'] ?? []) ?? [];
 
         try {
             $result = $this->iFoodService->updateOpeningHours($provider, $shifts);

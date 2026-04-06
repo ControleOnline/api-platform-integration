@@ -3766,9 +3766,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
         }
 
-        if (empty($shifts)) {
-            return ['errno' => 10003, 'errmsg' => 'shifts nao pode ser vazio.'];
+        // Normaliza shifts para o formato esperado pelo iFood:
+        // [{dayOfWeek, start:"HH:MM:SS", duration}] — flat, sem agrupamento
+        $flatShifts = [];
+        foreach ($shifts as $shift) {
+            $dayOfWeek = $this->normalizeString($shift['dayOfWeek'] ?? null);
+            $start     = $this->normalizeString($shift['start']     ?? null);
+            $duration  = (int) ($shift['duration'] ?? 0);
+            if ($dayOfWeek === '' || $start === '' || $duration <= 0) continue;
+            // Garante formato HH:MM:SS
+            if (substr_count($start, ':') === 1) $start .= ':00';
+            $flatShifts[] = ['dayOfWeek' => $dayOfWeek, 'start' => $start, 'duration' => $duration];
         }
+
+        $payload = ['storeId' => $merchantId, 'shifts' => $flatShifts];
 
         try {
             $response = $this->httpClient->request(
@@ -3779,7 +3790,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'Authorization' => 'Bearer ' . $token,
                         'Content-Type'  => 'application/json',
                     ],
-                    'json' => $shifts,
+                    'json' => $payload,
                 ]
             );
 
