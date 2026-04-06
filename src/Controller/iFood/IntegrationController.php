@@ -933,7 +933,11 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $result = $this->iFoodService->openStore($provider);
+        $openResult = $this->iFoodService->openStore($provider);
+        // Retorna o status real do iFood apos a operacao para evitar estado otimista incorreto
+        $result = ($openResult['errno'] === 0)
+            ? $this->iFoodService->getStoreStatus($provider)
+            : $openResult;
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
@@ -955,7 +959,11 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $result = $this->iFoodService->closeStore($provider);
+        $closeResult = $this->iFoodService->closeStore($provider);
+        // Retorna o status real do iFood apos a operacao para evitar estado otimista incorreto
+        $result = ($closeResult['errno'] === 0)
+            ? $this->iFoodService->getStoreStatus($provider)
+            : $closeResult;
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),

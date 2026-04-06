@@ -2153,13 +2153,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function listInterruptionsRaw(string $merchantId, string $token): array
     {
         try {
-            $response = $this->httpClient->request('GET',
+            $response   = $this->httpClient->request('GET',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
-            if ($response->getStatusCode() !== 200) return [];
-            $decoded = json_decode($response->getContent(false), true);
-            return is_array($decoded) ? $decoded : [];
+            $statusCode = $response->getStatusCode();
+            // Aceita qualquer 2xx; 204 = lista vazia valida
+            if ($statusCode < 200 || $statusCode >= 300) return [];
+            $content = (string) $response->getContent(false);
+            if ($content === '' || $content === 'null') return [];
+            $decoded = json_decode($content, true);
+            if (!is_array($decoded)) return [];
+            // Suporte a lista plana [...] ou encapsulada {"interruptions":[...]}
+            if (array_is_list($decoded)) return $decoded;
+            if (isset($decoded['interruptions']) && is_array($decoded['interruptions'])) {
+                return $decoded['interruptions'];
+            }
+            return [];
         } catch (\Throwable $e) {
+            self::$logger->warning('iFood listInterruptionsRaw failed', ['error' => $e->getMessage()]);
             return [];
         }
     }
