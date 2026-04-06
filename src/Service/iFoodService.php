@@ -1090,6 +1090,32 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    /* GET /merchant/v1.0/merchants/{merchantId}
+     * Retorna detalhe completo da loja incluindo o campo "status" (AVAILABLE, UNAVAILABLE, etc.)
+     * que o endpoint de listagem nao inclui.
+     */
+    private function getMerchantDetailRaw(string $merchantId, string $token): array
+    {
+        try {
+            $response   = $this->httpClient->request('GET',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId),
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $statusCode = $response->getStatusCode();
+            $content    = (string) $response->getContent(false);
+            $decoded    = json_decode($content, true);
+            if (!is_array($decoded)) $decoded = [];
+
+            if ($statusCode < 200 || $statusCode >= 300) {
+                return ['errno' => $statusCode, 'errmsg' => 'Falha ao obter detalhe da loja', 'data' => null];
+            }
+
+            return ['errno' => 0, 'errmsg' => 'ok', 'data' => $decoded];
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood getMerchantDetailRaw failed', ['error' => $e->getMessage()]);
+            return ['errno' => 1, 'errmsg' => $e->getMessage(), 'data' => null];
+        }
+    }
+
     public function listMerchants(): array
     {
         return $this->listMerchantsRaw();
@@ -2223,9 +2249,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if ($matchedStore) {
+            /* O endpoint de listagem nao retorna "status". Busca o detalhe da loja
+             * para obter o campo status real (AVAILABLE, UNAVAILABLE, etc.).
+             */
+            $detailStatus = strtoupper($this->normalizeString($matchedStore['status'] ?? null));
+            if ($detailStatus === '' && $merchantId !== '') {
+                $token  = $this->getAccessToken();
+                $detail = $token ? $this->getMerchantDetailRaw($merchantId, $token) : ['errno' => 1, 'data' => null];
+                if ((int) ($detail['errno'] ?? 1) === 0 && is_array($detail['data'])) {
+                    $detailStatus = strtoupper($this->normalizeString(
+                        $detail['data']['status'] ?? $detail['data']['merchantStatus'] ?? null
+                    ));
+                }
+            }
+
             $this->persistProviderIntegrationState($provider, [
                 'merchant_name' => $this->normalizeString($matchedStore['name'] ?? null),
-                'merchant_status' => strtoupper($this->normalizeString($matchedStore['status'] ?? null)),
+                'merchant_status' => $detailStatus,
                 'remote_connected' => '1',
                 'last_sync_at' => date('Y-m-d H:i:s'),
                 'last_error_code' => '',
