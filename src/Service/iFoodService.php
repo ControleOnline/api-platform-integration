@@ -3556,6 +3556,182 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    // RETORNA HORARIOS DE FUNCIONAMENTO DA LOJA NO IFOOD
+    // GET /merchant/v1.0/merchants/{merchantId}/opening-hours
+    public function getOpeningHours(People $provider): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'GET',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/opening-hours',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]
+            );
+
+            $httpStatus = $response->getStatusCode();
+            if ($httpStatus >= 200 && $httpStatus < 300) {
+                $decoded = json_decode($response->getContent(false), true);
+                return ['errno' => 0, 'errmsg' => '', 'data' => is_array($decoded) ? $decoded : []];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood getOpeningHours falhou', [
+                'merchant_id' => $merchantId,
+                'status'      => $httpStatus,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $httpStatus, 'errmsg' => 'Erro ao buscar horarios no iFood. Status: ' . $httpStatus];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood getOpeningHours excecao', [
+                'merchant_id' => $merchantId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao buscar horarios: ' . $e->getMessage()];
+        }
+    }
+
+    // ATUALIZA HORARIOS DE FUNCIONAMENTO DA LOJA NO IFOOD
+    // PUT /merchant/v1.0/merchants/{merchantId}/opening-hours
+    public function updateOpeningHours(People $provider, array $shifts): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        if (empty($shifts)) {
+            return ['errno' => 10003, 'errmsg' => 'shifts nao pode ser vazio.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'PUT',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/opening-hours',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type'  => 'application/json',
+                    ],
+                    'json' => $shifts,
+                ]
+            );
+
+            $httpStatus = $response->getStatusCode();
+            if ($httpStatus >= 200 && $httpStatus < 300) {
+                return ['errno' => 0, 'errmsg' => '', 'data' => ['updated' => true]];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood updateOpeningHours falhou', [
+                'merchant_id' => $merchantId,
+                'status'      => $httpStatus,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $httpStatus, 'errmsg' => 'Erro ao atualizar horarios no iFood. Status: ' . $httpStatus];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood updateOpeningHours excecao', [
+                'merchant_id' => $merchantId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao atualizar horarios: ' . $e->getMessage()];
+        }
+    }
+
+    // ATUALIZA PRECO DE COMPLEMENTO NO CATALOGO IFOOD
+    // PATCH /catalog/v2.0/merchants/{merchantId}/options/price
+    public function updateOptionPrice(People $provider, string $optionId, float $price): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        $normalizedOptionId = $this->normalizeString($optionId);
+        if ($normalizedOptionId === '') {
+            return ['errno' => 10003, 'errmsg' => 'option_id nao informado.'];
+        }
+
+        $roundedPrice = round($price, 2);
+        if ($roundedPrice <= 0) {
+            return ['errno' => 10004, 'errmsg' => 'Preco deve ser maior que zero.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'PATCH',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/options/price',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type'  => 'application/json',
+                    ],
+                    'json' => [
+                        'optionId' => $normalizedOptionId,
+                        'price'    => [
+                            'value'         => $roundedPrice,
+                            'originalValue' => $roundedPrice,
+                        ],
+                    ],
+                ]
+            );
+
+            $httpStatus = $response->getStatusCode();
+            if ($httpStatus >= 200 && $httpStatus < 300) {
+                return ['errno' => 0, 'errmsg' => '', 'data' => ['option_id' => $normalizedOptionId, 'price' => $roundedPrice]];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood updateOptionPrice falhou', [
+                'merchant_id' => $merchantId,
+                'option_id'   => $normalizedOptionId,
+                'status'      => $httpStatus,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $httpStatus, 'errmsg' => 'Erro ao atualizar preco do complemento no iFood. Status: ' . $httpStatus];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood updateOptionPrice excecao', [
+                'merchant_id' => $merchantId,
+                'option_id'   => $normalizedOptionId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao atualizar preco do complemento: ' . $e->getMessage()];
+        }
+    }
+
     // ATUALIZA STATUS DO ITEM NO CATALOGO IFOOD
     // PATCH /catalog/v2.0/merchants/{merchantId}/items/status
     public function updateItemStatus(People $provider, string $itemId, string $status): array
@@ -3622,6 +3798,75 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
 
             return ['errno' => 1, 'errmsg' => 'Falha ao atualizar status: ' . $e->getMessage()];
+        }
+    }
+
+    // ATUALIZA STATUS DE COMPLEMENTO NO CATALOGO IFOOD
+    // PATCH /catalog/v2.0/merchants/{merchantId}/options/status
+    public function updateOptionStatus(People $provider, string $optionId, string $status): array
+    {
+        $this->init();
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
+        }
+
+        $state      = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.'];
+        }
+
+        $normalizedOptionId = $this->normalizeString($optionId);
+        if ($normalizedOptionId === '') {
+            return ['errno' => 10003, 'errmsg' => 'option_id nao informado.'];
+        }
+
+        $allowedStatuses  = ['AVAILABLE', 'UNAVAILABLE'];
+        $normalizedStatus = strtoupper($this->normalizeString($status));
+        if (!in_array($normalizedStatus, $allowedStatuses, true)) {
+            return ['errno' => 10005, 'errmsg' => 'Status invalido. Use AVAILABLE ou UNAVAILABLE.'];
+        }
+
+        try {
+            $response = $this->httpClient->request(
+                'PATCH',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/options/status',
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Content-Type'  => 'application/json',
+                    ],
+                    'json' => [
+                        'optionId' => $normalizedOptionId,
+                        'status'   => $normalizedStatus,
+                    ],
+                ]
+            );
+
+            $httpStatus = $response->getStatusCode();
+            if ($httpStatus >= 200 && $httpStatus < 300) {
+                return ['errno' => 0, 'errmsg' => '', 'data' => ['option_id' => $normalizedOptionId, 'status' => $normalizedStatus]];
+            }
+
+            $body = substr($response->getContent(false), 0, 500);
+            self::$logger->error('iFood updateOptionStatus falhou', [
+                'merchant_id' => $merchantId,
+                'option_id'   => $normalizedOptionId,
+                'status'      => $httpStatus,
+                'body'        => $body,
+            ]);
+
+            return ['errno' => $httpStatus, 'errmsg' => 'Erro ao atualizar status do complemento no iFood. Status HTTP: ' . $httpStatus];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood updateOptionStatus excecao', [
+                'merchant_id' => $merchantId,
+                'option_id'   => $normalizedOptionId,
+                'error'       => $e->getMessage(),
+            ]);
+
+            return ['errno' => 1, 'errmsg' => 'Falha ao atualizar status do complemento: ' . $e->getMessage()];
         }
     }
 }

@@ -1117,6 +1117,117 @@ class IntegrationController extends AbstractController
         return new JsonResponse(['action' => 'item_status_update', 'result' => $result]);
     }
 
+    #[Route('/marketplace/integrations/ifood/store/hours', name: 'marketplace_integrations_ifood_store_hours_get', methods: ['GET'])]
+    public function getStoreHours(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        try {
+            $result = $this->iFoodService->getOpeningHours($provider);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao buscar horarios no iFood.'];
+        }
+
+        return new JsonResponse(['action' => 'store_hours_get', 'result' => $result]);
+    }
+
+    #[Route('/marketplace/integrations/ifood/store/hours', name: 'marketplace_integrations_ifood_store_hours_put', methods: ['PUT'])]
+    public function updateStoreHours(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $shifts = $this->decodeArrayValue($payload['shifts'] ?? null);
+        if (empty($shifts)) {
+            return new JsonResponse(['error' => 'shifts obrigatorio e nao pode ser vazio'], Response::HTTP_BAD_REQUEST);
+        }
+
+        try {
+            $result = $this->iFoodService->updateOpeningHours($provider, $shifts);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao atualizar horarios no iFood.'];
+        }
+
+        return new JsonResponse(['action' => 'store_hours_update', 'result' => $result]);
+    }
+
+    #[Route('/marketplace/integrations/ifood/menu/option/price', name: 'marketplace_integrations_ifood_menu_option_price', methods: ['PATCH'])]
+    public function updateMenuOptionPrice(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $optionId = $this->normalizeString($payload['option_id'] ?? null);
+        $price    = isset($payload['price']) ? (float) $payload['price'] : 0.0;
+
+        if ($optionId === '') {
+            return new JsonResponse(['error' => 'option_id obrigatorio'], Response::HTTP_BAD_REQUEST);
+        }
+        if ($price <= 0) {
+            return new JsonResponse(['error' => 'price deve ser maior que zero'], Response::HTTP_BAD_REQUEST);
+        }
+
+        try {
+            $result = $this->iFoodService->updateOptionPrice($provider, $optionId, $price);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao atualizar preco do complemento no iFood.'];
+        }
+
+        return new JsonResponse(['action' => 'option_price_update', 'result' => $result]);
+    }
+
+    #[Route('/marketplace/integrations/ifood/menu/option/status', name: 'marketplace_integrations_ifood_menu_option_status', methods: ['PATCH'])]
+    public function updateMenuOptionStatus(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $optionId = $this->normalizeString($payload['option_id'] ?? null);
+        $status   = $this->normalizeString($payload['status'] ?? null);
+
+        if ($optionId === '') {
+            return new JsonResponse(['error' => 'option_id obrigatorio'], Response::HTTP_BAD_REQUEST);
+        }
+        if (!in_array(strtoupper($status), ['AVAILABLE', 'UNAVAILABLE'], true)) {
+            return new JsonResponse(['error' => 'status deve ser AVAILABLE ou UNAVAILABLE'], Response::HTTP_BAD_REQUEST);
+        }
+
+        try {
+            $result = $this->iFoodService->updateOptionStatus($provider, $optionId, $status);
+        } catch (\Throwable $e) {
+            $result = ['errno' => 1, 'errmsg' => 'Falha ao atualizar status do complemento no iFood.'];
+        }
+
+        return new JsonResponse(['action' => 'option_status_update', 'result' => $result]);
+    }
+
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/ready', name: 'marketplace_integrations_ifood_order_ready', methods: ['POST'])]
     public function readyOrderAction(string $orderId): JsonResponse
     {
