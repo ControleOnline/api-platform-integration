@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Service\AddressService;
+use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -1262,13 +1263,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         foreach ($allProducts as $prod) {
             $groupCategoryId   = $this->normalizeString($prod['category_id'] ?? null);
             $groupCategoryName = $this->normalizeString($prod['category_name'] ?? null);
+            $groupIfoodCode    = $this->normalizeString($prod['ifood_category_code'] ?? null);
             $groupKey          = $groupCategoryId !== '' ? $groupCategoryId : ($groupCategoryName !== '' ? $groupCategoryName : '__default__');
 
             if (!isset($groupedProducts[$groupKey])) {
                 $groupedProducts[$groupKey] = [
-                    'category_id'   => $groupCategoryId,
-                    'category_name' => $groupCategoryName !== '' ? $groupCategoryName : 'Produtos',
-                    'products'      => [],
+                    'category_id'        => $groupCategoryId,
+                    'category_name'      => $groupCategoryName !== '' ? $groupCategoryName : 'Produtos',
+                    'ifood_category_code' => $groupIfoodCode,
+                    'products'           => [],
                 ];
             }
 
@@ -1299,7 +1302,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $catalogId,
                 $group['category_name'],
                 $remoteCategoriesByName,
-                $sequence
+                $sequence,
+                (int) ($group['category_id'] ?: 0),
+                $group['ifood_category_code'] ?? ''
             );
 
             if ($resolvedCategoryId === null) {
@@ -1427,7 +1432,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 p.type,
                 pf.file_id AS cover_file_id,
                 c.id   AS category_id,
-                c.name AS category_name
+                c.name AS category_name,
+                (
+                    SELECT ed.data_value
+                    FROM extra_data ed
+                    INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+                    WHERE ef.context  = 'iFood'
+                      AND ef.field_name = 'code'
+                      AND LOWER(ed.entity_name) = 'category'
+                      AND ed.entity_id = c.id
+                    ORDER BY ed.id DESC
+                    LIMIT 1
+                ) AS ifood_category_code
             FROM product p
             LEFT JOIN product_category pc ON pc.id = (
                 SELECT MIN(pc2.id)
@@ -1563,14 +1579,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         string $catalogId,
         string $categoryName,
         array &$remoteCategoriesByName,
-        int $sequence = 0
+        int $sequence = 0,
+        int $localCategoryId = 0,
+        string $storedIfoodId = ''
     ): ?string {
         $token = $this->getAccessToken();
         if (!$token) {
             return null;
         }
 
-        $effectiveName = trim($categoryName) !== '' ? trim($categoryName) : 'Produtos';
+        $effectiveName  = trim($categoryName) !== '' ? trim($categoryName) : 'Produtos';
         $normalizedName = $this->normalizeText($effectiveName);
         $categoryBody   = [
             'name'     => $effectiveName,
@@ -1579,9 +1597,34 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'sequence' => max(0, $sequence),
         ];
 
-        // Categoria ja existe no iFood — atualiza via PATCH
+        // Prioridade 1: ID remoto ja armazenado localmente — atualiza via PATCH
+        if ($storedIfoodId !== '') {
+            try {
+                $this->httpClient->request('PATCH',
+                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($storedIfoodId),
+                    [
+                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                        'json'    => $categoryBody,
+                    ]
+                );
+            } catch (\Throwable $e) {
+                self::$logger->warning('iFood PATCH category failed', [
+                    'merchant_id'        => $merchantId,
+                    'catalog_id'         => $catalogId,
+                    'ifood_category_id'  => $storedIfoodId,
+                    'local_category_id'  => $localCategoryId,
+                    'category_name'      => $effectiveName,
+                    'error'              => $e->getMessage(),
+                ]);
+            }
+            return $storedIfoodId;
+        }
+
+        // Prioridade 2: Sem ID armazenado — busca por nome para evitar duplicatas
         if ($normalizedName !== '' && isset($remoteCategoriesByName[$normalizedName])) {
             $existingId = $remoteCategoriesByName[$normalizedName];
+            // Persiste vinculo local → remoto para proximas publicacoes
+            $this->persistIfoodCategoryCode($localCategoryId, $existingId);
             try {
                 $this->httpClient->request('PATCH',
                     self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($existingId),
@@ -1591,18 +1634,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ]
                 );
             } catch (\Throwable $e) {
-                self::$logger->warning('iFood PATCH category failed', [
-                    'merchant_id'   => $merchantId,
-                    'catalog_id'    => $catalogId,
-                    'category_id'   => $existingId,
-                    'category_name' => $effectiveName,
-                    'error'         => $e->getMessage(),
+                self::$logger->warning('iFood PATCH category (por nome) failed', [
+                    'merchant_id'        => $merchantId,
+                    'catalog_id'         => $catalogId,
+                    'ifood_category_id'  => $existingId,
+                    'local_category_id'  => $localCategoryId,
+                    'category_name'      => $effectiveName,
+                    'error'              => $e->getMessage(),
                 ]);
             }
             return $existingId;
         }
 
-        // Categoria nova — cria via POST
+        // Prioridade 3: Categoria nova — cria via POST e armazena vinculo
         try {
             $response = $this->httpClient->request('POST',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
@@ -1616,18 +1660,40 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $id   = $this->normalizeString($data['id'] ?? null);
             if ($id !== '') {
                 $remoteCategoriesByName[$normalizedName] = $id;
+                $this->persistIfoodCategoryCode($localCategoryId, $id);
                 return $id;
             }
         } catch (\Throwable $e) {
             self::$logger->error('iFood create category failed', [
-                'merchant_id'   => $merchantId,
-                'catalog_id'    => $catalogId,
-                'category_name' => $effectiveName,
-                'error'         => $e->getMessage(),
+                'merchant_id'       => $merchantId,
+                'catalog_id'        => $catalogId,
+                'local_category_id' => $localCategoryId,
+                'category_name'     => $effectiveName,
+                'error'             => $e->getMessage(),
             ]);
         }
 
         return null;
+    }
+
+    private function persistIfoodCategoryCode(int $localCategoryId, string $ifoodCategoryId): void
+    {
+        if ($localCategoryId <= 0 || $ifoodCategoryId === '') {
+            return;
+        }
+        try {
+            $category = $this->entityManager->getRepository(Category::class)->find($localCategoryId);
+            if ($category instanceof Category) {
+                $this->discoveryFoodCode($category, $ifoodCategoryId);
+                $this->entityManager->flush();
+            }
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood persistIfoodCategoryCode failed', [
+                'local_category_id'  => $localCategoryId,
+                'ifood_category_id'  => $ifoodCategoryId,
+                'error'              => $e->getMessage(),
+            ]);
+        }
     }
 
     private function generateUuidV4(): string
