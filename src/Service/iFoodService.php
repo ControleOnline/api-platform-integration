@@ -1551,6 +1551,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    private function normalizeText(string $text): string
+    {
+        $lower = mb_strtolower(trim($text));
+        $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $lower);
+        return is_string($ascii) ? trim($ascii) : $lower;
+    }
+
     private function resolveIfoodCatalogCategoryId(
         string $merchantId,
         string $catalogId,
@@ -1565,22 +1572,43 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $effectiveName = trim($categoryName) !== '' ? trim($categoryName) : 'Produtos';
         $normalizedName = $this->normalizeText($effectiveName);
+        $categoryBody   = [
+            'name'     => $effectiveName,
+            'status'   => 'AVAILABLE',
+            'template' => 'DEFAULT',
+            'sequence' => max(0, $sequence),
+        ];
 
+        // Categoria ja existe no iFood — atualiza via PATCH
         if ($normalizedName !== '' && isset($remoteCategoriesByName[$normalizedName])) {
-            return $remoteCategoriesByName[$normalizedName];
+            $existingId = $remoteCategoriesByName[$normalizedName];
+            try {
+                $this->httpClient->request('PATCH',
+                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($existingId),
+                    [
+                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                        'json'    => $categoryBody,
+                    ]
+                );
+            } catch (\Throwable $e) {
+                self::$logger->warning('iFood PATCH category failed', [
+                    'merchant_id'   => $merchantId,
+                    'catalog_id'    => $catalogId,
+                    'category_id'   => $existingId,
+                    'category_name' => $effectiveName,
+                    'error'         => $e->getMessage(),
+                ]);
+            }
+            return $existingId;
         }
 
+        // Categoria nova — cria via POST
         try {
             $response = $this->httpClient->request('POST',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => [
-                        'name'     => $effectiveName,
-                        'status'   => 'AVAILABLE',
-                        'template' => 'DEFAULT',
-                        'sequence'  => max(0, $sequence),
-                    ],
+                    'json'    => $categoryBody,
                 ]
             );
 
@@ -1592,10 +1620,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
         } catch (\Throwable $e) {
             self::$logger->error('iFood create category failed', [
-                'merchant_id' => $merchantId,
-                'catalog_id' => $catalogId,
+                'merchant_id'   => $merchantId,
+                'catalog_id'    => $catalogId,
                 'category_name' => $effectiveName,
-                'error' => $e->getMessage(),
+                'error'         => $e->getMessage(),
             ]);
         }
 
