@@ -55,13 +55,30 @@ class iFoodController extends AbstractController
         $events = array_is_list($payload) ? $payload : [$payload];
         $queued = 0;
 
+        /* Coleta merchantIds dos eventos KEEPALIVE para sinalizar presenca.
+         * Modo por aplicativo: KEEPALIVE sem merchantIds → 202 com corpo ignorado.
+         * Modo por merchant:  KEEPALIVE com merchantIds → 202 com {"merchantIds":[...]}
+         *                     contendo apenas os merchants que devem ficar online.
+         */
+        $keepaliveMerchantIds = [];
+        $hasKeepalive = false;
+
         foreach ($events as $event) {
             if (!is_array($event)) {
                 continue;
             }
 
             $eventType = strtoupper(trim((string) ($event['fullCode'] ?? $event['code'] ?? '')));
+
             if ($eventType === 'KEEPALIVE') {
+                $hasKeepalive = true;
+                if (!empty($event['merchantIds']) && is_array($event['merchantIds'])) {
+                    foreach ($event['merchantIds'] as $mid) {
+                        if (is_string($mid) && $mid !== '') {
+                            $keepaliveMerchantIds[$mid] = true;
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -94,6 +111,17 @@ class iFoodController extends AbstractController
             );
 
             $queued++;
+        }
+
+        /* Resposta de presenca para KEEPALIVE.
+         * Modo por merchant: devolve os merchantIds recebidos (todos marcados como online).
+         * Modo por aplicativo: 202 com corpo padrao (iFood ignora o corpo).
+         */
+        if ($hasKeepalive && !empty($keepaliveMerchantIds)) {
+            return new JsonResponse(
+                ['merchantIds' => array_keys($keepaliveMerchantIds)],
+                Response::HTTP_ACCEPTED
+            );
         }
 
         return new JsonResponse([
