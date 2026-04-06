@@ -3210,11 +3210,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
         }
 
+        $isMerchantDelivery = $this->resolveDispatchFlowForOrder($order) === 'merchant';
+        $stateOnSuccess = $isMerchantDelivery ? 'dispatching' : 'ready';
+
         return $this->persistOrderActionResult(
             $order,
             'ready',
             $this->dispatchOrderByDeliveryMode($order, $orderId),
-            'ready'
+            $stateOnSuccess
         );
     }
 
