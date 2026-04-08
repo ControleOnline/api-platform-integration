@@ -11,6 +11,7 @@ use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Event\EntityChangedEvent;
+use DateTime;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
@@ -5676,6 +5677,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'local_order_id' => $order->getId(),
             ]));
 
+            $this->addPayments($order, $data);
+
             $this->confirmOrder($order, $orderId, $provider);
             $this->printOrder($order);
 
@@ -5757,6 +5760,101 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'errno' => $errorCode,
                 'errmsg' => $e->getMessage(),
                 'data' => [],
+            ]);
+        }
+    }
+
+    /**
+     * Cria invoices para o pedido 99Food seguindo o mesmo padrão do iFood:
+     * 1. Invoice de recebimento (valor pago pelo cliente)
+     * 2. Invoice de taxa da plataforma (diferença entre valor do cliente e repasse ao restaurante)
+     * 3. Invoice de taxa de entrega (apenas quando a 99 plataforma realiza a entrega)
+     *
+     * Qualquer falha aqui é logada mas não reverte o pedido já persistido.
+     */
+    private function addPayments(Order $order, array $data): void
+    {
+        try {
+            $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+            $price = is_array($info['price'] ?? null)
+                ? $info['price']
+                : (is_array($data['price'] ?? null) ? $data['price'] : []);
+            $otherFees = is_array($price['others_fees'] ?? null) ? $price['others_fees'] : [];
+
+            $deliveryType = $this->normalizeIncomingFood99Value($info['delivery_type'] ?? $data['delivery_type'] ?? null);
+            $isPlatformDelivery = $deliveryType === '1';
+
+            $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
+            $deliveryFee = $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? $price['delivery_price'] ?? null);
+            $serviceFee = $this->normalizeFood99Money($otherFees['service_price'] ?? null);
+            $smallOrderFee = $this->normalizeFood99Money($otherFees['small_order_price'] ?? null);
+            $tipTotal = $this->normalizeFood99Money($otherFees['total_tip_money'] ?? null);
+            $mealTopUpFee = $this->normalizeFood99Money($otherFees['meal_top_up_price'] ?? null);
+            $subtotalBeforeDiscounts = round($itemsTotal + $deliveryFee + $serviceFee + $smallOrderFee + $tipTotal + $mealTopUpFee, 2);
+
+            $explicitCustomerTotal = $this->normalizeFood99Money(
+                $price['customer_need_paying_money'] ?? $price['real_pay_price'] ?? $price['real_price'] ?? null
+            );
+            $customerTotal = $explicitCustomerTotal > 0 ? $explicitCustomerTotal : $subtotalBeforeDiscounts;
+            $shopPaidMoney = $this->normalizeFood99Money($price['shop_paid_money'] ?? null);
+
+            $wallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+            $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+
+            self::$logger->info('Food99 addPayments', [
+                'order_id' => $order->getId(),
+                'customer_total' => $customerTotal,
+                'shop_paid_money' => $shopPaidMoney,
+                'delivery_fee' => $deliveryFee,
+                'is_platform_delivery' => $isPlatformDelivery,
+                'is_paid_online' => $isPlatformDelivery,
+            ]);
+
+            // 1. Invoice de recebimento: valor pago pelo cliente ao restaurante
+            if ($customerTotal > 0) {
+                $this->invoiceService->createInvoiceByOrder(
+                    $order,
+                    $customerTotal,
+                    $isPlatformDelivery ? $paidStatus : null,
+                    new DateTime(),
+                    null,
+                    $wallet
+                );
+            }
+
+            // 2. Invoice de taxa da plataforma: diferença entre o que o cliente pagou e o repasse ao restaurante
+            if ($shopPaidMoney > 0 && $customerTotal > $shopPaidMoney) {
+                $platformFee = round($customerTotal - $shopPaidMoney, 2);
+                $this->invoiceService->createInvoice(
+                    $order,
+                    $order->getProvider(),
+                    self::$foodPeople,
+                    $platformFee,
+                    $paidStatus,
+                    new DateTime(),
+                    $wallet,
+                    $wallet
+                );
+            }
+
+            // 3. Invoice de taxa de entrega: cobrada pela 99Food quando ela realiza a entrega
+            if ($isPlatformDelivery && $deliveryFee > 0) {
+                $this->invoiceService->createInvoice(
+                    $order,
+                    $order->getProvider(),
+                    self::$foodPeople,
+                    $deliveryFee,
+                    $paidStatus,
+                    new DateTime(),
+                    $wallet,
+                    $wallet
+                );
+            }
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 addPayments failed — order invoices not created', [
+                'order_id' => $order->getId(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
         }
     }
