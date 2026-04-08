@@ -5229,6 +5229,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             if (isset($failedSourceUrls[$sourceUrl])) {
+                unset($payload['items'][$index]['head_img']);
                 $stats['failed']++;
                 continue;
             }
@@ -5264,8 +5265,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $failedSourceUrls[$sourceUrl] = true;
             $stats['failed']++;
+            unset($payload['items'][$index]['head_img']);
 
-            self::$logger->warning('Food99 image upload fallback: keeping source URL in menu payload', [
+            self::$logger->warning('Food99 image upload falhou; head_img removido do payload para evitar URL inacessivel', [
                 'provider_id' => $provider->getId(),
                 'app_item_id' => $appItemId,
                 'image_url' => $sourceUrl,
@@ -5275,6 +5277,38 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return $stats;
+    }
+
+    /**
+     * Converte bytes brutos de imagem para recurso GD.
+     * Tenta GD nativo primeiro; para formatos não suportados (SVG, AVIF, etc.)
+     * tenta Imagick se disponível, convertendo internamente para JPEG antes.
+     */
+    private function tryRawToGdImage(string $raw): ?\GdImage
+    {
+        $image = @imagecreatefromstring($raw);
+        if ($image instanceof \GdImage) {
+            return $image;
+        }
+
+        if (!class_exists('Imagick')) {
+            return null;
+        }
+
+        try {
+            $imagick = new \Imagick();
+            $imagick->setResolution(150, 150);
+            $imagick->readImageBlob($raw);
+            $imagick->setImageBackgroundColor(new \ImagickPixel('white'));
+            $imagick = $imagick->flattenImages();
+            $imagick->setImageFormat('jpeg');
+            $jpeg = $imagick->getImageBlob();
+            $imagick->clear();
+            $result = @imagecreatefromstring($jpeg);
+            return ($result instanceof \GdImage) ? $result : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     private function normalizeImageForFood99Upload(string $sourceUrl, int $providerId, string $appItemId): ?string
@@ -5294,7 +5328,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 return null;
             }
 
-            $image = @imagecreatefromstring($raw);
+            $image = $this->tryRawToGdImage($raw);
             if (!$image) {
                 return null;
             }
