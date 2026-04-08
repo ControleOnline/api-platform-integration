@@ -7,6 +7,7 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
+use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Event\EntityChangedEvent;
@@ -5726,6 +5727,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
     }
 
+    private function resolveModifierGroupName(string $appContentId, string $contentName): string
+    {
+        if ($contentName !== '') {
+            return $contentName;
+        }
+
+        // 99Food retorna o grupo como MG_144; o número corresponde ao product_group.id interno
+        if (preg_match('/^mg_(\d+)$/i', $appContentId, $m)) {
+            $groupId = (int) $m[1];
+            /** @var ProductGroup|null $productGroup */
+            $productGroup = $this->entityManager->getRepository(ProductGroup::class)->find($groupId);
+            if ($productGroup !== null) {
+                return $productGroup->getProductGroup();
+            }
+        }
+
+        return $appContentId;
+    }
+
     private function addProducts(
         Order $order,
         array $items,
@@ -5748,7 +5768,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     $productGroup = $this->productGroupService->discoveryProductGroup(
                         $parentProduct,
                         $item['app_content_id'],
-                        $item['content_name'] ?: $item['app_content_id']
+                        $this->resolveModifierGroupName($item['app_content_id'], $item['content_name'] ?? '')
                     );
                 }
 
@@ -5817,7 +5837,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $group = $this->productGroupService->discoveryProductGroup(
                 $parentProduct,
                 $item['app_content_id'],
-                $item['content_name'] ?: $item['app_content_id']
+                $this->resolveModifierGroupName($item['app_content_id'], $item['content_name'] ?? '')
             );
 
             $exists = $this->entityManager
