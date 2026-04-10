@@ -3004,6 +3004,45 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    private function extractPendingOrderAction(Order $order): array
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (!is_object($otherInformations) || !isset($otherInformations->order_action)) {
+            return [];
+        }
+
+        $action = $otherInformations->order_action;
+        if (is_object($action)) {
+            $action = (array) $action;
+        }
+
+        if (!is_array($action)) {
+            return [];
+        }
+
+        $payload = $action['payload'] ?? [];
+        if (is_object($payload)) {
+            $payload = (array) $payload;
+        }
+
+        return [
+            'name' => strtolower($this->normalizeString($action['name'] ?? null)),
+            'requested_at' => $this->normalizeString($action['requested_at'] ?? null),
+            'remote_sync' => filter_var($action['remote_sync'] ?? false, FILTER_VALIDATE_BOOL),
+            'payload' => is_array($payload) ? $payload : [],
+        ];
+    }
+
+    private function hasPendingOrderActionChanged(Order $oldOrder, Order $newOrder): bool
+    {
+        $oldAction = $this->extractPendingOrderAction($oldOrder);
+        $newAction = $this->extractPendingOrderAction($newOrder);
+
+        return ($oldAction['name'] ?? '') !== ($newAction['name'] ?? '')
+            || ($oldAction['requested_at'] ?? '') !== ($newAction['requested_at'] ?? '')
+            || (bool) ($oldAction['remote_sync'] ?? false) !== (bool) ($newAction['remote_sync'] ?? false);
+    }
+
     // HANDLER DE MUDANÇA DE ENTIDADE
     // Quando um pedido do iFood muda de status, dispara sincronização com o iFood
     public function onEntityChanged(EntityChangedEvent $event)
@@ -3018,7 +3057,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if ($entity->getApp() !== self::$app)
             return;
 
-        if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
+        $actionChanged = $this->hasPendingOrderActionChanged($oldEntity, $entity);
+
+        if ($actionChanged)
             $this->changeStatus($entity);
     }
 
@@ -3616,17 +3657,26 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Envia para iFood o novo status do pedido (pronto, entregue, cancelado)
     public function changeStatus(Order $order)
     {
-        $orderId = $this->resolveRemoteOrderId($order) ?? '';
-        if ($orderId === '') {
+        $action = $this->extractPendingOrderAction($order);
+        if (($action['remote_sync'] ?? false) !== true) {
             return null;
         }
 
-        $realStatus = strtolower(trim((string) $order->getStatus()->getRealStatus()));
+        $payload = is_array($action['payload'] ?? null) ? $action['payload'] : [];
+        $reason = $this->normalizeString($payload['reason'] ?? null);
+        $cancellationCode = $this->normalizeString(
+            $payload['cancellation_code'] ?? ($payload['reason_id'] ?? null)
+        );
 
-        match ($realStatus) {
-            'cancelled', 'canceled' => $this->cancelByShop($orderId),
-            'ready' => $this->dispatchOrderByDeliveryMode($order, $orderId),
-            'delivered', 'closed' => null,
+        match ($action['name'] ?? '') {
+            'cancel' => $this->performCancelAction(
+                $order,
+                $reason !== '' ? $reason : null,
+                $cancellationCode !== '' ? $cancellationCode : null
+            ),
+            'ready' => $this->performReadyAction($order),
+            'delivered' => $this->performDeliveredAction($order),
+            'confirm' => $this->performConfirmAction($order),
             default => null,
         };
 

@@ -2,240 +2,178 @@
 
 namespace ControleOnline\Service;
 
+use DateTimeImmutable;
 use ControleOnline\Entity\Order;
-use ControleOnline\Service\Food99Service;
-use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
 
 class OrderActionService
 {
+    private const ORDER_ACTION_KEY = 'order_action';
+
     public function __construct(
         private EntityManagerInterface $entityManager,
-        private Food99Service $food99Service,
-        private iFoodService $iFoodService,
         private StatusService $statusService,
     ) {}
 
-    private function plataforma(Order $order): string
+    private function normalizeString(mixed $value): string
     {
-        return strtolower(trim((string) ($order->getApp() ?? '')));
+        if ($value === null) {
+            return '';
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s.u');
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (!is_scalar($value)) {
+            return '';
+        }
+
+        return trim((string) $value);
     }
 
-    private function hasIntegrationSignal(array $state, array $keys): bool
+    private function sanitizeActionPayload(array $payload): array
     {
-        foreach ($keys as $key) {
-            $value = $state[$key] ?? null;
-            if (is_scalar($value) && trim((string) $value) !== '') {
-                return true;
+        $sanitized = [];
+
+        foreach ($payload as $key => $value) {
+            $normalizedKey = $this->normalizeString($key);
+            if ($normalizedKey === '') {
+                continue;
             }
+
+            if (is_bool($value)) {
+                $sanitized[$normalizedKey] = $value;
+                continue;
+            }
+
+            $normalizedValue = $this->normalizeString($value);
+            if ($normalizedValue === '') {
+                continue;
+            }
+
+            $sanitized[$normalizedKey] = $normalizedValue;
         }
 
-        return false;
+        return $sanitized;
     }
 
-    private function ehFood99(Order $order): bool
+    private function persistOrderAction(Order $order, string $action, array $payload = [], bool $remoteSync = true): void
     {
-        if (!in_array($this->plataforma($order), ['food99', '99food'], true)) {
-            return false;
+        $otherInformations = $order->getOtherInformations(true);
+        if (!is_object($otherInformations)) {
+            $otherInformations = (object) [];
         }
 
-        return $this->hasIntegrationSignal(
-            $this->food99Service->getStoredOrderIntegrationState($order),
-            ['food99_id', 'food99_code', 'remote_order_state', 'last_event_type', 'pickup_code', 'locator']
-        );
+        $otherInformations->{self::ORDER_ACTION_KEY} = [
+            'name' => $action,
+            'remote_sync' => $remoteSync,
+            'requested_at' => (new DateTimeImmutable())->format('Y-m-d H:i:s.u'),
+            'payload' => $this->sanitizeActionPayload($payload),
+        ];
+
+        $order->setOtherInformations($otherInformations);
     }
 
-    private function ehIfood(Order $order): bool
+    private function isTerminalOrder(Order $order): bool
     {
-        if ($this->plataforma($order) !== 'ifood') {
-            return false;
-        }
+        $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
 
-        return $this->hasIntegrationSignal(
-            $this->iFoodService->getStoredOrderIntegrationState($order),
-            ['ifood_id', 'ifood_code', 'merchant_id', 'remote_order_state', 'last_event_type', 'webhook_event_id', 'last_integration_id']
-        );
+        return in_array($realStatus, ['canceled', 'cancelled', 'closed'], true);
+    }
+
+    private function buildTerminalOrderResponse(): array
+    {
+        return [
+            'errno' => 10001,
+            'errmsg' => 'Pedido em estado final nao pode mais ser alterado.',
+        ];
     }
 
     public function getCapabilities(Order $order): array
     {
-        $plataforma = $this->plataforma($order);
         $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
-        $statusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
-        $terminal   = in_array($realStatus, ['canceled', 'cancelled', 'closed'], true);
-        $isPendingPreparationFlow = $realStatus === 'pending'
-            && in_array($statusName, ['ready', 'way'], true);
+        $terminal = in_array($realStatus, ['canceled', 'cancelled', 'closed'], true);
 
-        $base = [
-            'can_cancel'   => !$terminal,
-            'can_ready'    => !$terminal && !$isPendingPreparationFlow,
-            'can_delivered'=> !$terminal,
-            'requires_cancel_reasons' => false,
-            'is_terminal'  => $terminal,
-            'platform'     => $plataforma ?: 'manual',
+        return [
+            'can_cancel' => !$terminal,
+            'can_ready' => !$terminal,
+            'can_delivered' => !$terminal,
+            'is_terminal' => $terminal,
         ];
-
-        if ($this->ehFood99($order)) {
-            $estadoFood99 = $this->food99Service->getStoredOrderIntegrationState($order);
-            $caps = $estadoFood99['capabilities'] ?? [];
-
-            return array_merge($base, [
-                'can_cancel'              => $caps['can_cancel'] ?? $base['can_cancel'],
-                'can_ready'               => $caps['can_ready'] ?? $base['can_ready'],
-                'can_delivered'           => $caps['can_delivered'] ?? $base['can_delivered'],
-                'requires_cancel_reasons' => true,
-                'is_terminal'             => $caps['is_terminal'] ?? $terminal,
-                'requires_delivery_locator' => $caps['requires_delivery_locator'] ?? false,
-                'delivery_locator_length'   => $caps['delivery_locator_length'] ?? 8,
-                'delivery_code_length'      => $caps['delivery_code_length'] ?? 4,
-            ]);
-        }
-
-        if ($this->ehIfood($order)) {
-            $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
-            $remoteOrderState = strtolower(trim((string) ($storedState['remote_order_state'] ?? '')));
-            $remoteOrderState = str_replace(['.', '-', ' '], '_', $remoteOrderState);
-            $isTerminalRemoteState = in_array($remoteOrderState, ['concluded', 'cancelled', 'canceled'], true);
-            $isTerminal = $terminal || $isTerminalRemoteState;
-
-            $canCancelStates = [
-                '',
-                'new',
-                'order_created',
-                'placed',
-                'confirmed',
-                'accepted',
-                'preparing',
-                'started',
-                'ready',
-                'ready_to_pickup',
-                'delivery_drop_code_requested',
-                'delivery_drop_code_validating',
-                'dispatching',
-                'dispatched',
-                'order_dispatched',
-                'order_in_transit',
-            ];
-            $canReadyStates = [
-                '',
-                'new',
-                'order_created',
-                'placed',
-                'confirmed',
-                'accepted',
-                'preparing',
-                'started',
-                'ready',
-                'ready_to_pickup',
-                'delivery_drop_code_requested',
-                'delivery_drop_code_validating',
-            ];
-            $canConfirmStates = ['', 'new', 'order_created', 'placed'];
-            $dispatchFlow = strtolower(trim((string) ($storedState['delivered_by'] ?? '')));
-            $deliveryMode = strtolower(trim((string) ($storedState['delivery_mode'] ?? '')));
-            $handoverConfirmationUrl = trim((string) ($storedState['handover_confirmation_url'] ?? ''));
-            $handoverPageUrl = trim((string) ($storedState['handover_page_url'] ?? ''));
-            $locator = trim((string) ($storedState['locator'] ?? ''));
-
-            if ($dispatchFlow === '') {
-                if (in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true)) {
-                    $dispatchFlow = 'merchant';
-                } elseif (in_array($deliveryMode, ['ifood', 'platform', 'marketplace'], true)) {
-                    $dispatchFlow = 'ifood';
-                } elseif ($handoverConfirmationUrl !== '' || $handoverPageUrl !== '' || $locator !== '') {
-                    $dispatchFlow = 'merchant';
-                }
-            }
-
-            $isStoreDeliveryFlow = $dispatchFlow === 'merchant';
-            $canOpenHandoverFlow = !$isTerminal
-                && in_array($remoteOrderState, [
-                    'dispatching',
-                    'dispatched',
-                    'order_dispatched',
-                    'order_in_transit',
-                ], true)
-                && (
-                    $isStoreDeliveryFlow
-                    || $handoverConfirmationUrl !== ''
-                    || $handoverPageUrl !== ''
-                );
-
-            return array_merge($base, [
-                'can_confirm'             => !$isTerminal && in_array($remoteOrderState, $canConfirmStates, true),
-                'can_cancel'              => !$isTerminal && in_array($remoteOrderState, $canCancelStates, true),
-                'can_ready'               => !$isTerminal && in_array($remoteOrderState, $canReadyStates, true),
-                'can_delivered'           => $canOpenHandoverFlow,
-                'can_open_handover_flow'  => $canOpenHandoverFlow,
-                'requires_delivery_locator' => $canOpenHandoverFlow,
-                'delivery_locator_length' => 8,
-                'requires_cancel_reasons' => true,
-                'is_terminal'             => $isTerminal,
-                'remote_state'            => $remoteOrderState !== '' ? $remoteOrderState : null,
-                'delivery_flow'           => $dispatchFlow !== '' ? $dispatchFlow : null,
-            ]);
-        }
-
-        if (in_array($plataforma, ['whatsapp', 'instagram', 'messenger'], true)) {
-            return array_merge($base, [
-                'can_ready'     => false,
-                'can_delivered' => false,
-            ]);
-        }
-
-        return $base;
     }
 
     public function getCancelReasons(Order $order): array
     {
-        if ($this->ehFood99($order)) {
-            return $this->food99Service->getOrderCancelReasons($order);
-        }
-
-        if ($this->ehIfood($order)) {
-            $reasons = $this->iFoodService->getIfoodCancellationReasons($order);
-            return ['data' => ['reasons' => $reasons]];
-        }
-
         return ['data' => ['reasons' => []]];
     }
 
     public function confirm(Order $order): array
     {
-        if ($this->ehIfood($order)) {
-            return $this->iFoodService->performConfirmAction($order);
+        if ($this->isTerminalOrder($order)) {
+            return $this->buildTerminalOrderResponse();
         }
 
-        return ['errno' => 1, 'errmsg' => 'Confirmacao nao suportada para esta plataforma.'];
+        $this->persistOrderAction($order, 'confirm');
+
+        return $this->aplicarStatusLocal($order, 'open', 'preparing');
     }
 
     public function cancel(Order $order, ?int $reasonId = null, ?string $reason = null): array
     {
+        if ($this->isTerminalOrder($order)) {
+            return $this->buildTerminalOrderResponse();
+        }
+
+        $this->persistOrderAction($order, 'cancel', [
+            'reason_id' => $reasonId,
+            'reason' => $reason,
+        ]);
+
         return $this->aplicarStatusLocal($order, 'canceled', 'canceled');
     }
 
     public function ready(Order $order): array
     {
-        if ($this->ehFood99($order)) {
-            return $this->food99Service->performReadyAction($order);
+        if ($this->isTerminalOrder($order)) {
+            return $this->buildTerminalOrderResponse();
         }
 
-        if ($this->ehIfood($order)) {
-            return $this->iFoodService->performReadyAction($order);
-        }
+        $this->persistOrderAction($order, 'ready');
 
         return $this->aplicarStatusLocal($order, 'pending', 'ready');
     }
 
-    public function delivered(Order $order, ?string $deliveryCode = null, ?string $locator = null): array
+    public function delivered(
+        Order $order,
+        ?string $deliveryCode = null,
+        ?string $locator = null,
+        bool $deferStatusUpdate = false
+    ): array
     {
-        if ($this->ehFood99($order)) {
-            return $this->food99Service->performDeliveredAction($order, $deliveryCode, $locator);
+        if ($this->isTerminalOrder($order)) {
+            return $this->buildTerminalOrderResponse();
         }
 
-        if ($this->ehIfood($order)) {
-            return $this->iFoodService->performDeliveredAction($order);
+        $shouldRemoteSync = $deferStatusUpdate
+            || $this->normalizeString($deliveryCode) !== ''
+            || $this->normalizeString($locator) !== '';
+
+        $this->persistOrderAction($order, 'delivered', [
+            'delivery_code' => $deliveryCode,
+            'locator' => $locator,
+        ], $shouldRemoteSync);
+
+        if ($shouldRemoteSync) {
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+
+            return ['errno' => 0, 'errmsg' => 'ok'];
         }
 
         return $this->aplicarStatusLocal($order, 'closed', 'closed');

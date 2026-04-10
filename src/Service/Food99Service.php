@@ -6153,6 +6153,45 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function extractPendingOrderAction(Order $order): array
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (!is_object($otherInformations) || !isset($otherInformations->order_action)) {
+            return [];
+        }
+
+        $action = $otherInformations->order_action;
+        if (is_object($action)) {
+            $action = (array) $action;
+        }
+
+        if (!is_array($action)) {
+            return [];
+        }
+
+        $payload = $action['payload'] ?? [];
+        if (is_object($payload)) {
+            $payload = (array) $payload;
+        }
+
+        return [
+            'name' => strtolower($this->normalizeIncomingFood99Value($action['name'] ?? null)),
+            'requested_at' => $this->normalizeIncomingFood99Value($action['requested_at'] ?? null),
+            'remote_sync' => filter_var($action['remote_sync'] ?? false, FILTER_VALIDATE_BOOL),
+            'payload' => is_array($payload) ? $payload : [],
+        ];
+    }
+
+    private function hasPendingOrderActionChanged(Order $oldOrder, Order $newOrder): bool
+    {
+        $oldAction = $this->extractPendingOrderAction($oldOrder);
+        $newAction = $this->extractPendingOrderAction($newOrder);
+
+        return ($oldAction['name'] ?? '') !== ($newAction['name'] ?? '')
+            || ($oldAction['requested_at'] ?? '') !== ($newAction['requested_at'] ?? '')
+            || (bool) ($oldAction['remote_sync'] ?? false) !== (bool) ($newAction['remote_sync'] ?? false);
+    }
+
     public function onEntityChanged(EntityChangedEvent $event)
     {
         $oldEntity = $event->getOldEntity();
@@ -6165,36 +6204,37 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if ($entity->getApp() !== self::APP_CONTEXT)
             return;
 
-        if ($oldEntity->getStatus()->getId() != $entity->getStatus()->getId())
+        $actionChanged = $this->hasPendingOrderActionChanged($oldEntity, $entity);
+
+        if ($actionChanged)
             $this->changeStatus($entity);
     }
 
     public function changeStatus(Order $order)
     {
-        $orderId = $this->findLocalFoodIdByEntity('Order', (int) $order->getId())
-            ?: $this->findLocalFoodCodeByEntity('Order', (int) $order->getId());
-
-        if (!$orderId) {
-            self::$logger->warning('Food99 changeStatus skipped because external order code was not found', [
-                'local_order_id' => $order->getId(),
-                'real_status' => $order->getStatus()->getRealStatus(),
-            ]);
+        $action = $this->extractPendingOrderAction($order);
+        if (($action['remote_sync'] ?? false) !== true) {
             return null;
         }
 
-        $realStatus = $order->getStatus()->getRealStatus();
+        $payload = is_array($action['payload'] ?? null) ? $action['payload'] : [];
+        $reasonId = $this->normalizeCancelReasonId($payload['reason_id'] ?? null);
+        $reason = $this->normalizeIncomingFood99Value($payload['reason'] ?? null);
+        $deliveryCode = $this->normalizeIncomingFood99Value($payload['delivery_code'] ?? null);
+        $locator = $this->normalizeIncomingFood99Value($payload['locator'] ?? null);
 
-        self::$logger->info('Food99 status sync requested', [
-            'local_order_id' => $order->getId(),
-            'order_id' => $orderId,
-            'real_status' => $realStatus,
-        ]);
-
-
-        match ($realStatus) {
-            'cancelled', 'canceled' => $this->cancelByShop($orderId, $order->getProvider()),
-            'ready'     => $this->readyOrder($orderId, $order->getProvider()),
-            'delivered' => $this->deliveredOrder($orderId, $order->getProvider()),
+        match ($action['name'] ?? '') {
+            'cancel' => $this->performCancelAction(
+                $order,
+                $reasonId,
+                $reason !== '' ? $reason : null
+            ),
+            'ready' => $this->performReadyAction($order),
+            'delivered' => $this->performDeliveredAction(
+                $order,
+                $deliveryCode !== '' ? $deliveryCode : null,
+                $locator !== '' ? $locator : null
+            ),
             default     => null,
         };
 
