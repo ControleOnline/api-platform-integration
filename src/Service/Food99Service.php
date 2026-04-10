@@ -2664,6 +2664,33 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ];
     }
 
+    private function extractOrderRemark(array $json): string
+    {
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+
+        return $this->normalizeMarketplaceFreeText(
+            $orderInfo['remark']
+                ?? $data['remark']
+                ?? null
+        );
+    }
+
+    private function extractItemRemark(array $item): string
+    {
+        return $this->normalizeMarketplaceFreeText(
+            $item['remark']
+                ?? $item['remarks']
+                ?? $item['comment']
+                ?? $item['comments']
+                ?? $item['observation']
+                ?? $item['observations']
+                ?? $item['note']
+                ?? $item['notes']
+                ?? null
+        );
+    }
+
     private function extractOrderDeliveryStateFields(array $json): array
     {
         return [
@@ -5719,6 +5746,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
             $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
+            $this->syncOrderComments($order, $this->extractOrderRemark($json));
             $this->entityManager->persist($order);
             $this->entityManager->flush();
 
@@ -6000,6 +6028,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     $parentProduct,
                     $orderParentProduct
                 );
+                $this->syncOrderProductComment($orderProduct, $this->extractItemRemark($item));
 
                 if (!empty($item['sub_item_list']) && is_array($item['sub_item_list'])) {
                     $this->addProducts(

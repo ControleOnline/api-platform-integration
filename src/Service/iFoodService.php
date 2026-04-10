@@ -437,21 +437,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $city !== '' ? $city : null
         );
 
-        $additionalInfo = $orderPayload['additionalInfo'] ?? null;
-        $remark = '';
-        if (is_array($additionalInfo)) {
-            $remark = $this->normalizeString($additionalInfo['notes'] ?? $additionalInfo['observation'] ?? null);
-        } else {
-            $remark = $this->normalizeString($additionalInfo);
-        }
-
-        if ($remark === '') {
-            $remark = $this->normalizeString($delivery['observations'] ?? null);
-        }
-
-        if ($remark === '') {
-            $remark = $this->normalizeString($orderPayload['orderComment'] ?? null);
-        }
+        $remark = $this->extractOrderRemarkFromPayload($orderPayload);
 
         $payments = is_array($orderPayload['payments'] ?? null) ? $orderPayload['payments'] : [];
         $methods = is_array($payments['methods'] ?? null) ? $payments['methods'] : [];
@@ -562,6 +548,43 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    private function extractOrderRemarkFromPayload(array $orderPayload): string
+    {
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $additionalInfo = $orderPayload['additionalInfo'] ?? null;
+        $remark = '';
+
+        if (is_array($additionalInfo)) {
+            $remark = $this->normalizeMarketplaceFreeText(
+                $additionalInfo['notes'] ?? $additionalInfo['observation'] ?? null
+            );
+        } else {
+            $remark = $this->normalizeMarketplaceFreeText($additionalInfo);
+        }
+
+        if ($remark === '') {
+            $remark = $this->normalizeMarketplaceFreeText($delivery['observations'] ?? null);
+        }
+
+        if ($remark === '') {
+            $remark = $this->normalizeMarketplaceFreeText($orderPayload['orderComment'] ?? null);
+        }
+
+        return $remark;
+    }
+
+    private function extractItemRemark(array $item): string
+    {
+        return $this->normalizeMarketplaceFreeText(
+            $item['observations']
+                ?? $item['observation']
+                ?? $item['notes']
+                ?? $item['note']
+                ?? $item['comment']
+                ?? null
+        );
+    }
+
     private function persistIncomingEventState(Order $order, Integration $integration, array $payload): void
     {
         $eventCode = $this->resolveEventCode($payload);
@@ -588,6 +611,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
         if ($orderPayload) {
             $statePayload = array_merge($statePayload, $this->extractOrderDetailSnapshot($orderPayload));
+            $this->syncOrderComments($order, $statePayload['remark'] ?? null);
         }
 
         $this->persistOrderIntegrationState($order, $statePayload);
@@ -2500,6 +2524,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $snapshotKey => $json,
                 'latest_event_type' => $snapshotKey,
             ]);
+            $this->syncOrderComments($order, $this->extractOrderRemarkFromPayload($orderDetails));
 
             $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
             if (is_array($orderDetails['delivery'] ?? null)) {
@@ -2760,6 +2785,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             if (isset($item['groupName']))
                 $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct ?: $product, $item['groupName']);
             $orderProduct = $this->orderProductService->addOrderProduct($order, $product, $item['quantity'], $item['unitPrice'], $productGroup, $parentProduct, $orderParentProduct);
+            $this->syncOrderProductComment($orderProduct, $this->extractItemRemark($item));
             if (isset($item['options']) && $item['options'])
                 $this->addProducts($order, $item['options'], $product, $orderProduct, 'component');
             if (isset($item['customizations']) && $item['customizations'])
@@ -4079,4 +4105,3 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 }
-

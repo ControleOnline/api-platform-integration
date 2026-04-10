@@ -135,6 +135,67 @@ class DefaultFoodService
         return $order;
     }
 
+    protected function normalizeMarketplaceFreeText(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_array($value) || is_object($value)) {
+            return '';
+        }
+
+        $text = trim((string) $value);
+        if ($text === '') {
+            return '';
+        }
+
+        $text = str_replace(["\r", "\n", "\t"], ' ', $text);
+        $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+
+        return trim($text);
+    }
+
+    protected function syncOrderComments(Order $order, mixed $comments): void
+    {
+        $normalizedComments = $this->normalizeMarketplaceFreeText($comments);
+        if ($normalizedComments === '') {
+            return;
+        }
+
+        $currentComments = $this->normalizeMarketplaceFreeText($order->getComments());
+        if ($currentComments === $normalizedComments) {
+            return;
+        }
+
+        $order->setComments($normalizedComments);
+        $this->entityManager->persist($order);
+    }
+
+    protected function syncOrderProductComment(?OrderProduct $orderProduct, mixed $comment): void
+    {
+        if (!$orderProduct instanceof OrderProduct) {
+            return;
+        }
+
+        $normalizedComment = $this->normalizeMarketplaceFreeText($comment);
+        if ($normalizedComment === '') {
+            return;
+        }
+
+        $currentComment = $this->normalizeMarketplaceFreeText($orderProduct->getComment());
+        if ($currentComment === $normalizedComment) {
+            return;
+        }
+
+        $orderProduct->setComment($normalizedComment);
+        $this->entityManager->persist($orderProduct);
+    }
+
     protected function addLog(string $type, $log)
     {
         echo $log;
