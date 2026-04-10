@@ -532,6 +532,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $this->persistOrderIntegrationState($order, [
                     'remote_order_state' => 'ready',
                 ]);
+                $this->applyLocalReadyStatus($order);
             } elseif ($action === 'delivered') {
                 $this->persistOrderIntegrationState($order, [
                     'remote_order_state' => 'delivered',
@@ -918,6 +919,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'confirm_errno' => isset($safeResponse['errno']) ? (string) $safeResponse['errno'] : '',
             'confirm_message' => $safeResponse['errmsg'] ?? '',
         ]);
+
+        if ($this->isSuccessfulErrno($safeResponse['errno'] ?? null)) {
+            $this->persistOrderIntegrationState($order, [
+                'remote_order_state' => 'preparing',
+            ]);
+            $this->applyLocalPreparingStatus($order);
+            $this->entityManager->flush();
+        }
 
         return $safeResponse;
     }
@@ -3005,6 +3014,82 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->entityManager->persist($order);
     }
 
+    private function isTerminalLocalOrderStatus(Order $order): bool
+    {
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+
+        return in_array($currentRealStatus, ['closed', 'canceled', 'cancelled'], true);
+    }
+
+    private function applyLocalStatus(Order $order, string $realStatus, string $statusName): void
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $currentStatusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+
+        if ($currentRealStatus === $normalizedRealStatus && $currentStatusName === $normalizedStatusName) {
+            return;
+        }
+
+        $status = $this->statusService->discoveryStatus($normalizedRealStatus, $normalizedStatusName, 'order');
+        if (!$status) {
+            return;
+        }
+
+        $order->setStatus($status);
+        $this->entityManager->persist($order);
+    }
+
+    private function applyLocalOpenStatus(Order $order): void
+    {
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, 'open', 'open');
+    }
+
+    private function applyLocalPreparingStatus(Order $order): void
+    {
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, 'open', 'preparing');
+    }
+
+    private function applyLocalReadyStatus(Order $order): void
+    {
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, 'pending', 'ready');
+    }
+
+    private function applyLocalWayStatus(Order $order): void
+    {
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, 'pending', 'way');
+    }
+
+    private function applyLocalLifecycleStatusFromRemoteState(Order $order, ?string $remoteState): void
+    {
+        $normalizedRemoteState = $this->normalizeRemoteOrderState($remoteState);
+
+        match ($normalizedRemoteState) {
+            'new' => $this->applyLocalOpenStatus($order),
+            'accepted', 'preparing' => $this->applyLocalPreparingStatus($order),
+            'ready', 'courier_to_store' => $this->applyLocalReadyStatus($order),
+            'picked_up', 'delivering', 'arriving' => $this->applyLocalWayStatus($order),
+            default => null,
+        };
+    }
+
     private function applyLocalCanceledStatus(Order $order): void
     {
         $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
@@ -3146,6 +3231,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $this->applyLocalCanceledStatus($order);
         } elseif ($isClosed) {
             $this->applyLocalClosedStatus($order);
+        } else {
+            $this->applyLocalLifecycleStatusFromRemoteState($order, $remoteState);
         }
 
         $this->entityManager->flush();
@@ -5628,7 +5715,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $client = $this->resolveOrderClient($receiveAddress, $orderId);
-            $status = $this->statusService->discoveryStatus('open', 'paid', 'order');
+            $status = $this->statusService->discoveryStatus('open', 'open', 'order');
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
             $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);

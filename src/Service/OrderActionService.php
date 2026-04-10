@@ -36,11 +36,14 @@ class OrderActionService
     {
         $plataforma = $this->plataforma($order);
         $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $statusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
         $terminal   = in_array($realStatus, ['canceled', 'cancelled', 'closed'], true);
+        $isPendingPreparationFlow = $realStatus === 'pending'
+            && in_array($statusName, ['ready', 'way'], true);
 
         $base = [
             'can_cancel'   => !$terminal,
-            'can_ready'    => !$terminal,
+            'can_ready'    => !$terminal && !$isPendingPreparationFlow,
             'can_delivered'=> !$terminal,
             'requires_cancel_reasons' => false,
             'is_terminal'  => $terminal,
@@ -205,7 +208,7 @@ class OrderActionService
             return $this->iFoodService->performReadyAction($order);
         }
 
-        return $this->aplicarStatusLocal($order, 'open', 'ready');
+        return $this->aplicarStatusLocal($order, 'pending', 'ready');
     }
 
     public function delivered(Order $order, ?string $deliveryCode = null, ?string $locator = null): array
