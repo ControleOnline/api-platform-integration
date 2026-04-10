@@ -157,7 +157,13 @@ class DefaultFoodService
         $text = str_replace(["\r", "\n", "\t"], ' ', $text);
         $text = preg_replace('/\s+/', ' ', $text) ?? $text;
 
-        return trim($text);
+        $text = trim($text);
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($text, 0, 255);
+        }
+
+        return substr($text, 0, 255);
     }
 
     protected function syncOrderComments(Order $order, mixed $comments): void

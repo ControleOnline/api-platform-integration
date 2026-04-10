@@ -3225,6 +3225,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $isClosed = !$isCanceled && ($incomingIsClosed || $this->isClosedRemoteOrderState($remoteState));
 
         $this->storeOrderRemoteSnapshot($order, $eventType !== '' ? $eventType : 'unknownEvent', $json);
+        $this->syncOrderComments($order, $this->extractOrderRemark($json));
 
         $integrationState = [
             'last_event_type' => $eventType !== '' ? $eventType : 'unknown',
