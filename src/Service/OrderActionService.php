@@ -97,7 +97,7 @@ class OrderActionService
 
     public function getCapabilities(Order $order): array
     {
-        $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $realStatus = $order->getStatus()->getRealStatus();
         $terminal = in_array($realStatus, ['canceled', 'cancelled', 'closed'], true);
 
         return [
