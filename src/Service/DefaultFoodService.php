@@ -51,13 +51,18 @@ class DefaultFoodService
 
     protected function printOrder(Order $order)
     {
-        $devices = $this->configService->getConfig($order->getProvider(), $order->getApp() . '-devices', true);
-
-        if ($devices)
-            $devices = $this->deviceService->findDevices($devices);
-
-        foreach ($devices as $device)
-            $this->orderPrintService->generatePrintData($order, $device, ['sound' => $order->getApp()]);
+        try {
+            $this->orderPrintService->printOrder($order, [], [
+                'sound' => $order->getApp()
+            ]);
+        } catch (\Throwable $exception) {
+            self::$logger?->warning('Marketplace order print skipped because spool generation failed', [
+                'local_order_id' => $order->getId(),
+                'provider_id' => $order->getProvider()?->getId(),
+                'app' => $order->getApp(),
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
 
