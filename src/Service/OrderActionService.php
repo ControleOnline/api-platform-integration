@@ -22,14 +22,40 @@ class OrderActionService
         return strtolower(trim((string) ($order->getApp() ?? '')));
     }
 
+    private function hasIntegrationSignal(array $state, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            $value = $state[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function ehFood99(Order $order): bool
     {
-        return in_array($this->plataforma($order), ['food99', '99food'], true);
+        if (!in_array($this->plataforma($order), ['food99', '99food'], true)) {
+            return false;
+        }
+
+        return $this->hasIntegrationSignal(
+            $this->food99Service->getStoredOrderIntegrationState($order),
+            ['food99_id', 'food99_code', 'remote_order_state', 'last_event_type', 'pickup_code', 'locator']
+        );
     }
 
     private function ehIfood(Order $order): bool
     {
-        return $this->plataforma($order) === 'ifood';
+        if ($this->plataforma($order) !== 'ifood') {
+            return false;
+        }
+
+        return $this->hasIntegrationSignal(
+            $this->iFoodService->getStoredOrderIntegrationState($order),
+            ['ifood_id', 'ifood_code', 'merchant_id', 'remote_order_state', 'last_event_type', 'webhook_event_id', 'last_integration_id']
+        );
     }
 
     public function getCapabilities(Order $order): array
@@ -186,15 +212,6 @@ class OrderActionService
 
     public function cancel(Order $order, ?int $reasonId = null, ?string $reason = null): array
     {
-        if ($this->ehFood99($order)) {
-            return $this->food99Service->performCancelAction($order, $reasonId, $reason);
-        }
-
-        if ($this->ehIfood($order)) {
-            $cancellationCode = $reasonId !== null ? (string) $reasonId : null;
-            return $this->iFoodService->performCancelAction($order, $reason, $cancellationCode);
-        }
-
         return $this->aplicarStatusLocal($order, 'canceled', 'canceled');
     }
 

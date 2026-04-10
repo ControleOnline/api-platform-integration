@@ -6192,7 +6192,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
 
         match ($realStatus) {
-            'cancelled' => $this->cancelByShop($orderId, $order->getProvider()),
+            'cancelled', 'canceled' => $this->cancelByShop($orderId, $order->getProvider()),
             'ready'     => $this->readyOrder($orderId, $order->getProvider()),
             'delivered' => $this->deliveredOrder($orderId, $order->getProvider()),
             default     => null,
