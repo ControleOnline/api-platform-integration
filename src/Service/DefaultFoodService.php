@@ -174,11 +174,15 @@ class DefaultFoodService
         }
 
         $currentComments = $this->normalizeMarketplaceFreeText($order->getComments());
-        if ($currentComments === $normalizedComments) {
+        if ($currentComments === $normalizedComments || $this->containsMarketplaceFreeText($currentComments, $normalizedComments)) {
             return;
         }
 
-        $order->setComments($normalizedComments);
+        $mergedComments = $currentComments === ''
+            ? $normalizedComments
+            : $this->normalizeMarketplaceFreeText($currentComments . ' | ' . $normalizedComments);
+
+        $order->setComments($mergedComments);
         $this->entityManager->persist($order);
     }
 
@@ -194,12 +198,35 @@ class DefaultFoodService
         }
 
         $currentComment = $this->normalizeMarketplaceFreeText($orderProduct->getComment());
-        if ($currentComment === $normalizedComment) {
+        if ($currentComment === $normalizedComment || $this->containsMarketplaceFreeText($currentComment, $normalizedComment)) {
             return;
         }
 
-        $orderProduct->setComment($normalizedComment);
+        $mergedComment = $currentComment === ''
+            ? $normalizedComment
+            : $this->normalizeMarketplaceFreeText($currentComment . ' | ' . $normalizedComment);
+
+        $orderProduct->setComment($mergedComment);
         $this->entityManager->persist($orderProduct);
+    }
+
+    protected function containsMarketplaceFreeText(string $haystack, string $needle): bool
+    {
+        if ($haystack === '' || $needle === '') {
+            return false;
+        }
+
+        if (function_exists('mb_strtolower')) {
+            return str_contains(
+                mb_strtolower($haystack),
+                mb_strtolower($needle)
+            );
+        }
+
+        return str_contains(
+            strtolower($haystack),
+            strtolower($needle)
+        );
     }
 
     protected function addLog(string $type, $log)

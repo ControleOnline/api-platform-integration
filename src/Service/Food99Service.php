@@ -2108,30 +2108,33 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return null;
     }
 
-    private function resolveOrderClient(array $address, string $orderId): People
+    private function resolveOrderClient(People $provider, array $address, string $orderId): People
     {
-        $client = $this->discoveryClient($address);
+        $client = $this->discoveryClient($address, $provider);
         if ($client instanceof People) {
+            $this->peopleService->discoveryLink($provider, $client, 'client');
             return $client;
         }
 
         $fallbackName = $this->resolveFood99CustomerName($address);
-        $clientCode = $this->resolveFood99ClientCode($address, $orderId);
+        $clientCode = $this->resolveFood99RemoteClientId($address);
+        $phone = $this->resolveFood99ClientPhone($address);
 
-        self::$logger->warning('Food99 order received without a resolved customer name; using fallback customer record', [
+        self::$logger->warning('Food99 order received without a mapped customer; using fallback customer resolution', [
             'order_id' => $orderId,
             'client_code' => $clientCode,
             'address_keys' => array_keys($address),
         ]);
 
         $client = $this->peopleService->discoveryPeople(
-            $clientCode,
             null,
             null,
-            $fallbackName
+            $phone,
+            $fallbackName,
+            'F'
         );
 
-        $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $clientCode);
+        $this->syncFood99ClientData($client, $provider, $address, $clientCode);
 
         return $client;
     }
@@ -2393,14 +2396,107 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $fallback;
     }
 
-    private function resolveFood99ClientCode(array $address, string $orderId): string
+    private function resolveFood99RemoteClientId(array $address): string
     {
-        $clientCode = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
-        if ($clientCode === '' || $clientCode === '0') {
-            return 'food99-order-' . $orderId;
+        $clientId = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
+        if ($clientId === '0') {
+            return '';
         }
 
-        return $clientCode;
+        return $clientId;
+    }
+
+    private function resolveFood99ClientPhone(array $address): array
+    {
+        $rawPhone = $this->sanitizeFood99IdentityValue($address['phone'] ?? null);
+        if ($rawPhone === null) {
+            return [];
+        }
+
+        $digits = preg_replace('/\D+/', '', $rawPhone);
+        if ($digits === null || $digits === '') {
+            return [];
+        }
+
+        if (str_starts_with($digits, '55') && strlen($digits) > 11) {
+            $digits = substr($digits, 2);
+        }
+
+        if (strlen($digits) > 11) {
+            $digits = substr($digits, -11);
+        }
+
+        if (strlen($digits) < 10) {
+            return [];
+        }
+
+        $ddd = substr($digits, 0, 2);
+        $phone = substr($digits, 2);
+
+        if ($ddd === '' || $phone === '') {
+            return [];
+        }
+
+        return [
+            'ddi' => 55,
+            'ddd' => (int) $ddd,
+            'phone' => (int) $phone,
+        ];
+    }
+
+    private function shouldUpdateFood99ClientName(People $client, string $resolvedName): bool
+    {
+        $candidateName = trim($resolvedName);
+        if ($candidateName === '') {
+            return false;
+        }
+
+        $currentName = strtolower(trim((string) $client->getName()));
+        $normalizedCandidateName = strtolower($candidateName);
+
+        if ($currentName === $normalizedCandidateName) {
+            return false;
+        }
+
+        return $currentName === ''
+            || $currentName === 'name not given'
+            || $currentName === 'cliente food99'
+            || str_starts_with($currentName, 'cliente food99 ');
+    }
+
+    private function syncFood99ClientData(
+        People $client,
+        People $provider,
+        array $address,
+        string $remoteClientId = ''
+    ): People {
+        $resolvedName = $this->resolveFood99CustomerName($address, '');
+        if ($this->shouldUpdateFood99ClientName($client, $resolvedName)) {
+            $client->setName($resolvedName);
+            $this->entityManager->persist($client);
+        }
+
+        $phone = $this->resolveFood99ClientPhone($address);
+        if (!empty($phone)) {
+            try {
+                $this->peopleService->addPhone($client, $phone);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('Food99 client phone could not be synced', [
+                    'client_id' => $client->getId(),
+                    'provider_id' => $provider->getId(),
+                    'phone' => $phone,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($remoteClientId !== '') {
+            $this->extraDataService->discoveryExtraData($client, self::APP_CONTEXT, 'code', $remoteClientId);
+        }
+
+        $this->peopleService->discoveryLink($provider, $client, 'client');
+
+        return $client;
     }
 
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
@@ -5742,7 +5838,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 }
             }
 
-            $client = $this->resolveOrderClient($receiveAddress, $orderId);
+            $client = $this->resolveOrderClient($provider, $receiveAddress, $orderId);
             $status = $this->statusService->discoveryStatus('open', 'open', 'order');
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
@@ -6116,31 +6212,46 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $product;
     }
 
-    private function discoveryClient(array $address): ?People
+    private function discoveryClient(array $address, ?People $provider = null): ?People
     {
         $resolvedName = $this->resolveFood99CustomerName($address, '');
-        $uid = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
+        $remoteClientId = $this->resolveFood99RemoteClientId($address);
 
-        if ($uid === '0') {
-            $uid = '';
+        if ($remoteClientId !== '') {
+            $client = $this->extraDataService->getEntityByExtraData(
+                self::APP_CONTEXT,
+                'code',
+                $remoteClientId,
+                People::class
+            );
+
+            if ($client instanceof People) {
+                return $provider instanceof People
+                    ? $this->syncFood99ClientData($client, $provider, $address, $remoteClientId)
+                    : $client;
+            }
         }
 
-        if ($resolvedName === '' || $uid === '') {
+        $phone = $this->resolveFood99ClientPhone($address);
+        if (empty($phone) && $resolvedName === '') {
             return null;
         }
 
         $client = $this->peopleService->discoveryPeople(
-            $uid,
             null,
             null,
-            $resolvedName
+            $phone,
+            $resolvedName !== '' ? $resolvedName : 'Cliente Food99',
+            'F'
         );
 
-        if ($uid !== '') {
-            $this->persistLocalFoodCodeByEntity('People', (int) $client->getId(), $uid);
+        if (!$client instanceof People) {
+            return null;
         }
 
-        return $client;
+        return $provider instanceof People
+            ? $this->syncFood99ClientData($client, $provider, $address, $remoteClientId)
+            : $client;
     }
 
     private function addAddress(Order $order, array $address)
