@@ -1132,7 +1132,7 @@ class IntegrationController extends AbstractController
             'requires_delivery_code' => $canDelivered && $requiresDeliveryCode,
             'delivery_code_length' => $requiresDeliveryCode ? 4 : 0,
             'requires_handover_confirmation' => $canDelivered && $requiresDeliveryLocator,
-            'can_open_handover_flow' => $hasHandoverFlow,
+            'can_open_handover_flow' => $canDelivered && $hasHandoverFlow,
             'is_terminal' => $isTerminal,
             'is_delivering' => $isDelivering,
             'remote_state' => $remoteState,
