@@ -2885,7 +2885,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         try {
             $raw = $this->confirmOrder($orderId);
             if ($raw) {
-                $this->persistOrderActionResult($order, 'confirm', $raw, 'confirmed');
+                $this->persistOrderActionResult(
+                    $order,
+                    'confirm',
+                    $raw,
+                    'confirmed',
+                    ['realStatus' => 'open', 'status' => 'preparing']
+                );
                 $this->entityManager->flush();
                 self::$logger->info('iFood order auto-confirmed on entry', [
                     'order_id' => $orderId,
@@ -3559,7 +3565,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $order,
                 'confirm',
                 $this->confirmOrder($orderId),
-                'confirmed'
+                'confirmed',
+                ['realStatus' => 'open', 'status' => 'preparing']
             );
 
             if ((string) ($confirmResult['errno'] ?? '') !== '0') {
@@ -3976,7 +3983,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if (!$orderId) {
             return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador remoto.');
         }
-        return $this->persistOrderActionResult($order, 'confirm', $this->confirmOrder($orderId), 'confirmed');
+        return $this->persistOrderActionResult(
+            $order,
+            'confirm',
+            $this->confirmOrder($orderId),
+            'confirmed',
+            ['realStatus' => 'open', 'status' => 'preparing']
+        );
     }
 
     private function readyOrder(string $orderId): ?array
