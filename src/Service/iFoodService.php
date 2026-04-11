@@ -9,6 +9,7 @@ use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\PaymentType;
+use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
@@ -174,6 +175,96 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'ORDER_FINISHED',
             'DELIVERY_CONCLUDED',
         ], true);
+    }
+
+    private function normalizeDigits(?string $value): string
+    {
+        return preg_replace('/\D+/', '', (string) $value) ?? '';
+    }
+
+    private function resolveCustomerDocumentNumber(array $customerData): ?string
+    {
+        $digits = $this->normalizeDigits($this->normalizeString($customerData['documentNumber'] ?? null));
+        if ($digits === '') {
+            return null;
+        }
+
+        $length = strlen($digits);
+        if ($length !== 11 && $length !== 14) {
+            return null;
+        }
+
+        return $digits;
+    }
+
+    private function resolveCustomerPhoneForDiscovery(array $customerData): ?array
+    {
+        $phoneData = is_array($customerData['phone'] ?? null) ? $customerData['phone'] : [];
+        $rawNumber = $this->normalizeString($phoneData['number'] ?? null);
+        $localizer = $this->normalizeString($phoneData['localizer'] ?? null);
+        $digits = $this->normalizeDigits($rawNumber);
+
+        if ($digits === '') {
+            return null;
+        }
+
+        // O iFood costuma fornecer um telefone operacional mascarado (0800 + localizer).
+        // Esse numero nao deve ser usado para identificar/reaproveitar o cliente local.
+        if ($localizer !== '' || str_starts_with($digits, '0800')) {
+            return null;
+        }
+
+        $ddi = '55';
+        if (str_starts_with($digits, '55') && (strlen($digits) === 12 || strlen($digits) === 13)) {
+            $digits = substr($digits, 2);
+        } elseif (strlen($digits) !== 10 && strlen($digits) !== 11) {
+            return null;
+        }
+
+        $ddd = substr($digits, 0, 2);
+        $phone = substr($digits, 2);
+        if ($ddd === '' || $phone === '') {
+            return null;
+        }
+
+        return [
+            'ddi' => $ddi,
+            'ddd' => $ddd,
+            'phone' => $phone,
+        ];
+    }
+
+    private function bindIfoodCodeToPeople(People $people, string $code, string $fieldName = 'code'): People
+    {
+        $code = $this->normalizeString($code);
+        if ($code === '') {
+            return $people;
+        }
+
+        $currentBinding = $this->findEntityByExtraData('People', $fieldName, $code, People::class);
+        if ($currentBinding instanceof People && $currentBinding->getId() === $people->getId()) {
+            return $people;
+        }
+
+        $extraFields = $this->extraDataService->discoveryExtraFields($fieldName, self::APP_CONTEXT, '{}');
+        $extraData = new ExtraData();
+        $extraData->setEntityId((string) $people->getId());
+        $extraData->setEntityName('People');
+        $extraData->setExtraFields($extraFields);
+        $extraData->setValue($code);
+
+        $this->entityManager->persist($extraData);
+        $this->entityManager->flush();
+
+        if ($currentBinding instanceof People && $currentBinding->getId() !== $people->getId()) {
+            self::$logger->warning('iFood client code rebound to a different local people record', [
+                'ifood_customer_id' => $code,
+                'previous_people_id' => $currentBinding->getId(),
+                'current_people_id' => $people->getId(),
+            ]);
+        }
+
+        return $people;
     }
 
     private function findEntityByExtraData(string $entityName, string $fieldName, string $value, string $entityClass): ?object
@@ -3235,28 +3326,60 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Busca cliente existente pelo ID do iFood ou cria novo com dados do pedido
     private function discoveryClient(People $provider, array $customerData): ?People
     {
-        if (empty($customerData['name']) || empty($customerData['phone'])) {
+        $customerName = $this->normalizeString($customerData['name'] ?? null);
+        $codClienteiFood = $this->normalizeString($customerData['id'] ?? null);
+        $document = $this->resolveCustomerDocumentNumber($customerData);
+        $phone = $this->resolveCustomerPhoneForDiscovery($customerData);
+
+        if ($customerName === '' && $document === null && $codClienteiFood === '') {
             self::$logger->warning('Dados do cliente incompletos', ['customer' => $customerData]);
             return null;
         }
 
-        $codClienteiFood = $customerData['id'];
+        $clientByCode = $codClienteiFood !== '' ? $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class) : null;
+        $client = null;
 
-        $client = $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class);
+        if ($document !== null) {
+            $client = $this->peopleService->discoveryPeople($document, null, null, $customerName !== '' ? $customerName : null);
+        }
 
-        $phone = [
-            'ddd' => '11',
-            'phone' => $customerData['phone']['number']
-        ];
+        if (!$client instanceof People && $clientByCode instanceof People) {
+            $client = $clientByCode;
+        }
 
-        $document = $customerData['documentNumber'];
+        if (!$client instanceof People) {
+            $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerName !== '' ? $customerName : null);
+        }
 
-        if (!$client)
-            $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerData["name"]);
+        if (!$client instanceof People && $customerName !== '') {
+            $client = $this->peopleService->discoveryPeople(null, null, null, $customerName);
+        }
+
+        if (!$client instanceof People) {
+            self::$logger->warning('iFood client could not be resolved after discovery attempts', [
+                'ifood_customer_id' => $codClienteiFood,
+                'customer_name' => $customerName,
+                'document' => $document,
+            ]);
+            return null;
+        }
+
+        if ($clientByCode instanceof People && $document !== null && $clientByCode->getId() !== $client->getId()) {
+            self::$logger->warning('iFood client mismatch detected between code and document mapping', [
+                'ifood_customer_id' => $codClienteiFood,
+                'people_by_code' => $clientByCode->getId(),
+                'people_by_document' => $client->getId(),
+                'document' => $document,
+            ]);
+        }
 
         $this->peopleService->discoveryLink($provider, $client, 'client');
 
-        return $this->discoveryFoodCode($client, $codClienteiFood);
+        if ($codClienteiFood !== '') {
+            $this->bindIfoodCodeToPeople($client, $codClienteiFood);
+        }
+
+        return $client;
     }
 
     // DESCOBERTA/CRIAÇÃO DO PRODUTO
