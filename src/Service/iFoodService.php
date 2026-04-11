@@ -5,8 +5,10 @@ namespace ControleOnline\Service;
 use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
+use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
@@ -14,6 +16,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
+use ControleOnline\Entity\Wallet;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -80,14 +83,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->appendOrderEventPayload($order, $eventCode, $event);
         $this->persistIncomingEventState($order, $integration, $event);
-
-        if ($this->isCancellationEventCode($eventCode)) {
-            $this->applyLocalCanceledStatus($order);
-        }
-
-        if ($this->isConclusionEventCode($eventCode)) {
-            $this->applyLocalClosedStatus($order);
-        }
+        $this->applyOperationalStatusForRemoteState(
+            $order,
+            $this->resolveRemoteOrderStateByEventCode($eventCode)
+        );
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
@@ -337,9 +336,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return match ($normalized) {
             'PLACED', 'ORDER_CREATED', 'CREATED', 'PENDING', 'ORDER_PENDING' => 'new',
             'CONFIRMED', 'ORDER_CONFIRMED', 'ACCEPTED', 'ORDER_ACCEPTED' => 'confirmed',
-            'STARTED', 'PREPARING', 'START_PREPARATION', 'ORDER_PREPARATION_STARTED', 'ORDER_IN_PREPARATION' => 'preparing',
-            'READY', 'READY_TO_PICKUP', 'ORDER_READY_TO_PICKUP' => 'ready',
-            'DISPATCHING', 'DISPATCHED', 'ORDER_DISPATCHED', 'ORDER_PICKED_UP', 'ORDER_IN_TRANSIT', 'DELIVERY_STARTED' => 'dispatching',
+            'STARTED', 'PREPARING', 'PREPARATION_STARTED', 'START_PREPARATION', 'ORDER_PREPARATION_STARTED', 'ORDER_IN_PREPARATION' => 'preparing',
+            'READY', 'READY_TO_PICKUP', 'ORDER_READY_TO_PICKUP', 'READY_TO_DELIVER', 'RTD' => 'ready',
+            'DISPATCHING', 'DISPATCHED', 'ORDER_DISPATCHED', 'ORDER_PICKED_UP', 'ORDER_IN_TRANSIT', 'DELIVERY_STARTED', 'DELIVERY_COLLECTED', 'DCLT', 'DELIVERY_ARRIVED_AT_DESTINATION', 'DAAD' => 'dispatching',
             'DELIVERY_DROP_CODE_REQUESTED', 'DELIVERY_DROP_CODE_VALIDATING' => 'ready',
             'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
             'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
@@ -449,6 +448,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $amountPending = (float) ($payments['pending'] ?? 0.0);
         $changeFor = (float) ($firstMethod['cash']['changeFor'] ?? 0.0);
         $selectedPaymentLabel = trim($methodCode . ($brand !== '' ? " ({$brand})" : ''));
+        $paymentLiability = strtoupper($this->normalizeString($firstMethod['liability'] ?? null));
+        $paymentWalletName = $this->normalizeString($firstMethod['wallet']['name'] ?? null);
+        $orderType = strtoupper($this->normalizeString($orderPayload['orderType'] ?? null));
+        $orderTiming = strtoupper($this->normalizeString($orderPayload['orderTiming'] ?? null));
 
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
@@ -506,6 +509,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $snapshot = [
+            'order_type' => $orderType,
+            'order_timing' => $orderTiming,
             'delivered_by' => $deliveredBy,
             'delivery_mode' => $deliveryMode,
             'pickup_code' => $pickupCode,
@@ -530,6 +535,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'pay_type' => $methodType !== '' ? strtolower($methodType) : '',
             'pay_method' => $methodCode !== '' ? strtolower($methodCode) : '',
             'pay_channel' => $brand !== '' ? $brand : $methodCode,
+            'payment_liability' => $paymentLiability,
+            'payment_wallet_name' => $paymentWalletName,
             'selected_payment_label' => $selectedPaymentLabel,
             'amount_paid' => (string) $amountPaid,
             'amount_pending' => (string) $amountPending,
@@ -619,34 +626,256 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function applyLocalCanceledStatus(Order $order): void
     {
-        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
-        if (in_array($currentRealStatus, ['canceled', 'cancelled'], true)) {
-            return;
-        }
-
-        $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
-        if (!$status) {
-            return;
-        }
-
-        $order->setStatus($status);
-        $this->entityManager->persist($order);
+        $this->applyLocalStatus($order, 'canceled', 'canceled');
     }
 
     private function applyLocalClosedStatus(Order $order): void
     {
+        $this->applyLocalStatus($order, 'closed', 'closed');
+    }
+
+    private function resolveOperationalStatusRank(string $realStatus, string $statusName): ?int
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+
+        return match ($normalizedRealStatus . ':' . $normalizedStatusName) {
+            'open:open' => 10,
+            'open:preparing' => 20,
+            'pending:ready' => 30,
+            'pending:way' => 40,
+            'closed:closed' => 50,
+            'canceled:canceled', 'cancelled:cancelled', 'canceled:cancelled', 'cancelled:canceled' => 60,
+            default => null,
+        };
+    }
+
+    private function applyLocalStatus(Order $order, string $realStatus, string $statusName): void
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+
         $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
-        if ($currentRealStatus === 'closed') {
+        $currentStatusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+
+        if ($currentRealStatus === $normalizedRealStatus && $currentStatusName === $normalizedStatusName) {
             return;
         }
 
-        $status = $this->statusService->discoveryStatus('closed', 'closed', 'order');
-        if (!$status) {
+        $currentRank = $this->resolveOperationalStatusRank($currentRealStatus, $currentStatusName);
+        $newRank = $this->resolveOperationalStatusRank($normalizedRealStatus, $normalizedStatusName);
+        if ($currentRank !== null && $newRank !== null && $newRank < $currentRank) {
             return;
         }
 
+        $status = $this->statusService->discoveryStatus($normalizedRealStatus, $normalizedStatusName, 'order');
         $order->setStatus($status);
         $this->entityManager->persist($order);
+    }
+
+    private function resolveOperationalStatusFromRemoteState(?string $remoteState): ?array
+    {
+        $normalizedRemoteState = strtolower(trim((string) $remoteState));
+
+        return match ($normalizedRemoteState) {
+            'new' => ['realStatus' => 'open', 'status' => 'open'],
+            'confirmed', 'preparing' => ['realStatus' => 'open', 'status' => 'preparing'],
+            'ready' => ['realStatus' => 'pending', 'status' => 'ready'],
+            'dispatching' => ['realStatus' => 'pending', 'status' => 'way'],
+            'concluded' => ['realStatus' => 'closed', 'status' => 'closed'],
+            'cancelled', 'canceled' => ['realStatus' => 'canceled', 'status' => 'canceled'],
+            default => null,
+        };
+    }
+
+    private function applyOperationalStatusForRemoteState(Order $order, ?string $remoteState): void
+    {
+        $statusMapping = $this->resolveOperationalStatusFromRemoteState($remoteState);
+        if (!is_array($statusMapping)) {
+            return;
+        }
+
+        $this->applyLocalStatus(
+            $order,
+            (string) ($statusMapping['realStatus'] ?? ''),
+            (string) ($statusMapping['status'] ?? '')
+        );
+    }
+
+    private function resolveIfoodInvoicePaymentTypeData(array $payment): array
+    {
+        $method = strtoupper($this->normalizeString($payment['method'] ?? null));
+        $type = strtoupper($this->normalizeString($payment['type'] ?? null));
+        $brand = strtoupper($this->normalizeString($payment['card']['brand'] ?? null));
+        $walletName = $this->normalizeString($payment['wallet']['name'] ?? null);
+        $liability = strtoupper($this->normalizeString($payment['liability'] ?? null));
+        $selectedPaymentLabel = trim($method . ($brand !== '' ? " ({$brand})" : ''));
+
+        $paymentTypeData = match ($method) {
+            'PIX' => ['paymentType' => 'PIX', 'aliases' => []],
+            'CASH' => ['paymentType' => 'Dinheiro', 'aliases' => []],
+            'DEBIT' => ['paymentType' => 'Debito', 'aliases' => ['Cartao de Debito', 'Cartão de Débito', 'Débito']],
+            'CREDIT' => ['paymentType' => 'Credito', 'aliases' => ['Cartao de Credito', 'Cartão de Crédito', 'Crédito']],
+            'MEAL_VOUCHER' => ['paymentType' => 'Refeicao', 'aliases' => ['Vale Refeicao', 'Vale Refeição', 'Refeição']],
+            'FOOD_VOUCHER' => ['paymentType' => 'Alimentacao', 'aliases' => ['Vale Alimentacao', 'Vale Alimentação', 'Alimentação']],
+            'DIGITAL_WALLET' => ['paymentType' => $walletName !== '' ? $walletName : 'Carteira Digital', 'aliases' => ['Digital Wallet']],
+            'GIFT_CARD' => ['paymentType' => 'Gift Card', 'aliases' => []],
+            'OTHER' => ['paymentType' => $selectedPaymentLabel !== '' ? $selectedPaymentLabel : 'iFood', 'aliases' => []],
+            default => ['paymentType' => $selectedPaymentLabel !== '' ? $selectedPaymentLabel : 'iFood', 'aliases' => []],
+        };
+
+        $paymentTypeData['frequency'] = 'single';
+        $paymentTypeData['installments'] = 'single';
+        $paymentTypeData['paymentCode'] = $brand !== '' ? $brand : ($method !== '' ? $method : null);
+        $paymentTypeData['pay_type'] = strtolower($type);
+        $paymentTypeData['pay_method'] = strtolower($method);
+        $paymentTypeData['pay_channel'] = $brand !== '' ? $brand : $method;
+        $paymentTypeData['selected_payment_label'] = $selectedPaymentLabel;
+        $paymentTypeData['payment_liability'] = $liability;
+        $paymentTypeData['payment_wallet_name'] = $walletName;
+
+        return $paymentTypeData;
+    }
+
+    private function resolveIfoodProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
+    {
+        $candidateNames = array_values(array_unique(array_filter(array_merge(
+            [(string) ($paymentTypeData['paymentType'] ?? '')],
+            is_array($paymentTypeData['aliases'] ?? null) ? $paymentTypeData['aliases'] : []
+        ))));
+
+        foreach ($candidateNames as $candidateName) {
+            $paymentType = $this->entityManager->getRepository(PaymentType::class)->findOneBy([
+                'people' => $provider,
+                'paymentType' => $candidateName,
+            ]);
+
+            if (!$paymentType instanceof PaymentType) {
+                continue;
+            }
+
+            if ($wallet instanceof Wallet) {
+                $this->walletService->discoverWalletPaymentType(
+                    $wallet,
+                    $paymentType,
+                    $paymentTypeData['paymentCode'] ?? null
+                );
+            }
+
+            return $paymentType;
+        }
+
+        $paymentType = $this->walletService->discoverPaymentType($provider, [
+            'paymentType' => $candidateNames[0] ?? 'iFood',
+            'frequency' => $paymentTypeData['frequency'] ?? 'single',
+            'installments' => $paymentTypeData['installments'] ?? 'single',
+        ]);
+
+        if ($wallet instanceof Wallet) {
+            $this->walletService->discoverWalletPaymentType(
+                $wallet,
+                $paymentType,
+                $paymentTypeData['paymentCode'] ?? null
+            );
+        }
+
+        return $paymentType;
+    }
+
+    private function resolveIfoodSettlementPaymentType(People $provider, ?Wallet $wallet = null): PaymentType
+    {
+        return $this->resolveIfoodProviderPaymentType($provider, [
+            'paymentType' => 'iFood',
+            'aliases' => ['IFOOD'],
+            'frequency' => 'single',
+            'installments' => 'single',
+            'paymentCode' => self::APP_CONTEXT,
+        ], $wallet);
+    }
+
+    private function applyIfoodInvoiceContract(
+        Invoice $invoice,
+        PaymentType $paymentType,
+        array $metadata,
+        ?Status $status = null,
+        ?Wallet $sourceWallet = null,
+        ?Wallet $destinationWallet = null
+    ): void {
+        if ($status instanceof Status) {
+            $invoice->setStatus($status);
+        }
+
+        if ($sourceWallet instanceof Wallet || $invoice->getSourceWallet() !== $sourceWallet) {
+            $invoice->setSourceWallet($sourceWallet);
+        }
+
+        if ($destinationWallet instanceof Wallet || $invoice->getDestinationWallet() !== $destinationWallet) {
+            $invoice->setDestinationWallet($destinationWallet);
+        }
+
+        $invoice->setPaymentType($paymentType);
+
+        $otherInformations = $invoice->getOtherInformations(true);
+        $serializedInformations = $otherInformations instanceof \stdClass
+            ? (array) $otherInformations
+            : (is_array($otherInformations) ? $otherInformations : []);
+        $currentIfoodData = $serializedInformations[self::APP_CONTEXT] ?? [];
+
+        if ($currentIfoodData instanceof \stdClass) {
+            $currentIfoodData = (array) $currentIfoodData;
+        }
+
+        $serializedInformations[self::APP_CONTEXT] = array_merge(
+            is_array($currentIfoodData) ? $currentIfoodData : [],
+            $metadata
+        );
+
+        $invoice->setOtherInformations($serializedInformations);
+
+        $this->entityManager->persist($invoice);
+        $this->entityManager->flush();
+    }
+
+    private function createIfoodPayableInvoice(
+        Order $order,
+        PaymentType $paymentType,
+        float $amount,
+        Status $status,
+        Wallet $providerWallet,
+        Wallet $ifoodWallet,
+        string $purpose,
+        array $metadata = []
+    ): ?Invoice {
+        $normalizedAmount = round($amount, 2);
+        if ($normalizedAmount <= 0) {
+            return null;
+        }
+
+        $invoice = $this->invoiceService->createInvoice(
+            $order,
+            $order->getProvider(),
+            self::$foodPeople,
+            $normalizedAmount,
+            $status,
+            new DateTime(),
+            $providerWallet,
+            $ifoodWallet
+        );
+
+        $this->applyIfoodInvoiceContract(
+            $invoice,
+            $paymentType,
+            array_merge([
+                'financial_kind' => 'account_payable',
+                'invoice_purpose' => $purpose,
+                'marketplace' => self::APP_CONTEXT,
+            ], $metadata),
+            $status,
+            $providerWallet,
+            $ifoodWallet
+        );
+
+        return $invoice;
     }
 
     private function normalizeExtraDataValue(mixed $value): string
@@ -884,6 +1113,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'ifood_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'code'),
             'merchant_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'merchant_id'),
             'remote_order_state' => $this->getIfoodExtraDataValue('Order', $orderId, 'remote_order_state'),
+            'order_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'order_type'),
+            'order_timing' => $this->getIfoodExtraDataValue('Order', $orderId, 'order_timing'),
             'delivered_by' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivered_by'),
             'delivery_mode' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_mode'),
             'pickup_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_code'),
@@ -905,6 +1136,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'address_reference' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_reference'),
             'address_complement' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_complement'),
             'remark' => $this->getIfoodExtraDataValue('Order', $orderId, 'remark'),
+            'payment_liability' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_liability'),
+            'payment_wallet_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_wallet_name'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
             'last_event_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_at'),
             'last_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_action'),
@@ -2494,19 +2727,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             $json['order'] = $orderDetails;
-            $paymentMethods = is_array($orderDetails['payments']['methods'] ?? null) ? $orderDetails['payments']['methods'] : [];
-            $allPrepaid = !empty($paymentMethods) && array_reduce(
-                $paymentMethods,
-                fn(bool $carry, array $m) => $carry && ($m['prepaid'] ?? false),
-                true
-            );
-            $status = $allPrepaid
-                ? $this->resolveMappedOrderStatus('paid', 'paid', $orderId, $merchantId)
-                : $this->resolveMappedOrderStatus('pending', 'pending', $orderId, $merchantId);
-            if (!$status) {
-                self::$logger->error('iFood order status could not be resolved', ['all_prepaid' => $allPrepaid]);
-                return null;
-            }
+            $status = $this->statusService->discoveryStatus('open', 'open', 'order');
 
             $client = $this->discoveryClient($provider, is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []);
             if (!$client instanceof People) {
@@ -2683,10 +2904,57 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Para cada método de pagamento, cria fatura de recebimento no banco
     private function addReceiveInvoices(Order $order, array $payments)
     {
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
-        $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
-        foreach ($payments as $payment)
-            $this->invoiceService->createInvoiceByOrder($order, $payment['value'], $payment['prepaid'] ? $status : null, new DateTime(), null, $iFoodWallet);
+        $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+        $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+
+        foreach ($payments as $payment) {
+            if (!is_array($payment)) {
+                continue;
+            }
+
+            $amount = round((float) ($payment['value'] ?? 0), 2);
+            if ($amount <= 0) {
+                continue;
+            }
+
+            $paymentTypeData = $this->resolveIfoodInvoicePaymentTypeData($payment);
+            $paymentType = $this->resolveIfoodProviderPaymentType(
+                $order->getProvider(),
+                $paymentTypeData,
+                $providerWallet
+            );
+            $isPrepaid = (bool) ($payment['prepaid'] ?? false);
+
+            $invoice = $this->invoiceService->createInvoiceByOrder(
+                $order,
+                $amount,
+                $isPrepaid ? $paidStatus : null,
+                new DateTime(),
+                null,
+                $providerWallet
+            );
+
+            $this->applyIfoodInvoiceContract(
+                $invoice,
+                $paymentType,
+                [
+                    'financial_kind' => 'account_receivable',
+                    'invoice_purpose' => 'customer_total',
+                    'marketplace' => self::APP_CONTEXT,
+                    'is_paid_online' => $isPrepaid,
+                    'payment_value' => $amount,
+                    'pay_type' => $paymentTypeData['pay_type'] ?? '',
+                    'pay_method' => $paymentTypeData['pay_method'] ?? '',
+                    'pay_channel' => $paymentTypeData['pay_channel'] ?? '',
+                    'selected_payment_label' => $paymentTypeData['selected_payment_label'] ?? '',
+                    'payment_liability' => $paymentTypeData['payment_liability'] ?? '',
+                    'payment_wallet_name' => $paymentTypeData['payment_wallet_name'] ?? '',
+                ],
+                $isPrepaid ? $paidStatus : null,
+                null,
+                $providerWallet
+            );
+        }
     }
 
     // ENTREGA
@@ -2728,19 +2996,28 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Cria fatura para taxa de entrega (cobrada do restaurante para o iFood)
     private function addDeliveryFee(Order &$order, array $payments)
     {
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+        $deliveryFee = round((float) ($payments['deliveryFee'] ?? 0), 2);
+        if ($deliveryFee <= 0) {
+            return;
+        }
+
+        $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+        $ifoodWallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+        $paymentType = $this->resolveIfoodSettlementPaymentType($order->getProvider(), $providerWallet);
         $order->setRetrieveContact(self::$foodPeople);
 
-        $this->invoiceService->createInvoice(
+        $this->createIfoodPayableInvoice(
             $order,
-            $order->getProvider(),
-            self::$foodPeople,
-            $payments['deliveryFee'],
+            $paymentType,
+            $deliveryFee,
             $status,
-            new DateTime(),
-            $iFoodWallet,
-            $iFoodWallet
+            $providerWallet,
+            $ifoodWallet,
+            'delivery_fee',
+            [
+                'component_value' => $deliveryFee,
+            ]
         );
     }
 
@@ -2748,17 +3025,26 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Cria fatura para taxas/comissões do iFood
     private function addFees(Order $order, array $payments)
     {
+        $additionalFees = round((float) ($payments['additionalFees'] ?? 0), 2);
+        if ($additionalFees <= 0) {
+            return;
+        }
+
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
-        $iFoodWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
-        $this->invoiceService->createInvoice(
+        $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+        $ifoodWallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
+        $paymentType = $this->resolveIfoodSettlementPaymentType($order->getProvider(), $providerWallet);
+        $this->createIfoodPayableInvoice(
             $order,
-            $order->getProvider(),
-            self::$foodPeople,
-            $payments['additionalFees'],
+            $paymentType,
+            $additionalFees,
             $status,
-            new DateTime(),
-            $iFoodWallet,
-            $iFoodWallet
+            $providerWallet,
+            $ifoodWallet,
+            'marketplace_fee',
+            [
+                'component_value' => $additionalFees,
+            ]
         );
     }
 
@@ -3155,7 +3441,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         Order $order,
         string $action,
         ?array $rawResponse,
-        ?string $remoteStateOnSuccess = null
+        ?string $remoteStateOnSuccess = null,
+        ?array $localStatusOnSuccess = null
     ): array {
         $result = $this->normalizeActionResponse($rawResponse);
         $isSuccess = (string) ($result['errno'] ?? '') === '0';
@@ -3172,6 +3459,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         try {
+            if ($isSuccess && is_array($localStatusOnSuccess)) {
+                $this->applyLocalStatus(
+                    $order,
+                    (string) ($localStatusOnSuccess['realStatus'] ?? ''),
+                    (string) ($localStatusOnSuccess['status'] ?? '')
+                );
+            }
+
             $this->persistOrderIntegrationState($order, $payload);
             $this->entityManager->flush();
         } catch (\Throwable $e) {
@@ -3277,14 +3572,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
         }
 
-        $isMerchantDelivery = $this->resolveDispatchFlowForOrder($order) === 'merchant';
+        $dispatchFlow = $this->resolveDispatchFlowForOrder($order);
+        $isMerchantDelivery = $dispatchFlow === 'merchant';
+        $isPickupFlow = $dispatchFlow === 'pickup';
         $stateOnSuccess = $isMerchantDelivery ? 'dispatching' : 'ready';
+        $localStatusOnSuccess = $isMerchantDelivery
+            ? ['realStatus' => 'pending', 'status' => 'way']
+            : ['realStatus' => 'pending', 'status' => 'ready'];
+        $actionResponse = ($isPickupFlow || !$isMerchantDelivery)
+            ? $this->readyOrder($orderId)
+            : $this->dispatchOrderByDeliveryMode($order, $orderId);
 
         return $this->persistOrderActionResult(
             $order,
             'ready',
-            $this->dispatchOrderByDeliveryMode($order, $orderId),
-            $stateOnSuccess
+            $actionResponse,
+            $stateOnSuccess,
+            $localStatusOnSuccess
         );
     }
 
@@ -3316,7 +3620,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $order,
             'start_preparation',
             $this->callIfoodOrderAction($orderId, '/startPreparation'),
-            'preparing'
+            'preparing',
+            ['realStatus' => 'open', 'status' => 'preparing']
         );
     }
 
@@ -3471,6 +3776,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function resolveDispatchFlowForOrder(Order $order): string
     {
         $storedState = $this->getStoredOrderIntegrationState($order);
+        $orderType = strtoupper($this->normalizeString($storedState['order_type'] ?? null));
+        if (in_array($orderType, ['TAKEOUT', 'DINE_IN'], true)) {
+            return 'pickup';
+        }
+
         $deliveredBy = strtoupper($this->normalizeString($storedState['delivered_by'] ?? null));
         if ($deliveredBy === 'MERCHANT') {
             return 'merchant';
