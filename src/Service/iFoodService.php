@@ -234,6 +234,60 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    private function shouldUpdateIfoodClientName(People $client, string $resolvedName): bool
+    {
+        $candidateName = trim($resolvedName);
+        if ($candidateName === '') {
+            return false;
+        }
+
+        $currentName = strtolower(trim((string) $client->getName()));
+        $normalizedCandidateName = strtolower($candidateName);
+
+        if ($currentName === $normalizedCandidateName) {
+            return false;
+        }
+
+        return $currentName === ''
+            || $currentName === 'name not given'
+            || $currentName === 'cliente ifood'
+            || str_starts_with($currentName, 'cliente ifood ');
+    }
+
+    private function syncIfoodClientData(
+        People $client,
+        People $provider,
+        string $resolvedName,
+        ?array $phone,
+        string $remoteClientId = ''
+    ): People {
+        if ($this->shouldUpdateIfoodClientName($client, $resolvedName)) {
+            $client->setName($resolvedName);
+            $this->entityManager->persist($client);
+        }
+
+        if (!empty($phone)) {
+            try {
+                $this->peopleService->addPhone($client, $phone);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client phone could not be synced', [
+                    'client_id' => $client->getId(),
+                    'provider_id' => $provider->getId(),
+                    'phone' => $phone,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($remoteClientId !== '') {
+            $this->bindIfoodCodeToPeople($client, $remoteClientId);
+        }
+
+        $this->peopleService->discoveryLink($provider, $client, 'client');
+
+        return $client;
+    }
+
     private function bindIfoodCodeToPeople(People $people, string $code, string $fieldName = 'code'): People
     {
         $code = $this->normalizeString($code);
@@ -3373,13 +3427,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
         }
 
-        $this->peopleService->discoveryLink($provider, $client, 'client');
-
-        if ($codClienteiFood !== '') {
-            $this->bindIfoodCodeToPeople($client, $codClienteiFood);
-        }
-
-        return $client;
+        return $this->syncIfoodClientData(
+            $client,
+            $provider,
+            $customerName,
+            $phone,
+            $codClienteiFood
+        );
     }
 
     // DESCOBERTA/CRIAÇÃO DO PRODUTO
