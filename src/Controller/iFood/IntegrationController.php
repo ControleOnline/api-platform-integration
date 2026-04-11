@@ -654,11 +654,11 @@ class IntegrationController extends AbstractController
     private function buildOrderIntegrationDetail(Order $order): array
     {
         $storedState = $this->iFoodService->getStoredOrderIntegrationState($order);
-        $capabilities = $this->orderActionService->getCapabilities($order);
         $payload = $this->resolveLatestOrderPayload($order);
         $orderPayload = $this->resolveOrderPayload($payload);
         $deliveryContext = $this->resolveDeliveryContext($order, $payload, $storedState);
         $remoteState = $this->normalizeString($storedState['remote_order_state'] ?? null);
+        $capabilities = $this->resolveOrderActionCapabilities($order, $storedState, $deliveryContext, $payload);
         $orderComments = method_exists($order, 'getComments')
             ? $this->normalizeString($order->getComments())
             : '';
@@ -730,6 +730,109 @@ class IntegrationController extends AbstractController
             ],
             'capabilities' => $capabilities,
             'scheduling'   => $this->buildSchedulingDetail($orderPayload),
+        ];
+    }
+
+    private function normalizeOrderStateValue(mixed $value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    private function isTerminalOrderState(string $realStatus, string $remoteState): bool
+    {
+        if (in_array($realStatus, ['closed', 'cancelled', 'canceled'], true)) {
+            return true;
+        }
+
+        return in_array($remoteState, ['concluded', 'closed', 'cancelled', 'canceled'], true);
+    }
+
+    private function resolveOrderActionCapabilities(Order $order, array $storedState, array $deliveryContext, array $payload): array
+    {
+        $realStatus = $this->normalizeOrderStateValue($order->getStatus()?->getRealStatus());
+        $statusName = $this->normalizeOrderStateValue($order->getStatus()?->getStatus());
+        $remoteState = $this->normalizeOrderStateValue($storedState['remote_order_state'] ?? null);
+
+        $orderPayload = $this->resolveOrderPayload($payload);
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
+        $customerPhone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+        $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
+
+        $locator = $this->preferredText(
+            $delivery['locator'] ?? null,
+            $delivery['localizer'] ?? null,
+            $deliveryAddress['locator'] ?? null,
+            $deliveryAddress['localizer'] ?? null,
+            $customerPhone['localizer'] ?? null,
+            $storedState['locator'] ?? null,
+        ) ?? '';
+        $pickupCode = $this->preferredText(
+            $pickup['code'] ?? null,
+            $delivery['pickupCode'] ?? null,
+            $storedState['pickup_code'] ?? null,
+        ) ?? '';
+        $handoverUrl = $this->preferredText(
+            $delivery['handoverConfirmationUrl'] ?? null,
+            $delivery['handover_confirmation_url'] ?? null,
+            $delivery['handoverPageUrl'] ?? null,
+            $delivery['handover_page_url'] ?? null,
+            $deliveryAddress['handoverConfirmationUrl'] ?? null,
+            $deliveryAddress['handover_confirmation_url'] ?? null,
+            $deliveryAddress['handoverPageUrl'] ?? null,
+            $deliveryAddress['handover_page_url'] ?? null,
+            $storedState['handover_confirmation_url'] ?? null,
+            $storedState['handover_page_url'] ?? null,
+        ) ?? '';
+
+        $isTerminal = $this->isTerminalOrderState($realStatus, $remoteState);
+        $isPreparing = ($realStatus === 'open' && $statusName === 'preparing')
+            || in_array($remoteState, ['confirmed', 'preparing'], true);
+        $isReadyOrBeyond = ($realStatus === 'pending' && in_array($statusName, ['ready', 'way'], true))
+            || in_array($remoteState, [
+                'ready',
+                'dispatching',
+                'dispatched',
+                'order_dispatched',
+                'order_picked_up',
+                'order_in_transit',
+                'delivery_started',
+                'delivery_collected',
+                'delivery_arrived_at_destination',
+                'concluded',
+            ], true);
+        $isDelivering = ($realStatus === 'pending' && $statusName === 'way')
+            || in_array($remoteState, [
+                'dispatching',
+                'dispatched',
+                'order_dispatched',
+                'order_picked_up',
+                'order_in_transit',
+                'delivery_started',
+                'delivery_collected',
+                'delivery_arrived_at_destination',
+            ], true);
+
+        $isStoreDelivery = !empty($deliveryContext['is_store_delivery']);
+        $hasHandoverFlow = $isStoreDelivery && ($handoverUrl !== '' || $locator !== '' || $pickupCode !== '');
+        $canCancel = !$isTerminal;
+        $canReady = !$isTerminal && $isPreparing && !$isReadyOrBeyond;
+        $canDelivered = !$isTerminal && $isStoreDelivery && $isDelivering;
+
+        return [
+            'can_ready' => $canReady,
+            'can_cancel' => $canCancel,
+            'can_delivered' => $canDelivered,
+            'requires_delivery_locator' => $canDelivered && $isStoreDelivery,
+            'delivery_locator_length' => $isStoreDelivery ? 8 : 0,
+            'requires_delivery_code' => false,
+            'delivery_code_length' => 0,
+            'requires_handover_confirmation' => $canDelivered && $hasHandoverFlow,
+            'can_open_handover_flow' => $canDelivered && $hasHandoverFlow,
+            'is_terminal' => $isTerminal,
+            'is_delivering' => $isDelivering,
+            'remote_state' => $remoteState,
         ];
     }
 
@@ -1299,6 +1402,39 @@ class IntegrationController extends AbstractController
 
         return new JsonResponse([
             'action' => 'cancel',
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
+    #[Route('/marketplace/integrations/ifood/orders/{orderId}/cancel-reasons', name: 'marketplace_integrations_ifood_order_cancel_reasons', methods: ['GET'])]
+    public function cancelReasonsOrderAction(string $orderId): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderNotFound();
+        }
+
+        if (!$this->isIfoodOrder($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $result = [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'reasons' => $this->iFoodService->getIfoodCancellationReasons($order),
+            ];
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 1,
+                'errmsg' => 'Falha ao carregar motivos de cancelamento no iFood: ' . $this->normalizeString($e->getMessage()),
+                'reasons' => [],
+            ];
+        }
+
+        return new JsonResponse([
+            'action' => 'cancel_reasons',
             'result' => $result,
             'state' => $this->buildOrderIntegrationDetail($order),
         ]);
