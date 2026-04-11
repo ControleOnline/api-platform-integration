@@ -6463,10 +6463,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $productGroup = null;
 
                 if ($parentProduct && !empty($item['app_content_id'])) {
+                    $resolvedGroupName = $this->resolveModifierGroupName(
+                        $item['app_content_id'],
+                        $item['content_name'] ?? ''
+                    );
+
                     $productGroup = $this->productGroupService->discoveryProductGroup(
                         $parentProduct,
-                        $item['app_content_id'],
-                        $this->resolveModifierGroupName($item['app_content_id'], $item['content_name'] ?? '')
+                        $resolvedGroupName
                     );
                 }
 
@@ -6533,10 +6537,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         if ($parentProduct && !empty($item['app_content_id'])) {
+            $resolvedGroupName = $this->resolveModifierGroupName(
+                $item['app_content_id'],
+                $item['content_name'] ?? ''
+            );
+
             $group = $this->productGroupService->discoveryProductGroup(
                 $parentProduct,
-                $item['app_content_id'],
-                $this->resolveModifierGroupName($item['app_content_id'], $item['content_name'] ?? '')
+                $resolvedGroupName
             );
 
             $exists = $this->entityManager
