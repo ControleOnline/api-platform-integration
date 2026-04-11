@@ -3,13 +3,17 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
+use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
+use ControleOnline\Entity\Status;
+use ControleOnline\Entity\Wallet;
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -35,6 +39,43 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ['reason_id' => 1080, 'description' => 'Other reason', 'applicable_to' => 'all'],
     ];
     private static array $authTokenCache = [];
+    private const ORDER_INTEGRATION_STATE_FIELDS = [
+        'remote_order_state',
+        'remote_delivery_status',
+        'last_event_type',
+        'last_event_at',
+        'cancel_code',
+        'cancel_reason',
+        'last_action',
+        'last_action_at',
+        'last_action_errno',
+        'last_action_message',
+        'confirm_at',
+        'confirm_errno',
+        'confirm_message',
+        'reconcile_at',
+        'reconcile_errno',
+        'reconcile_message',
+        'reconcile_latency_ms',
+        'delivery_type',
+        'fulfillment_mode',
+        'expected_arrived_eta',
+        'pickup_code',
+        'locator',
+        'handover_page_url',
+        'virtual_phone_number',
+        'handover_code',
+        'rider_name',
+        'rider_phone',
+        'rider_to_store_eta',
+        'delivery_locator_at',
+        'delivery_locator_errno',
+        'delivery_locator_message',
+        'delivery_locator_last8',
+        'delivery_locator_step',
+        'delivery_locator_remote_order_id',
+        'delivery_locator_shop_id',
+    ];
 
     private function init()
     {
@@ -2142,7 +2183,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     private function persistOrderIntegrationState(Order $order, array $fields): void
     {
         foreach ($fields as $fieldName => $value) {
-            $this->upsertFood99ExtraDataValue('Order', (int) $order->getId(), (string) $fieldName, $value);
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '' || !in_array($normalizedFieldName, self::ORDER_INTEGRATION_STATE_FIELDS, true)) {
+                continue;
+            }
+
+            $this->upsertFood99ExtraDataValue('Order', (int) $order->getId(), $normalizedFieldName, $value);
         }
     }
 
@@ -2606,6 +2652,237 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         return trim((string) ($paymentChannelLabel ?: $paymentTypeLabel ?: $paymentMethodLabel));
+    }
+
+    private function resolveFood99InvoicePaymentTypeData(
+        ?string $payType,
+        ?string $payMethod,
+        ?string $payChannel,
+        ?string $deliveryType
+    ): array {
+        $normalizedPayType = trim((string) $payType);
+        $normalizedPayMethod = trim((string) $payMethod);
+        $normalizedPayChannel = trim((string) $payChannel);
+
+        $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($normalizedPayType, $deliveryType);
+        $paymentMethodLabel = $this->resolveFood99PaymentMethodLabel($normalizedPayMethod);
+        $paymentChannelLabel = $this->resolveFood99PaymentChannelLabel($normalizedPayChannel, $normalizedPayMethod, $deliveryType);
+        $selectedPaymentLabel = $this->resolveFood99SelectedPaymentLabel(
+            $paymentChannelLabel,
+            $paymentTypeLabel,
+            $paymentMethodLabel
+        );
+
+        $paymentTypeData = match (true) {
+            $normalizedPayChannel === '212' => [
+                'paymentType' => 'PIX',
+                'aliases' => [],
+            ],
+            $normalizedPayChannel === '153' || $normalizedPayType === '2' => [
+                'paymentType' => 'Dinheiro',
+                'aliases' => [],
+            ],
+            $normalizedPayChannel === '154' || $normalizedPayType === '3' => [
+                'paymentType' => 'POS',
+                'aliases' => [],
+            ],
+            $normalizedPayChannel === '263' => [
+                'paymentType' => 'Débito',
+                'aliases' => ['Debito'],
+            ],
+            $normalizedPayChannel === '262' => [
+                'paymentType' => 'Crédito à Vista',
+                'aliases' => ['Credito a Vista'],
+            ],
+            in_array($normalizedPayChannel, ['257', '258', '259', '260', '264'], true) => [
+                'paymentType' => 'Refeição',
+                'aliases' => ['Refeicao'],
+            ],
+            $normalizedPayChannel === '901' => [
+                'paymentType' => 'Benefício',
+                'aliases' => ['Beneficio'],
+            ],
+            in_array($normalizedPayChannel, ['120', '190', '219'], true) || $normalizedPayType === '4' => [
+                'paymentType' => '99Pay',
+                'aliases' => ['Carteira / 99Pay', '99Food Wallet'],
+            ],
+            in_array($normalizedPayChannel, ['229'], true) => [
+                'paymentType' => 'NuPay',
+                'aliases' => [],
+            ],
+            in_array($normalizedPayChannel, ['234', '235'], true) => [
+                'paymentType' => 'Apple Pay',
+                'aliases' => [],
+            ],
+            in_array($normalizedPayChannel, ['272', '273'], true) => [
+                'paymentType' => 'Google Pay',
+                'aliases' => [],
+            ],
+            $selectedPaymentLabel !== '' => [
+                'paymentType' => $selectedPaymentLabel,
+                'aliases' => [],
+            ],
+            default => [
+                'paymentType' => '99Food',
+                'aliases' => ['Food99'],
+            ],
+        };
+
+        $paymentTypeData['frequency'] = 'single';
+        $paymentTypeData['installments'] = 'single';
+        $paymentTypeData['paymentCode'] = $normalizedPayChannel !== ''
+            ? $normalizedPayChannel
+            : ($normalizedPayType !== '' ? $normalizedPayType : null);
+        $paymentTypeData['pay_type'] = $normalizedPayType;
+        $paymentTypeData['pay_method'] = $normalizedPayMethod;
+        $paymentTypeData['pay_channel'] = $normalizedPayChannel;
+        $paymentTypeData['pay_type_label'] = $paymentTypeLabel;
+        $paymentTypeData['pay_method_label'] = $paymentMethodLabel;
+        $paymentTypeData['pay_channel_label'] = $paymentChannelLabel;
+        $paymentTypeData['selected_payment_label'] = $selectedPaymentLabel;
+
+        return $paymentTypeData;
+    }
+
+    private function resolveFood99ProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
+    {
+        $candidateNames = array_values(array_unique(array_filter(array_merge(
+            [(string) ($paymentTypeData['paymentType'] ?? '')],
+            is_array($paymentTypeData['aliases'] ?? null) ? $paymentTypeData['aliases'] : []
+        ))));
+
+        foreach ($candidateNames as $candidateName) {
+            $paymentType = $this->entityManager->getRepository(PaymentType::class)->findOneBy([
+                'people' => $provider,
+                'paymentType' => $candidateName,
+            ]);
+
+            if (!$paymentType instanceof PaymentType) {
+                continue;
+            }
+
+            if ($wallet instanceof Wallet) {
+                $this->walletService->discoverWalletPaymentType(
+                    $wallet,
+                    $paymentType,
+                    $paymentTypeData['paymentCode'] ?? null
+                );
+            }
+
+            return $paymentType;
+        }
+
+        $paymentType = $this->walletService->discoverPaymentType($provider, [
+            'paymentType' => $candidateNames[0] ?? '99Food',
+            'frequency' => $paymentTypeData['frequency'] ?? 'single',
+            'installments' => $paymentTypeData['installments'] ?? 'single',
+        ]);
+
+        if ($wallet instanceof Wallet) {
+            $this->walletService->discoverWalletPaymentType(
+                $wallet,
+                $paymentType,
+                $paymentTypeData['paymentCode'] ?? null
+            );
+        }
+
+        return $paymentType;
+    }
+
+    private function resolveFood99SettlementPaymentType(People $provider, ?Wallet $wallet = null): PaymentType
+    {
+        return $this->resolveFood99ProviderPaymentType($provider, [
+            'paymentType' => '99Food',
+            'aliases' => ['Food99'],
+            'frequency' => 'single',
+            'installments' => 'single',
+            'paymentCode' => self::APP_CONTEXT,
+        ], $wallet);
+    }
+
+    private function applyFood99InvoiceContract(
+        Invoice $invoice,
+        PaymentType $paymentType,
+        array $metadata,
+        ?Status $status = null,
+        ?Wallet $sourceWallet = null,
+        ?Wallet $destinationWallet = null
+    ): void {
+        if ($status instanceof Status) {
+            $invoice->setStatus($status);
+        }
+
+        if ($sourceWallet instanceof Wallet || $invoice->getSourceWallet() !== $sourceWallet) {
+            $invoice->setSourceWallet($sourceWallet);
+        }
+
+        if ($destinationWallet instanceof Wallet || $invoice->getDestinationWallet() !== $destinationWallet) {
+            $invoice->setDestinationWallet($destinationWallet);
+        }
+
+        $invoice->setPaymentType($paymentType);
+
+        $otherInformations = $invoice->getOtherInformations(true);
+        $serializedInformations = $otherInformations instanceof \stdClass
+            ? (array) $otherInformations
+            : (is_array($otherInformations) ? $otherInformations : []);
+        $currentFood99Data = $serializedInformations[self::APP_CONTEXT] ?? [];
+
+        if ($currentFood99Data instanceof \stdClass) {
+            $currentFood99Data = (array) $currentFood99Data;
+        }
+
+        $serializedInformations[self::APP_CONTEXT] = array_merge(
+            is_array($currentFood99Data) ? $currentFood99Data : [],
+            $metadata
+        );
+
+        $invoice->setOtherInformations($serializedInformations);
+
+        $this->entityManager->persist($invoice);
+        $this->entityManager->flush();
+    }
+
+    private function createFood99PayableInvoice(
+        Order $order,
+        PaymentType $paymentType,
+        float $amount,
+        Status $status,
+        Wallet $providerWallet,
+        Wallet $food99Wallet,
+        string $purpose,
+        array $metadata = []
+    ): ?Invoice {
+        $normalizedAmount = round($amount, 2);
+        if ($normalizedAmount <= 0) {
+            return null;
+        }
+
+        $invoice = $this->invoiceService->createInvoice(
+            $order,
+            $order->getProvider(),
+            self::$foodPeople,
+            $normalizedAmount,
+            $status,
+            new DateTime(),
+            $providerWallet,
+            $food99Wallet
+        );
+
+        $this->applyFood99InvoiceContract(
+            $invoice,
+            $paymentType,
+            array_merge([
+                'financial_kind' => 'account_payable',
+                'invoice_purpose' => $purpose,
+                'marketplace' => self::APP_CONTEXT,
+            ], $metadata),
+            $status,
+            $providerWallet,
+            $food99Wallet
+        );
+
+        return $invoice;
     }
 
     public function getOrderHomologationSnapshot(Order $order): array
@@ -5995,6 +6272,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $deliveryType = $this->normalizeIncomingFood99Value($info['delivery_type'] ?? $data['delivery_type'] ?? null);
             $isPlatformDelivery = $deliveryType === '1';
+            $payType = $this->normalizeIncomingFood99Value($info['pay_type'] ?? $data['pay_type'] ?? null);
+            $payMethod = $this->normalizeIncomingFood99Value($info['pay_method'] ?? $data['pay_method'] ?? null);
+            $payChannel = $this->normalizeIncomingFood99Value($info['pay_channel'] ?? $data['pay_channel'] ?? null);
 
             $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
             $deliveryFee = $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? $price['delivery_price'] ?? null);
@@ -6010,56 +6290,130 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $customerTotal = $explicitCustomerTotal > 0 ? $explicitCustomerTotal : $subtotalBeforeDiscounts;
             $shopPaidMoney = $this->normalizeFood99Money($price['shop_paid_money'] ?? null);
 
-            $wallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+            $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
+            $food99Wallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
             $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+            $customerPaymentType = $this->resolveFood99ProviderPaymentType(
+                $order->getProvider(),
+                $this->resolveFood99InvoicePaymentTypeData($payType, $payMethod, $payChannel, $deliveryType),
+                $providerWallet
+            );
+            $settlementPaymentType = $this->resolveFood99SettlementPaymentType($order->getProvider(), $providerWallet);
 
             self::$logger->info('Food99 addPayments', [
                 'order_id' => $order->getId(),
                 'customer_total' => $customerTotal,
                 'shop_paid_money' => $shopPaidMoney,
                 'delivery_fee' => $deliveryFee,
+                'service_fee' => $serviceFee,
+                'small_order_fee' => $smallOrderFee,
+                'meal_top_up_fee' => $mealTopUpFee,
                 'is_platform_delivery' => $isPlatformDelivery,
                 'is_paid_online' => $isPlatformDelivery,
+                'pay_type' => $payType,
+                'pay_method' => $payMethod,
+                'pay_channel' => $payChannel,
             ]);
 
             // 1. Invoice de recebimento: valor pago pelo cliente ao restaurante
             if ($customerTotal > 0) {
-                $this->invoiceService->createInvoiceByOrder(
+                $receivableInvoice = $this->invoiceService->createInvoiceByOrder(
                     $order,
                     $customerTotal,
                     $isPlatformDelivery ? $paidStatus : null,
                     new DateTime(),
                     null,
-                    $wallet
+                    $providerWallet
+                );
+
+                $this->applyFood99InvoiceContract(
+                    $receivableInvoice,
+                    $customerPaymentType,
+                    [
+                        'financial_kind' => 'account_receivable',
+                        'invoice_purpose' => 'customer_total',
+                        'marketplace' => self::APP_CONTEXT,
+                        'is_paid_online' => $isPlatformDelivery,
+                        'customer_total' => $customerTotal,
+                        'pay_type' => $payType,
+                        'pay_method' => $payMethod,
+                        'pay_channel' => $payChannel,
+                    ],
+                    $isPlatformDelivery ? $paidStatus : null,
+                    null,
+                    $providerWallet
                 );
             }
 
             // 2. Invoice de taxa da plataforma: diferença entre o que o cliente pagou e o repasse ao restaurante
             if ($shopPaidMoney > 0 && $customerTotal > $shopPaidMoney) {
-                $platformFee = round($customerTotal - $shopPaidMoney, 2);
-                $this->invoiceService->createInvoice(
-                    $order,
-                    $order->getProvider(),
-                    self::$foodPeople,
-                    $platformFee,
-                    $paidStatus,
-                    new DateTime(),
-                    $wallet,
-                    $wallet
-                );
+                $remainingPlatformFee = round($customerTotal - $shopPaidMoney, 2);
+                $feeComponents = [
+                    'service_fee' => $serviceFee,
+                    'small_order_fee' => $smallOrderFee,
+                    'meal_top_up_fee' => $mealTopUpFee,
+                ];
+
+                foreach ($feeComponents as $purpose => $componentValue) {
+                    $componentValue = round(min($remainingPlatformFee, max(0, $componentValue)), 2);
+                    if ($componentValue <= 0) {
+                        continue;
+                    }
+
+                    $this->createFood99PayableInvoice(
+                        $order,
+                        $settlementPaymentType,
+                        $componentValue,
+                        $paidStatus,
+                        $providerWallet,
+                        $food99Wallet,
+                        $purpose,
+                        [
+                            'component_value' => $componentValue,
+                            'pay_type' => $payType,
+                            'pay_method' => $payMethod,
+                            'pay_channel' => $payChannel,
+                        ]
+                    );
+
+                    $remainingPlatformFee = round(max(0, $remainingPlatformFee - $componentValue), 2);
+                }
+
+                if ($remainingPlatformFee > 0) {
+                    $this->createFood99PayableInvoice(
+                        $order,
+                        $settlementPaymentType,
+                        $remainingPlatformFee,
+                        $paidStatus,
+                        $providerWallet,
+                        $food99Wallet,
+                        'marketplace_fee',
+                        [
+                            'component_value' => $remainingPlatformFee,
+                            'pay_type' => $payType,
+                            'pay_method' => $payMethod,
+                            'pay_channel' => $payChannel,
+                        ]
+                    );
+                }
             }
 
             // 3. Invoice de taxa de entrega: cobrada pela 99Food quando ela realiza a entrega
             if ($isPlatformDelivery && $deliveryFee > 0) {
-                $this->invoiceService->createInvoice(
+                $this->createFood99PayableInvoice(
                     $order,
-                    $order->getProvider(),
-                    self::$foodPeople,
+                    $settlementPaymentType,
                     $deliveryFee,
                     $paidStatus,
-                    new DateTime(),
-                    $wallet,
-                    $wallet
+                    $providerWallet,
+                    $food99Wallet,
+                    'delivery_fee',
+                    [
+                        'component_value' => $deliveryFee,
+                        'pay_type' => $payType,
+                        'pay_method' => $payMethod,
+                        'pay_channel' => $payChannel,
+                    ]
                 );
             }
         } catch (\Throwable $e) {
