@@ -1946,7 +1946,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 child.description AS child_description,
                 child.price AS child_base_price,
                 child.sku AS child_sku,
-                child.active AS child_active
+                child.active AS child_active,
+                child_pf.file_id AS child_cover_file_id
             FROM product_group pg
             INNER JOIN product_group_product pgp
                 ON pgp.product_group_id = pg.id
@@ -1954,6 +1955,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ON parent.id = pg.parent_product_id
             INNER JOIN product child
                 ON child.id = pgp.product_child_id
+            LEFT JOIN product_file child_pf ON child_pf.id = (
+                SELECT MIN(pf2.id)
+                FROM product_file pf2
+                WHERE pf2.product_id = child.id
+            )
             WHERE parent.company_id = :providerId
               AND parent.active = 1
               AND pgp.product_type IN ('component', 'package')
@@ -2037,6 +2043,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'name' => $childName,
                 'description' => trim((string) ($modifierRow['child_description'] ?? '')),
                 'sku' => trim((string) ($modifierRow['child_sku'] ?? '')),
+                'cover_file_id' => $modifierRow['child_cover_file_id'] ?? null,
                 'quantity' => (float) ($modifierRow['child_quantity'] ?? 0),
                 'price' => round($childPrice, 2),
                 'active' => (int) ($modifierRow['relation_active'] ?? 0) === 1
@@ -2385,6 +2392,21 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     $childQuantity = (float) ($option['quantity'] ?? 0);
                     if ($childQuantity > 0) {
                         $childProductBody['quantity'] = $childQuantity;
+                    }
+
+                    $childSourceImageUrl = $this->buildPublicFileDownloadUrl($option['cover_file_id'] ?? null);
+                    if ($childSourceImageUrl) {
+                        $uploadedChildImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $childSourceImageUrl);
+                        if ($uploadedChildImagePath) {
+                            $childProductBody['imagePath'] = $uploadedChildImagePath;
+                        } else {
+                            self::$logger->warning('iFood catalog child image upload skipped, proceeding without imagePath', [
+                                'merchant_id' => $merchantId,
+                                'product_id' => $product['id'] ?? null,
+                                'child_product_id' => $childProductId,
+                                'image_url' => $childSourceImageUrl,
+                            ]);
+                        }
                     }
 
                     $productsById[$childProductUuid] = $childProductBody;
