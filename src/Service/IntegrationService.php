@@ -48,6 +48,10 @@ class IntegrationService
 
     public function executeIntegration(Integration $integration)
     {
+        if (strcasecmp((string) $integration->getQueueName(), 'Websocket') === 0) {
+            return;
+        }
+
         $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
         $method = 'integrate';
         $handled = false;
@@ -125,11 +129,13 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
-        $this->bus->dispatch(
-            new SendIntegrationMessage(
-                integrationId: $integration->getId()
-            )
-        );
+        if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
+            $this->bus->dispatch(
+                new SendIntegrationMessage(
+                    integrationId: $integration->getId()
+                )
+            );
+        }
 
         return $integration;
     }
@@ -159,11 +165,13 @@ class IntegrationService
         $this->manager->persist($integration);
         $this->manager->flush();
 
-        $this->bus->dispatch(
-            new SendIntegrationMessage(
-                integrationId: $integration->getId()
-            )
-        );
+        if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
+            $this->bus->dispatch(
+                new SendIntegrationMessage(
+                    integrationId: $integration->getId()
+                )
+            );
+        }
 
         return $integration;
     }

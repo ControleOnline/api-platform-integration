@@ -27,6 +27,10 @@ class IntegrationMessageHandler
         if (!$integration)
             return;
 
+        if (strcasecmp((string) $integration->getQueueName(), 'Websocket') === 0) {
+            return;
+        }
+
         // Bloqueia ate obter o lock para evitar consumir e descartar mensagens
         // quando outro webhook estiver em processamento.
         if (!$this->lock->acquire(true)) {
