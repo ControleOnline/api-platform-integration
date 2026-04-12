@@ -2324,7 +2324,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function generateStableUuidFromSeed(string $seed): string
     {
         $hash = md5(self::APP_CONTEXT . '|' . $seed);
-        $timeHiAndVersion = (hexdec(substr($hash, 12, 4)) & 0x0fff) | 0x5000;
+        $timeHiAndVersion = (hexdec(substr($hash, 12, 4)) & 0x0fff) | 0x4000;
         $clockSeq = (hexdec(substr($hash, 16, 4)) & 0x3fff) | 0x8000;
 
         return sprintf(
