@@ -69,6 +69,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $order = $this->findOrderByExternalId($orderId);
+        $orderAlreadyExisted = $order instanceof Order;
         if (!$order instanceof Order) {
             if (!$this->shouldCreateOrderFromEvent($eventCode)) {
                 self::$logger->warning('iFood event ignored because local order does not exist and event should not create a new order', [
@@ -93,8 +94,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->appendOrderEventPayload($order, $eventCode, $event);
         $this->persistIncomingEventState($order, $integration, $event);
-        $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
-        $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
+
+        self::$logger->info('iFood integration resolved local order for event', [
+            'order_id' => $orderId,
+            'local_order_id' => $order->getId(),
+            'event_code' => $eventCode,
+            'order_already_existed' => $orderAlreadyExisted,
+        ]);
+
+        if ($orderAlreadyExisted) {
+            $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
+            $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
+        }
+
         $this->applyOperationalStatusForRemoteState(
             $order,
             $this->resolveRemoteOrderStateByEventCode($eventCode)
@@ -445,6 +457,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if ($eventOrderDetails) {
             $orderDetails = $this->mergeIfoodOrderDetails($orderDetails, $eventOrderDetails);
         }
+
+        self::$logger->info('iFood order details resolved for integration step', [
+            'order_id' => $orderId,
+            'has_event_snapshot' => !empty($eventOrderDetails),
+            'has_fetched_details' => is_array($fetchedOrderDetails) && !empty($fetchedOrderDetails),
+            'resolved_customer_id' => $this->normalizeString($orderDetails['customer']['id'] ?? null),
+            'resolved_customer_document' => $this->normalizeString($orderDetails['customer']['documentNumber'] ?? null),
+            'resolved_delivery_address' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['formattedAddress'] ?? null),
+            'resolved_delivery_city' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['city'] ?? null),
+            'resolved_delivery_state' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['state'] ?? null),
+            'resolved_delivery_postal_code' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['postalCode'] ?? null),
+        ]);
 
         return is_array($orderDetails) ? $orderDetails : [];
     }
@@ -3885,6 +3909,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $latitude = (float) ($deliveryAddress['coordinates']['latitude'] ?? 0);
         $longitude = (float) ($deliveryAddress['coordinates']['longitude'] ?? 0);
 
+        self::$logger->info('iFood delivery discovery started', [
+            'local_order_id' => $order->getId(),
+            'client_id' => $order->getClient()?->getId(),
+            'formatted_address' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
+            'street_name' => $streetName,
+            'street_number_raw' => $streetNumberPayload['street_number_raw'] ?? '',
+            'street_number' => $streetNumberPayload['street_number'] ?? 0,
+            'neighborhood' => $neighborhood,
+            'city' => $city,
+            'state_input' => $this->normalizeString($deliveryAddress['state'] ?? null),
+            'state_resolved' => $stateCode,
+            'country_input' => $this->normalizeString($deliveryAddress['country'] ?? null),
+            'country_resolved' => $countryCode,
+            'postal_code_input' => $this->normalizeString($deliveryAddress['postalCode'] ?? null),
+            'postal_code_resolved' => $postalCode,
+            'reference' => $reference,
+            'complement_resolved' => $streetNumberPayload['complement'] ?? '',
+        ]);
+
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
             $order->getClient(),
             $postalCode,
@@ -3904,6 +3947,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $deliveryAddressEntity->setLongitude($longitude);
         $order->setAddressDestination($deliveryAddressEntity);
         $this->entityManager->persist($deliveryAddressEntity);
+
+        self::$logger->info('iFood delivery discovery resolved address entity', [
+            'local_order_id' => $order->getId(),
+            'client_id' => $order->getClient()?->getId(),
+            'address_id' => $deliveryAddressEntity->getId(),
+            'street' => $deliveryAddressEntity->getStreet()?->getStreet(),
+            'number' => $deliveryAddressEntity->getNumber(),
+            'complement' => $deliveryAddressEntity->getComplement(),
+            'district' => $deliveryAddressEntity->getStreet()?->getDistrict()?->getDistrict(),
+            'city' => $deliveryAddressEntity->getStreet()?->getDistrict()?->getCity()?->getCity(),
+            'state' => $deliveryAddressEntity->getStreet()?->getDistrict()?->getCity()?->getState()?->getUf(),
+            'postal_code' => $deliveryAddressEntity->getStreet()?->getCep()?->getCep(),
+        ]);
     }
 
     // TAXA DE ENTREGA
@@ -4148,6 +4204,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $document = $this->resolveCustomerDocumentNumber($customerData);
         $phone = $this->resolveCustomerPhoneForDiscovery($customerData);
 
+        self::$logger->info('iFood client discovery started', [
+            'provider_id' => $provider->getId(),
+            'ifood_customer_id' => $codClienteiFood,
+            'customer_name' => $customerName,
+            'document' => $document,
+            'has_phone_for_discovery' => !empty($phone),
+            'raw_phone_number' => $this->normalizeString($customerData['phone']['number'] ?? null),
+            'raw_phone_localizer' => $this->normalizeString($customerData['phone']['localizer'] ?? null),
+        ]);
+
         if ($customerName === '' && $document === null && $codClienteiFood === '') {
             self::$logger->warning('Dados do cliente incompletos', ['customer' => $customerData]);
             return null;
@@ -4156,8 +4222,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $clientByCode = $codClienteiFood !== '' ? $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class) : null;
         $client = null;
 
+        if ($clientByCode instanceof People) {
+            self::$logger->info('iFood client discovery matched by remote code', [
+                'ifood_customer_id' => $codClienteiFood,
+                'people_id' => $clientByCode->getId(),
+            ]);
+        }
+
         if ($document !== null) {
             $client = $this->peopleService->discoveryPeople($document, null, null, $customerName !== '' ? $customerName : null);
+            if ($client instanceof People) {
+                self::$logger->info('iFood client discovery matched by document', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'people_id' => $client->getId(),
+                    'document' => $document,
+                ]);
+            }
         }
 
         if (!$client instanceof People && $clientByCode instanceof People) {
@@ -4166,10 +4246,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         if (!$client instanceof People) {
             $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerName !== '' ? $customerName : null);
+            if ($client instanceof People) {
+                self::$logger->info('iFood client discovery resolved via standard discoveryPeople', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'people_id' => $client->getId(),
+                    'document' => $document,
+                    'used_phone' => !empty($phone),
+                ]);
+            }
         }
 
         if (!$client instanceof People && $customerName !== '') {
             $client = $this->peopleService->discoveryPeople(null, null, null, $customerName);
+            if ($client instanceof People) {
+                self::$logger->info('iFood client discovery fell back to name-only lookup', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'people_id' => $client->getId(),
+                    'customer_name' => $customerName,
+                ]);
+            }
         }
 
         if (!$client instanceof People) {
