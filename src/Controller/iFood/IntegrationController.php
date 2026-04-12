@@ -426,6 +426,36 @@ class IntegrationController extends AbstractController
         return null;
     }
 
+    private function preferredBool(mixed ...$values): ?bool
+    {
+        foreach ($values as $value) {
+            if (is_bool($value)) {
+                return $value;
+            }
+
+            if (is_int($value) || is_float($value)) {
+                return (int) $value === 1;
+            }
+
+            $normalized = strtolower($this->normalizeString($value));
+            if ($normalized === '') {
+                continue;
+            }
+
+            $parsed = match ($normalized) {
+                '1', 'true', 'yes', 'y', 'sim' => true,
+                '0', 'false', 'no', 'n', 'nao', 'não' => false,
+                default => null,
+            };
+
+            if ($parsed !== null) {
+                return $parsed;
+            }
+        }
+
+        return null;
+    }
+
     private function extractAddressFromOrderEntity(Order $order): array
     {
         $address = method_exists($order, 'getAddressDestination') ? $order->getAddressDestination() : null;
@@ -570,11 +600,28 @@ class IntegrationController extends AbstractController
             $customer['document_number'] ?? null,
             $storedState['customer_document'] ?? null
         );
+        $documentType = $this->preferredText(
+            $customer['documentType'] ?? null,
+            $customer['document_type'] ?? null,
+            $storedState['customer_document_type'] ?? null
+        );
+        $taxDocumentRequested = $this->preferredBool(
+            $customer['taxDocumentRequested'] ?? null,
+            $customer['tax_document_requested'] ?? null,
+            $customer['requiresTaxDocument'] ?? null,
+            $customer['requires_tax_document'] ?? null,
+            $storedState['tax_document_requested'] ?? null
+        );
+        if ($taxDocumentRequested === null) {
+            $taxDocumentRequested = $documentNumber !== null;
+        }
 
         return [
-            'name'            => $name,
-            'phone'           => $customerPhone,
-            'document_number' => $documentNumber,
+            'name'                 => $name,
+            'phone'                => $customerPhone,
+            'document_number'      => $documentNumber,
+            'document_type'        => $documentType,
+            'tax_document_requested' => $taxDocumentRequested,
         ];
     }
 
@@ -729,7 +776,7 @@ class IntegrationController extends AbstractController
                 'item_remarks'    => $this->extractItemRemarks($payload),
             ],
             'capabilities' => $capabilities,
-            'scheduling'   => $this->buildSchedulingDetail($orderPayload),
+            'scheduling'   => $this->buildSchedulingDetail($orderPayload, $storedState),
         ];
     }
 
@@ -836,34 +883,45 @@ class IntegrationController extends AbstractController
         ];
     }
 
-    private function buildSchedulingDetail(array $orderPayload): array
+    private function buildSchedulingDetail(array $orderPayload, array $storedState = []): array
     {
-        $orderTiming = strtoupper($this->normalizeString($orderPayload['orderTiming'] ?? null));
+        $orderTiming = strtoupper($this->preferredText(
+            $storedState['order_timing'] ?? null,
+            $orderPayload['orderTiming'] ?? null
+        ) ?? '');
         $schedule    = is_array($orderPayload['schedule'] ?? null) ? $orderPayload['schedule'] : [];
 
-        $start = $this->normalizeString(
+        $start = $this->preferredText(
+            $storedState['scheduled_start'] ?? null,
             $schedule['deliveryDateTimeStart']
                 ?? $schedule['scheduledDateTimeStart']
                 ?? null
         );
-        $end = $this->normalizeString(
+        $end = $this->preferredText(
+            $storedState['scheduled_end'] ?? null,
             $schedule['deliveryDateTimeEnd']
                 ?? $schedule['scheduledDateTimeEnd']
                 ?? null
         );
-        $deliveryDateTime = $this->normalizeString(
+        $deliveryDateTime = $this->preferredText(
+            $storedState['delivery_date_time'] ?? null,
             $orderPayload['delivery']['deliveryDateTime']
                 ?? $orderPayload['delivery']['estimatedDeliveryDate']
                 ?? null
         );
-        $preparationStart = $this->normalizeString(
+        $preparationStart = $this->preferredText(
+            $storedState['preparation_start'] ?? null,
             $orderPayload['preparationStartDateTime']
                 ?? null
         );
+        $isScheduled = $this->preferredBool($storedState['is_scheduled'] ?? null);
+        if ($isScheduled === null) {
+            $isScheduled = $orderTiming === 'SCHEDULED';
+        }
 
         return [
             'order_timing'             => $orderTiming !== '' ? $orderTiming : null,
-            'is_scheduled'             => $orderTiming === 'SCHEDULED',
+            'is_scheduled'             => $isScheduled,
             'scheduled_start'          => $start !== '' ? $start : null,
             'scheduled_end'            => $end !== '' ? $end : null,
             'delivery_date_time'       => $deliveryDateTime !== '' ? $deliveryDateTime : null,

@@ -234,7 +234,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function resolveCustomerDocumentNumber(array $customerData): ?string
     {
-        $digits = $this->normalizeDigits($this->normalizeString($customerData['documentNumber'] ?? null));
+        $digits = $this->normalizeDigits($this->normalizeString(
+            $customerData['documentNumber']
+                ?? $customerData['document_number']
+                ?? null
+        ));
         if ($digits === '') {
             return null;
         }
@@ -245,6 +249,71 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return $digits;
+    }
+
+    private function resolveCustomerDocumentType(array $customerData, ?string $documentNumber = null): ?string
+    {
+        $documentType = strtoupper($this->normalizeString(
+            $customerData['documentType']
+                ?? $customerData['document_type']
+                ?? null
+        ));
+        if ($documentType !== '') {
+            return $documentType;
+        }
+
+        if ($documentNumber === null || $documentNumber === '') {
+            return null;
+        }
+
+        return strlen($documentNumber) > 11 ? 'CNPJ' : 'CPF';
+    }
+
+    private function resolveBooleanFlag(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (int) $value === 1;
+        }
+
+        $normalized = strtolower($this->normalizeString($value));
+        if ($normalized === '') {
+            return null;
+        }
+
+        $parsed = match ($normalized) {
+            '1', 'true', 'yes', 'y', 'sim' => true,
+            '0', 'false', 'no', 'n', 'nao', 'não' => false,
+            default => null,
+        };
+
+        if ($parsed !== null) {
+            return $parsed;
+        }
+
+        return null;
+    }
+
+    private function resolveTaxDocumentRequested(array $customerData, ?string $documentNumber = null): bool
+    {
+        $explicitFlag = $this->resolveBooleanFlag(
+            $customerData['taxDocumentRequested']
+                ?? $customerData['tax_document_requested']
+                ?? $customerData['requiresTaxDocument']
+                ?? $customerData['requires_tax_document']
+                ?? $customerData['issueTaxDocument']
+                ?? $customerData['issue_tax_document']
+                ?? null
+        );
+
+        if ($explicitFlag !== null) {
+            return $explicitFlag;
+        }
+
+        return !empty($documentNumber);
     }
 
     private function resolveCustomerPhoneForDiscovery(array $customerData): ?array
@@ -309,6 +378,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         People $provider,
         string $resolvedName,
         ?array $phone,
+        ?string $document = null,
+        ?string $documentType = null,
         string $remoteClientId = ''
     ): People {
         if ($this->shouldUpdateIfoodClientName($client, $resolvedName)) {
@@ -324,6 +395,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     'client_id' => $client->getId(),
                     'provider_id' => $provider->getId(),
                     'phone' => $phone,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if (!empty($document)) {
+            try {
+                $this->peopleService->addDocument($client, $document, $documentType);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client document could not be synced', [
+                    'client_id' => $client->getId(),
+                    'provider_id' => $provider->getId(),
+                    'document' => $document,
+                    'document_type' => $documentType,
                     'error' => $exception->getMessage(),
                 ]);
             }
@@ -733,6 +818,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
         $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
         $phone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+        $schedule = is_array($orderPayload['schedule'] ?? null) ? $orderPayload['schedule'] : [];
 
         $streetName = $this->normalizeString($deliveryAddress['streetName'] ?? null);
         $streetNumber = $this->normalizeString($deliveryAddress['streetNumber'] ?? null);
@@ -742,6 +828,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $postalCode = $this->normalizeString($deliveryAddress['postalCode'] ?? null);
         $reference = $this->normalizeString($deliveryAddress['reference'] ?? null);
         $complement = $this->normalizeString($deliveryAddress['complement'] ?? null);
+        $customerDocument = $this->resolveCustomerDocumentNumber($customer);
+        $customerDocumentType = $this->resolveCustomerDocumentType($customer, $customerDocument);
+        $taxDocumentRequested = $this->resolveTaxDocumentRequested($customer, $customerDocument);
 
         $addressDisplay = $this->composeAddressDisplayFromPieces(
             $streetName !== '' ? $streetName : null,
@@ -766,6 +855,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $paymentWalletName = $this->normalizeString($firstMethod['wallet']['name'] ?? null);
         $orderType = strtoupper($this->normalizeString($orderPayload['orderType'] ?? null));
         $orderTiming = strtoupper($this->normalizeString($orderPayload['orderTiming'] ?? null));
+        $scheduledStart = $this->normalizeString(
+            $schedule['deliveryDateTimeStart']
+                ?? $schedule['scheduledDateTimeStart']
+                ?? null
+        );
+        $scheduledEnd = $this->normalizeString(
+            $schedule['deliveryDateTimeEnd']
+                ?? $schedule['scheduledDateTimeEnd']
+                ?? null
+        );
+        $deliveryDateTime = $this->normalizeString(
+            $delivery['deliveryDateTime']
+                ?? $delivery['estimatedDeliveryDate']
+                ?? null
+        );
+        $preparationStart = $this->normalizeString($orderPayload['preparationStartDateTime'] ?? null);
 
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
@@ -835,6 +940,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'virtual_phone' => $this->normalizeString($phone['localizer'] ?? null),
             'customer_name' => $this->normalizeString($customer['name'] ?? null),
             'customer_phone' => $this->normalizeString($phone['number'] ?? null),
+            'customer_document' => $customerDocument,
+            'customer_document_type' => $customerDocumentType,
+            'tax_document_requested' => $taxDocumentRequested,
             'address_display' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
             'address_poi_address' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
             'address_street_name' => $streetName,
@@ -852,6 +960,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'payment_liability' => $paymentLiability,
             'payment_wallet_name' => $paymentWalletName,
             'selected_payment_label' => $selectedPaymentLabel,
+            'scheduled_start' => $scheduledStart,
+            'scheduled_end' => $scheduledEnd,
+            'delivery_date_time' => $deliveryDateTime,
+            'preparation_start' => $preparationStart,
+            'is_scheduled' => $orderTiming === 'SCHEDULED',
             'amount_paid' => (string) $amountPaid,
             'amount_pending' => (string) $amountPending,
             'customer_need_paying_money' => (string) $amountPending,
@@ -1466,6 +1579,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'virtual_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'virtual_phone'),
             'customer_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_name'),
             'customer_phone' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_phone'),
+            'customer_document' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_document'),
+            'customer_document_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'customer_document_type'),
+            'tax_document_requested' => $this->getIfoodExtraDataValue('Order', $orderId, 'tax_document_requested'),
             'address_display' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_display'),
             'address_poi_address' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_poi_address'),
             'address_street_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'address_street_name'),
@@ -1479,6 +1595,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'remark' => $this->getIfoodExtraDataValue('Order', $orderId, 'remark'),
             'payment_liability' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_liability'),
             'payment_wallet_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_wallet_name'),
+            'scheduled_start' => $this->getIfoodExtraDataValue('Order', $orderId, 'scheduled_start'),
+            'scheduled_end' => $this->getIfoodExtraDataValue('Order', $orderId, 'scheduled_end'),
+            'delivery_date_time' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_date_time'),
+            'preparation_start' => $this->getIfoodExtraDataValue('Order', $orderId, 'preparation_start'),
+            'is_scheduled' => $this->getIfoodExtraDataValue('Order', $orderId, 'is_scheduled'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
             'last_event_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_at'),
             'last_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_action'),
@@ -4290,6 +4411,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $provider,
             $customerName,
             $phone,
+            $document,
+            $this->resolveCustomerDocumentType($customerData, $document),
             $codClienteiFood
         );
     }
