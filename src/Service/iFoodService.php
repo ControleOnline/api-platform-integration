@@ -93,6 +93,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $this->appendOrderEventPayload($order, $eventCode, $event);
         $this->persistIncomingEventState($order, $integration, $event);
+        $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
+        $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
         $this->applyOperationalStatusForRemoteState(
             $order,
             $this->resolveRemoteOrderStateByEventCode($eventCode)
@@ -116,6 +118,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return true;
+    }
+
+    private function isEntryEventCode(string $eventCode): bool
+    {
+        $normalized = strtoupper($this->normalizeString($eventCode));
+
+        return in_array($normalized, [
+            'PLACED',
+            'ORDER_CREATED',
+            'CREATED',
+            'PENDING',
+            'ORDER_PENDING',
+        ], true);
     }
 
     private function resolveIncomingEvent(Integration $integration): ?array
@@ -393,6 +408,113 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return null;
+    }
+
+    private function orderHasProducts(Order $order): bool
+    {
+        return $order->getOrderProducts()->count() > 0;
+    }
+
+    private function orderHasInvoices(Order $order): bool
+    {
+        return $order->getInvoice()->count() > 0;
+    }
+
+    private function shouldAttemptAutoConfirmEntry(Order $order, string $eventCode): bool
+    {
+        if (!$this->isEntryEventCode($eventCode)) {
+            return false;
+        }
+
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $currentStatusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+
+        return $currentRealStatus === 'open' && $currentStatusName === 'open';
+    }
+
+    private function resolveOrderDetailsFromEvent(string $orderId, array $event): array
+    {
+        $eventOrderDetails = is_array($event['order'] ?? null) ? $event['order'] : [];
+        $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+        $orderDetails = [];
+
+        if (is_array($fetchedOrderDetails)) {
+            $orderDetails = $fetchedOrderDetails;
+        }
+
+        if ($eventOrderDetails) {
+            $orderDetails = $this->mergeIfoodOrderDetails($orderDetails, $eventOrderDetails);
+        }
+
+        return is_array($orderDetails) ? $orderDetails : [];
+    }
+
+    private function resumePendingEntryFlowIfNeeded(Order $order, array $event, string $eventCode, array $orderDetails = []): void
+    {
+        if (!$this->isEntryEventCode($eventCode)) {
+            return;
+        }
+
+        $orderId = $this->normalizeString($event['orderId'] ?? null);
+        if ($orderId === '') {
+            return;
+        }
+
+        if (!$orderDetails) {
+            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event);
+        }
+
+        if (!$orderDetails) {
+            return;
+        }
+
+        if (
+            !$this->orderHasProducts($order)
+            && is_array($orderDetails['items'] ?? null)
+            && $orderDetails['items']
+        ) {
+            try {
+                $this->addProducts($order, $orderDetails['items']);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood could not resume product enrichment for existing local order', [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order->getId(),
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($order->getAddressDestination() === null && is_array($orderDetails['delivery'] ?? null)) {
+            try {
+                $this->addDelivery($order, $orderDetails);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood could not resume delivery enrichment for existing local order', [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order->getId(),
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if (
+            !$this->orderHasInvoices($order)
+            && is_array($orderDetails['payments']['methods'] ?? null)
+            && is_array($orderDetails['total'] ?? null)
+        ) {
+            try {
+                $this->addPayments($order, $orderDetails);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood could not resume payment enrichment for existing local order', [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order->getId(),
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($this->shouldAttemptAutoConfirmEntry($order, $eventCode)) {
+            $this->autoConfirmOrder($order, $orderId);
+        }
     }
 
     private function buildOrderIntegrationLockKey(string $orderId): string
@@ -959,6 +1081,33 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'installments' => 'single',
             'paymentCode' => self::APP_CONTEXT,
         ], $wallet);
+    }
+
+    private function shouldIfoodUseMarketplaceWalletForReceivable(array $paymentTypeData, bool $isPrepaid): bool
+    {
+        $paymentLiability = strtoupper($this->normalizeString($paymentTypeData['payment_liability'] ?? null));
+        $paymentType = strtoupper($this->normalizeString($paymentTypeData['pay_type'] ?? null));
+
+        return $isPrepaid
+            || $paymentLiability === 'IFOOD'
+            || $paymentType === 'ONLINE';
+    }
+
+    private function resolveIfoodReceivableWallet(
+        Order $order,
+        PaymentType $paymentType,
+        array $paymentTypeData,
+        bool $isPrepaid
+    ): Wallet {
+        $walletName = $this->shouldIfoodUseMarketplaceWalletForReceivable($paymentTypeData, $isPrepaid)
+            ? self::$app
+            : $this->normalizeString($paymentType->getPaymentType());
+
+        if ($walletName === '') {
+            $walletName = self::$app;
+        }
+
+        return $this->walletService->discoverWallet($order->getProvider(), $walletName);
     }
 
     private function applyIfoodInvoiceContract(
@@ -3230,17 +3379,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 return $order;
             }
 
-            $eventOrderDetails = is_array($json['order'] ?? null) ? $json['order'] : [];
-            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
-            $orderDetails = [];
-
-            if (is_array($fetchedOrderDetails)) {
-                $orderDetails = $fetchedOrderDetails;
-            }
-
-            if ($eventOrderDetails) {
-                $orderDetails = $this->mergeIfoodOrderDetails($orderDetails, $eventOrderDetails);
-            }
+            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $json);
 
             if (!$orderDetails) {
                 self::$logger->error('iFood order details could not be fetched after retries', [
@@ -3286,10 +3425,26 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
             if (is_array($orderDetails['delivery'] ?? null)) {
-                $this->addDelivery($order, $orderDetails);
+                try {
+                    $this->addDelivery($order, $orderDetails);
+                } catch (\Throwable $exception) {
+                    self::$logger->warning('iFood order delivery enrichment failed during creation pipeline', [
+                        'order_id' => $orderId,
+                        'local_order_id' => $order->getId(),
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
             }
             if (is_array($orderDetails['payments']['methods'] ?? null) && is_array($orderDetails['total'] ?? null)) {
-                $this->addPayments($order, $orderDetails);
+                try {
+                    $this->addPayments($order, $orderDetails);
+                } catch (\Throwable $exception) {
+                    self::$logger->warning('iFood order payment enrichment failed during creation pipeline', [
+                        'order_id' => $orderId,
+                        'local_order_id' => $order->getId(),
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
             }
 
             $this->entityManager->persist($order);
@@ -3316,6 +3471,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->printOrder($order);
             $this->autoConfirmOrder($order, $orderId);
             return $order;
+        } catch (\Throwable $exception) {
+            self::$logger->error('iFood order integration failed during creation pipeline', [
+                'order_id' => $orderId,
+                'merchant_id' => $merchantId,
+                'error' => $exception->getMessage(),
+            ]);
+            throw $exception;
         } finally {
             $this->releaseOrderIntegrationLock($orderId);
         }
@@ -3445,7 +3607,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     // Para cada método de pagamento, cria fatura de recebimento no banco
     private function addReceiveInvoices(Order $order, array $payments)
     {
-        $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
 
         foreach ($payments as $payment) {
@@ -3459,12 +3620,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             $paymentTypeData = $this->resolveIfoodInvoicePaymentTypeData($payment);
+            $isPrepaid = (bool) ($payment['prepaid'] ?? false);
             $paymentType = $this->resolveIfoodProviderPaymentType(
                 $order->getProvider(),
-                $paymentTypeData,
-                $providerWallet
+                $paymentTypeData
             );
-            $isPrepaid = (bool) ($payment['prepaid'] ?? false);
+            $receivableWallet = $this->resolveIfoodReceivableWallet(
+                $order,
+                $paymentType,
+                $paymentTypeData,
+                $isPrepaid
+            );
+            $this->walletService->discoverWalletPaymentType(
+                $receivableWallet,
+                $paymentType,
+                $paymentTypeData['paymentCode'] ?? null
+            );
 
             $invoice = $this->invoiceService->createInvoiceByOrder(
                 $order,
@@ -3472,7 +3643,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $isPrepaid ? $paidStatus : null,
                 new DateTime(),
                 null,
-                $providerWallet
+                $receivableWallet
             );
 
             $this->applyIfoodInvoiceContract(
@@ -3493,7 +3664,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ],
                 $isPrepaid ? $paidStatus : null,
                 null,
-                $providerWallet
+                $receivableWallet
             );
         }
     }
@@ -3537,6 +3708,141 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $merged;
     }
 
+    private function refreshOrderCoreDataFromEvent(Order $order, array $event): array
+    {
+        $orderId = $this->normalizeString($event['orderId'] ?? null);
+        if ($orderId === '') {
+            return [];
+        }
+
+        $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event);
+        if (!$orderDetails) {
+            return [];
+        }
+
+        $provider = $order->getProvider();
+        if ($provider instanceof People) {
+            $client = $this->discoveryClient(
+                $provider,
+                is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []
+            );
+
+            if ($client instanceof People) {
+                $previousClientId = $order->getClient()?->getId();
+                $previousPayerId = $order->getPayer()?->getId();
+
+                $order->setClient($client);
+
+                if (!($order->getPayer() instanceof People) || $previousPayerId === $previousClientId) {
+                    $order->setPayer($client);
+                }
+            }
+        }
+
+        if (is_array($orderDetails['delivery'] ?? null)) {
+            try {
+                $this->addDelivery($order, $orderDetails);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood order delivery enrichment failed during event refresh', [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order->getId(),
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        $this->syncOrderComments($order, $this->extractOrderRemarkFromPayload($orderDetails));
+
+        return $orderDetails;
+    }
+
+    private function resolveIfoodCountryEntity(?string $countryCode): ?\ControleOnline\Entity\Country
+    {
+        $normalizedCountryCode = strtoupper($this->normalizeString($countryCode));
+        $repository = $this->entityManager->getRepository(\ControleOnline\Entity\Country::class);
+
+        if ($normalizedCountryCode !== '') {
+            $country = $repository->findOneBy(['countrycode' => $normalizedCountryCode]);
+            if ($country instanceof \ControleOnline\Entity\Country) {
+                return $country;
+            }
+
+            $country = $repository->findOneBy(['isoalpha3' => $normalizedCountryCode]);
+            if ($country instanceof \ControleOnline\Entity\Country) {
+                return $country;
+            }
+        }
+
+        return $repository->findOneBy(['countrycode' => 'BR']);
+    }
+
+    private function resolveIfoodAddressStateCode(?\ControleOnline\Entity\Country $country, ?string $stateValue): string
+    {
+        $normalizedState = strtoupper($this->normalizeString($stateValue));
+        if ($normalizedState === '') {
+            return '';
+        }
+
+        if (!$country instanceof \ControleOnline\Entity\Country) {
+            return strlen($normalizedState) === 2 ? $normalizedState : '';
+        }
+
+        $stateRepository = $this->entityManager->getRepository(\ControleOnline\Entity\State::class);
+        $stateByUf = $stateRepository->findOneBy([
+            'country' => $country,
+            'uf' => $normalizedState,
+        ]);
+        if ($stateByUf instanceof \ControleOnline\Entity\State) {
+            return $stateByUf->getUf();
+        }
+
+        if (strlen($normalizedState) === 2) {
+            return $normalizedState;
+        }
+
+        $stateByName = $stateRepository->createQueryBuilder('state')
+            ->andWhere('state.country = :country')
+            ->andWhere('LOWER(state.state) = :stateName')
+            ->setParameter('country', $country)
+            ->setParameter('stateName', strtolower($this->normalizeString($stateValue)))
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        if ($stateByName instanceof \ControleOnline\Entity\State) {
+            return $stateByName->getUf();
+        }
+
+        return '';
+    }
+
+    private function resolveIfoodStreetNumberPayload(array $deliveryAddress): array
+    {
+        $rawStreetNumber = $this->normalizeString($deliveryAddress['streetNumber'] ?? null);
+        $streetNumberDigits = $this->normalizeDigits($rawStreetNumber);
+        $streetNumber = $streetNumberDigits !== '' ? (int) $streetNumberDigits : 0;
+
+        $complement = $this->normalizeString($deliveryAddress['complement'] ?? null);
+        $shouldPreserveRawNumber = $rawStreetNumber !== ''
+            && !ctype_digit($rawStreetNumber)
+            && stripos($complement, $rawStreetNumber) === false;
+
+        if ($shouldPreserveRawNumber) {
+            $complement = trim(sprintf(
+                '%s%s%s',
+                'Numero iFood: ' . $rawStreetNumber,
+                $complement !== '' ? ' | ' : '',
+                $complement
+            ));
+        }
+
+        return [
+            'street_number' => $streetNumber,
+            'street_number_raw' => $rawStreetNumber,
+            'complement' => $complement,
+        ];
+    }
+
     // ENTREGA
     // Define endereço de entrega e, se entrega for por terceiros, cria taxa de entrega
     private function addDelivery(Order &$order, array $orderDetails)
@@ -3551,25 +3857,53 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->addDeliveryFee($order, $orderDetails['total']);
         }
 
-        $latitude = (int) ($deliveryAddress['coordinates']['latitude'] ?? 0);
-        $longitude = (int) ($deliveryAddress['coordinates']['longitude'] ?? 0);
-        $postalCode = (int) preg_replace('/\D+/', '', (string) ($deliveryAddress['postalCode'] ?? ''));
+        $country = $this->resolveIfoodCountryEntity($deliveryAddress['country'] ?? null);
+        $countryCode = $country instanceof \ControleOnline\Entity\Country
+            ? $country->getCountrycode()
+            : 'BR';
+        $stateCode = $this->resolveIfoodAddressStateCode($country, $deliveryAddress['state'] ?? null);
+        $postalCodeDigits = preg_replace('/\D+/', '', (string) ($deliveryAddress['postalCode'] ?? ''));
+        $postalCode = $postalCodeDigits !== '' && $postalCodeDigits !== '0'
+            ? (int) $postalCodeDigits
+            : 0;
+        if ($postalCode <= 0) {
+            $postalCode = 99999998;
+        }
+
+        $streetName = $this->normalizeString($deliveryAddress['streetName'] ?? null);
+        if ($streetName === '') {
+            $formattedAddress = $this->normalizeString($deliveryAddress['formattedAddress'] ?? null);
+            if ($formattedAddress !== '') {
+                $streetName = trim((string) preg_replace('/,\s*.+$/', '', $formattedAddress));
+            }
+        }
+
+        $neighborhood = $this->normalizeString($deliveryAddress['neighborhood'] ?? null);
+        $city = $this->normalizeString($deliveryAddress['city'] ?? null);
+        $reference = $this->normalizeString($deliveryAddress['reference'] ?? null);
+        $streetNumberPayload = $this->resolveIfoodStreetNumberPayload($deliveryAddress);
+        $latitude = (float) ($deliveryAddress['coordinates']['latitude'] ?? 0);
+        $longitude = (float) ($deliveryAddress['coordinates']['longitude'] ?? 0);
 
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
             $order->getClient(),
             $postalCode,
-            (int) ($deliveryAddress['streetNumber'] ?? 0),
-            $deliveryAddress['streetName'] ?? null,
-            $deliveryAddress['neighborhood'] ?? null,
-            $deliveryAddress['city'] ?? null,
-            $deliveryAddress['state'] ?? null,
-            $deliveryAddress['country'] ?? null,
-            $deliveryAddress['complement'] ?? null,
-            $latitude,
-            $longitude,
+            (int) ($streetNumberPayload['street_number'] ?? 0),
+            $streetName !== '' ? $streetName : 'Endereço não informado',
+            $neighborhood !== '' ? $neighborhood : 'Sem bairro',
+            $city !== '' ? $city : 'Sem cidade',
+            $stateCode !== '' ? $stateCode : 'NI',
+            $countryCode,
+            $streetNumberPayload['complement'] ?? '',
+            (int) round($latitude),
+            (int) round($longitude),
+            $reference !== '' ? $reference : 'Default',
         );
 
+        $deliveryAddressEntity->setLatitude($latitude);
+        $deliveryAddressEntity->setLongitude($longitude);
         $order->setAddressDestination($deliveryAddressEntity);
+        $this->entityManager->persist($deliveryAddressEntity);
     }
 
     // TAXA DE ENTREGA

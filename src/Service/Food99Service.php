@@ -2800,6 +2800,36 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ], $wallet);
     }
 
+    private function shouldFood99UseMarketplaceWalletForReceivable(array $paymentTypeData): bool
+    {
+        $paymentType = strtolower(trim((string) ($paymentTypeData['paymentType'] ?? '')));
+
+        return !in_array($paymentType, [
+            'dinheiro',
+            'pos',
+            'débito',
+            'debito',
+            'crédito à vista',
+            'credito a vista',
+        ], true);
+    }
+
+    private function resolveFood99ReceivableWallet(
+        Order $order,
+        PaymentType $paymentType,
+        array $paymentTypeData
+    ): Wallet {
+        $walletName = $this->shouldFood99UseMarketplaceWalletForReceivable($paymentTypeData)
+            ? self::$app
+            : trim((string) $paymentType->getPaymentType());
+
+        if ($walletName === '') {
+            $walletName = self::$app;
+        }
+
+        return $this->walletService->discoverWallet($order->getProvider(), $walletName);
+    }
+
     private function applyFood99InvoiceContract(
         Invoice $invoice,
         PaymentType $paymentType,
@@ -6293,10 +6323,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
             $food99Wallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
             $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+            $customerPaymentTypeData = $this->resolveFood99InvoicePaymentTypeData(
+                $payType,
+                $payMethod,
+                $payChannel,
+                $deliveryType
+            );
             $customerPaymentType = $this->resolveFood99ProviderPaymentType(
                 $order->getProvider(),
-                $this->resolveFood99InvoicePaymentTypeData($payType, $payMethod, $payChannel, $deliveryType),
-                $providerWallet
+                $customerPaymentTypeData
+            );
+            $receivableWallet = $this->resolveFood99ReceivableWallet(
+                $order,
+                $customerPaymentType,
+                $customerPaymentTypeData
+            );
+            $this->walletService->discoverWalletPaymentType(
+                $receivableWallet,
+                $customerPaymentType,
+                $customerPaymentTypeData['paymentCode'] ?? null
             );
             $settlementPaymentType = $this->resolveFood99SettlementPaymentType($order->getProvider(), $providerWallet);
 
@@ -6323,7 +6368,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     $isPlatformDelivery ? $paidStatus : null,
                     new DateTime(),
                     null,
-                    $providerWallet
+                    $receivableWallet
                 );
 
                 $this->applyFood99InvoiceContract(
@@ -6341,7 +6386,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     ],
                     $isPlatformDelivery ? $paidStatus : null,
                     null,
-                    $providerWallet
+                    $receivableWallet
                 );
             }
 
