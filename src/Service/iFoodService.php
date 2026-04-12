@@ -70,6 +70,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $order = $this->findOrderByExternalId($orderId);
         if (!$order instanceof Order) {
+            if (!$this->shouldCreateOrderFromEvent($eventCode)) {
+                self::$logger->warning('iFood event ignored because local order does not exist and event should not create a new order', [
+                    'integration_id' => $integration->getId(),
+                    'event_code' => $eventCode,
+                    'order_id' => $orderId,
+                ]);
+                return null;
+            }
+
             $order = $this->addOrder($event);
         }
 
@@ -93,6 +102,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $this->entityManager->flush();
 
         return $order;
+    }
+
+    private function shouldCreateOrderFromEvent(string $eventCode): bool
+    {
+        $normalized = strtoupper($this->normalizeString($eventCode));
+        if ($normalized === '' || $normalized === 'KEEPALIVE') {
+            return false;
+        }
+
+        if ($this->isCancellationEventCode($normalized) || $this->isConclusionEventCode($normalized)) {
+            return false;
+        }
+
+        return true;
     }
 
     private function resolveIncomingEvent(Integration $integration): ?array
@@ -3207,7 +3230,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 return $order;
             }
 
-            $orderDetails = $this->fetchOrderDetails($orderId);
+            $eventOrderDetails = is_array($json['order'] ?? null) ? $json['order'] : [];
+            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+            $orderDetails = [];
+
+            if (is_array($fetchedOrderDetails)) {
+                $orderDetails = $fetchedOrderDetails;
+            }
+
+            if ($eventOrderDetails) {
+                $orderDetails = $this->mergeIfoodOrderDetails($orderDetails, $eventOrderDetails);
+            }
+
             if (!$orderDetails) {
                 self::$logger->error('iFood order details could not be fetched after retries', [
                     'order_id' => $orderId,
@@ -3242,6 +3276,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
             $this->syncOrderComments($order, $this->extractOrderRemarkFromPayload($orderDetails));
 
+            // Vincula o identificador remoto logo apos o shell order existir para evitar
+            // pedidos duplicados quando outros eventos chegarem enquanto o enriquecimento
+            // (itens/endereco/financeiro) ainda estiver acontecendo.
+            $this->entityManager->persist($order);
+            $this->entityManager->flush();
+            $this->discoveryFoodCode($order, $orderId, 'id');
+            $this->discoveryFoodCode($order, $orderId, 'code');
+
             $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
             if (is_array($orderDetails['delivery'] ?? null)) {
                 $this->addDelivery($order, $orderDetails);
@@ -3271,8 +3313,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'local_order_id' => $order->getId(),
             ]);
 
-            $this->discoveryFoodCode($order, $orderId, 'id');
-            $this->discoveryFoodCode($order, $orderId, 'code');
             $this->printOrder($order);
             $this->autoConfirmOrder($order, $orderId);
             return $order;
@@ -3456,6 +3496,45 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $providerWallet
             );
         }
+    }
+
+    private function mergeIfoodOrderDetails(array $primary, array $fallback): array
+    {
+        if (!$primary) {
+            return $fallback;
+        }
+
+        if (!$fallback) {
+            return $primary;
+        }
+
+        $merged = $fallback;
+
+        foreach ($primary as $key => $value) {
+            if (is_array($value)) {
+                $fallbackValue = is_array($fallback[$key] ?? null) ? $fallback[$key] : [];
+
+                if (array_is_list($value)) {
+                    $merged[$key] = !empty($value) ? $value : $fallbackValue;
+                    continue;
+                }
+
+                $merged[$key] = $this->mergeIfoodOrderDetails($value, $fallbackValue);
+                continue;
+            }
+
+            $normalizedValue = $this->normalizeString($value);
+            if ($normalizedValue !== '') {
+                $merged[$key] = $value;
+                continue;
+            }
+
+            if (!array_key_exists($key, $merged)) {
+                $merged[$key] = $value;
+            }
+        }
+
+        return $merged;
     }
 
     // ENTREGA
