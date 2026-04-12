@@ -1594,13 +1594,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $productId    = (int) ($row['id'] ?? 0);
         $name         = trim((string) ($row['name'] ?? ''));
         $price        = round((float) ($row['price'] ?? 0), 2);
+        $type         = strtolower(trim((string) ($row['type'] ?? '')));
         $categoryId   = isset($row['category_id']) && $row['category_id'] !== null ? (int) $row['category_id'] : null;
         $categoryName = $categoryId !== null ? trim((string) ($row['category_name'] ?? '')) : null;
+        $modifierGroups = is_array($row['modifier_groups'] ?? null) ? $row['modifier_groups'] : [];
+        $hasRequiredModifiers = !empty(array_filter($modifierGroups, static function (array $group): bool {
+            return !empty($group['required']) || (int) ($group['minimum'] ?? 0) >= 1;
+        }));
+        $allowZeroPriceByGroups = $type === 'custom' && $hasRequiredModifiers;
 
         $blockers = [];
         if ($name === '')    $blockers[] = 'Produto sem nome';
         if (!$categoryId)    $blockers[] = 'Produto sem categoria';
-        if ($price <= 0)     $blockers[] = 'Produto com preco invalido';
+        if ($price <= 0 && !$allowZeroPriceByGroups) $blockers[] = 'Produto com preco invalido';
 
         $ec = (string) $productId;
 
@@ -1613,6 +1619,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'price'            => $price,
             'type'             => (string) ($row['type'] ?? ''),
             'category'         => $categoryId !== null ? ['id' => $categoryId, 'name' => $categoryName] : null,
+            'has_required_modifiers' => $hasRequiredModifiers,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
             'published_remotely' => $remoteEntry !== null,
@@ -1876,7 +1883,204 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $sql .= ' ORDER BY p.product ASC';
 
+        $rows = $connection->fetchAllAssociative($sql, $params);
+
+        return $this->attachCatalogModifierGroups($provider, $rows);
+    }
+
+    private function normalizeProductIds(array $productIds): array
+    {
+        $normalized = [];
+
+        foreach ($productIds as $productId) {
+            if ($productId === null || $productId === '') {
+                continue;
+            }
+
+            $digits = preg_replace('/\D+/', '', (string) $productId);
+            if ($digits === '') {
+                continue;
+            }
+
+            $normalized[] = (int) $digits;
+        }
+
+        return array_values(array_unique(array_filter($normalized)));
+    }
+
+    private function fetchCatalogModifierRows(People $provider, array $productIds = []): array
+    {
+        $parentIds = $this->normalizeProductIds($productIds);
+        if (empty($parentIds)) {
+            return [];
+        }
+
+        $connection = $this->entityManager->getConnection();
+        $params = [
+            'providerId' => $provider->getId(),
+        ];
+
+        $placeholders = [];
+        foreach ($parentIds as $index => $productId) {
+            $key = 'parentProductId' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $productId;
+        }
+
+        $sql = <<<SQL
+            SELECT
+                pg.parent_product_id AS parent_product_id,
+                pg.id AS product_group_id,
+                pg.product_group AS product_group_name,
+                pg.required AS group_required,
+                pg.minimum AS group_minimum,
+                pg.maximum AS group_maximum,
+                pg.group_order AS group_order,
+                pg.active AS group_active,
+                pgp.id AS product_group_product_id,
+                pgp.quantity AS child_quantity,
+                pgp.price AS child_relation_price,
+                pgp.active AS relation_active,
+                child.id AS child_product_id,
+                child.product AS child_product_name,
+                child.description AS child_description,
+                child.price AS child_base_price,
+                child.sku AS child_sku,
+                child.active AS child_active
+            FROM product_group pg
+            INNER JOIN product_group_product pgp
+                ON pgp.product_group_id = pg.id
+            INNER JOIN product parent
+                ON parent.id = pg.parent_product_id
+            INNER JOIN product child
+                ON child.id = pgp.product_child_id
+            WHERE parent.company_id = :providerId
+              AND parent.active = 1
+              AND pgp.product_type IN ('component', 'package')
+              AND pg.parent_product_id IN (%s)
+            ORDER BY
+                pg.parent_product_id ASC,
+                COALESCE(pg.group_order, 0) ASC,
+                pg.id ASC,
+                pgp.id ASC,
+                child.product ASC,
+                child.id ASC
+        SQL;
+
+        $sql = sprintf($sql, implode(', ', $placeholders));
+
         return $connection->fetchAllAssociative($sql, $params);
+    }
+
+    private function attachCatalogModifierGroups(People $provider, array $products): array
+    {
+        if (empty($products)) {
+            return [];
+        }
+
+        $productIds = array_map(
+            static fn(array $product) => (int) ($product['id'] ?? 0),
+            $products
+        );
+        $modifierRows = $this->fetchCatalogModifierRows($provider, $productIds);
+        if (empty($modifierRows)) {
+            return array_map(static function (array $product): array {
+                $product['modifier_groups'] = [];
+                return $product;
+            }, $products);
+        }
+
+        $groupsByParentProduct = [];
+        foreach ($modifierRows as $modifierRow) {
+            $parentProductId = (int) ($modifierRow['parent_product_id'] ?? 0);
+            $groupId = (int) ($modifierRow['product_group_id'] ?? 0);
+            if ($parentProductId <= 0 || $groupId <= 0) {
+                continue;
+            }
+
+            if (!isset($groupsByParentProduct[$parentProductId][$groupId])) {
+                $isRequired = (int) ($modifierRow['group_required'] ?? 0) === 1;
+                $minimum = max(0, (int) round((float) ($modifierRow['group_minimum'] ?? 0)));
+                $maximum = max(0, (int) round((float) ($modifierRow['group_maximum'] ?? 0)));
+
+                if ($isRequired && $minimum === 0) {
+                    $minimum = 1;
+                }
+
+                $groupsByParentProduct[$parentProductId][$groupId] = [
+                    'id' => $groupId,
+                    'name' => trim((string) ($modifierRow['product_group_name'] ?? 'Grupo')),
+                    'required' => $isRequired,
+                    'minimum' => $minimum,
+                    'maximum' => $maximum,
+                    'group_order' => max(0, (int) ($modifierRow['group_order'] ?? 0)),
+                    'active' => (int) ($modifierRow['group_active'] ?? 0) === 1,
+                    'options' => [],
+                ];
+            }
+
+            $relationId = (int) ($modifierRow['product_group_product_id'] ?? 0);
+            $childProductId = (int) ($modifierRow['child_product_id'] ?? 0);
+            $childName = trim((string) ($modifierRow['child_product_name'] ?? ''));
+            if ($relationId <= 0 || $childProductId <= 0 || $childName === '') {
+                continue;
+            }
+
+            $rawChildPrice = $modifierRow['child_relation_price'] ?? null;
+            $childPrice = ($rawChildPrice === null || $rawChildPrice === '')
+                ? (float) ($modifierRow['child_base_price'] ?? 0)
+                : (float) $rawChildPrice;
+
+            $groupsByParentProduct[$parentProductId][$groupId]['options'][] = [
+                'id' => $relationId,
+                'child_product_id' => $childProductId,
+                'name' => $childName,
+                'description' => trim((string) ($modifierRow['child_description'] ?? '')),
+                'sku' => trim((string) ($modifierRow['child_sku'] ?? '')),
+                'quantity' => (float) ($modifierRow['child_quantity'] ?? 0),
+                'price' => round($childPrice, 2),
+                'active' => (int) ($modifierRow['relation_active'] ?? 0) === 1
+                    && (int) ($modifierRow['child_active'] ?? 0) === 1,
+            ];
+        }
+
+        return array_map(static function (array $product) use ($groupsByParentProduct): array {
+            $parentProductId = (int) ($product['id'] ?? 0);
+            $modifierGroups = array_values($groupsByParentProduct[$parentProductId] ?? []);
+
+            $modifierGroups = array_values(array_filter(array_map(static function (array $group): ?array {
+                $optionCount = count($group['options'] ?? []);
+                if ($optionCount === 0) {
+                    return null;
+                }
+
+                $minimum = max(0, (int) ($group['minimum'] ?? 0));
+                $maximum = max(0, (int) ($group['maximum'] ?? 0));
+
+                if ($maximum <= 0) {
+                    $maximum = $optionCount;
+                }
+
+                if ($minimum > $optionCount) {
+                    $minimum = $optionCount;
+                }
+
+                if ($maximum > $optionCount) {
+                    $maximum = $optionCount;
+                }
+
+                if ($maximum < $minimum) {
+                    $maximum = $minimum;
+                }
+
+                $group['minimum'] = $minimum;
+                $group['maximum'] = $maximum;
+                return $group;
+            }, $modifierGroups)));
+
+            $product['modifier_groups'] = $modifierGroups;
+            return $product;
+        }, $products);
     }
 
     /* --- catálogo v2 helpers ------------------------------------------ */
@@ -2110,6 +2314,128 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    private function generateStableUuidFromSeed(string $seed): string
+    {
+        $hash = md5(self::APP_CONTEXT . '|' . $seed);
+        $timeHiAndVersion = (hexdec(substr($hash, 12, 4)) & 0x0fff) | 0x5000;
+        $clockSeq = (hexdec(substr($hash, 16, 4)) & 0x3fff) | 0x8000;
+
+        return sprintf(
+            '%s-%s-%04x-%04x-%s',
+            substr($hash, 0, 8),
+            substr($hash, 8, 4),
+            $timeHiAndVersion,
+            $clockSeq,
+            substr($hash, 20, 12)
+        );
+    }
+
+    private function buildIfoodCatalogModifierPayload(array $product): array
+    {
+        $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
+        if (empty($modifierGroups)) {
+            return [
+                'product_option_groups' => null,
+                'products' => [],
+                'option_groups' => [],
+                'options' => [],
+            ];
+        }
+
+        $productOptionGroups = [];
+        $productsById = [];
+        $optionGroups = [];
+        $options = [];
+
+        foreach ($modifierGroups as $groupIndex => $group) {
+            $groupId = (int) ($group['id'] ?? 0);
+            $groupName = trim((string) ($group['name'] ?? ''));
+            $groupOptions = is_array($group['options'] ?? null) ? $group['options'] : [];
+            if ($groupId <= 0 || $groupName === '' || empty($groupOptions)) {
+                continue;
+            }
+
+            $groupUuid = $this->generateStableUuidFromSeed('catalog:group:' . $groupId);
+            $optionIds = [];
+
+            foreach ($groupOptions as $optionIndex => $option) {
+                $relationId = (int) ($option['id'] ?? 0);
+                $childProductId = (int) ($option['child_product_id'] ?? 0);
+                $childName = trim((string) ($option['name'] ?? ''));
+                if ($relationId <= 0 || $childProductId <= 0 || $childName === '') {
+                    continue;
+                }
+
+                $childProductUuid = $this->generateStableUuidFromSeed('catalog:option-product:' . $childProductId);
+                if (!isset($productsById[$childProductUuid])) {
+                    $childProductBody = [
+                        'id' => $childProductUuid,
+                        'externalCode' => 'option-product-' . $childProductId,
+                        'name' => $childName,
+                        'description' => (string) ($option['description'] ?? ''),
+                        'serving' => 'SERVES_1',
+                        'optionGroups' => null,
+                    ];
+
+                    $childSku = trim((string) ($option['sku'] ?? ''));
+                    if ($childSku !== '') {
+                        $childProductBody['ean'] = $childSku;
+                    }
+
+                    $childQuantity = (float) ($option['quantity'] ?? 0);
+                    if ($childQuantity > 0) {
+                        $childProductBody['quantity'] = $childQuantity;
+                    }
+
+                    $productsById[$childProductUuid] = $childProductBody;
+                }
+
+                $optionUuid = $this->generateStableUuidFromSeed('catalog:option:' . $relationId);
+                $optionIds[] = $optionUuid;
+                $optionPrice = round((float) ($option['price'] ?? 0), 2);
+
+                $options[] = [
+                    'id' => $optionUuid,
+                    'status' => !empty($option['active']) ? 'AVAILABLE' : 'UNAVAILABLE',
+                    'index' => $optionIndex,
+                    'productId' => $childProductUuid,
+                    'price' => [
+                        'value' => $optionPrice,
+                        'originalValue' => $optionPrice,
+                    ],
+                    'externalCode' => 'option-' . $relationId,
+                ];
+            }
+
+            if (empty($optionIds)) {
+                continue;
+            }
+
+            $productOptionGroups[] = [
+                'id' => $groupUuid,
+                'min' => max(0, (int) ($group['minimum'] ?? 0)),
+                'max' => max(0, (int) ($group['maximum'] ?? 0)),
+            ];
+
+            $optionGroups[] = [
+                'id' => $groupUuid,
+                'name' => $groupName,
+                'externalCode' => 'option-group-' . $groupId,
+                'status' => !empty($group['active']) ? 'AVAILABLE' : 'UNAVAILABLE',
+                'index' => max(0, (int) ($group['group_order'] ?? $groupIndex)),
+                'optionGroupType' => 'DEFAULT',
+                'optionIds' => $optionIds,
+            ];
+        }
+
+        return [
+            'product_option_groups' => !empty($productOptionGroups) ? $productOptionGroups : null,
+            'products' => array_values($productsById),
+            'option_groups' => $optionGroups,
+            'options' => $options,
+        ];
+    }
+
     private function normalizeImageMimeType(?string $contentType): ?string
     {
         $normalized = strtolower(trim((string) $contentType));
@@ -2294,6 +2620,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
+        $modifierPayload = $this->buildIfoodCatalogModifierPayload($product);
+        $productBody['optionGroups'] = $modifierPayload['product_option_groups'];
         $sourceImageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
         if ($sourceImageUrl) {
             $uploadedImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $sourceImageUrl);
@@ -2310,9 +2638,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $payload = [
             'item'         => $itemBody,
-            'products'     => [$productBody],
-            'optionGroups' => [],
-            'options'      => [],
+            'products'     => array_merge([$productBody], $modifierPayload['products']),
+            'optionGroups' => $modifierPayload['option_groups'],
+            'options'      => $modifierPayload['options'],
         ];
 
         $attempts = [$payload];
