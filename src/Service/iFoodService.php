@@ -18,6 +18,7 @@ use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
 use ControleOnline\Entity\Wallet;
+use ControleOnline\Entity\WalletPaymentType;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -1182,7 +1183,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             if ($wallet instanceof Wallet) {
-                $this->walletService->discoverWalletPaymentType(
+                $this->ensureIfoodWalletPaymentType(
                     $wallet,
                     $paymentType,
                     $paymentTypeData['paymentCode'] ?? null
@@ -1199,7 +1200,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ]);
 
         if ($wallet instanceof Wallet) {
-            $this->walletService->discoverWalletPaymentType(
+            $this->ensureIfoodWalletPaymentType(
                 $wallet,
                 $paymentType,
                 $paymentTypeData['paymentCode'] ?? null
@@ -1218,6 +1219,41 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'installments' => 'single',
             'paymentCode' => self::APP_CONTEXT,
         ], $wallet);
+    }
+
+    private function ensureIfoodWalletPaymentType(
+        Wallet $wallet,
+        PaymentType $paymentType,
+        $paymentCode = null
+    ): WalletPaymentType {
+        $normalizedPaymentCode = $this->normalizeString($paymentCode);
+
+        $walletPaymentType = $this->entityManager
+            ->getRepository(WalletPaymentType::class)
+            ->findOneBy([
+                'wallet' => $wallet,
+                'paymentType' => $paymentType,
+            ]);
+
+        if ($walletPaymentType instanceof WalletPaymentType) {
+            $currentPaymentCode = $this->normalizeString($walletPaymentType->getPaymentCode());
+            if ($currentPaymentCode === '' && $normalizedPaymentCode !== '') {
+                $walletPaymentType->setPaymentCode($normalizedPaymentCode);
+                $this->entityManager->persist($walletPaymentType);
+                $this->entityManager->flush();
+            }
+
+            return $walletPaymentType;
+        }
+
+        $walletPaymentType = new WalletPaymentType();
+        $walletPaymentType->setWallet($wallet);
+        $walletPaymentType->setPaymentType($paymentType);
+        $walletPaymentType->setPaymentCode($normalizedPaymentCode !== '' ? $normalizedPaymentCode : null);
+        $this->entityManager->persist($walletPaymentType);
+        $this->entityManager->flush();
+
+        return $walletPaymentType;
     }
 
     private function shouldIfoodUseMarketplaceWalletForReceivable(array $paymentTypeData, bool $isPrepaid): bool
@@ -3776,7 +3812,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $paymentTypeData,
                 $isPrepaid
             );
-            $this->walletService->discoverWalletPaymentType(
+            $this->ensureIfoodWalletPaymentType(
                 $receivableWallet,
                 $paymentType,
                 $paymentTypeData['paymentCode'] ?? null
