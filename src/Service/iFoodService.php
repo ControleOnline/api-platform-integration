@@ -971,6 +971,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'customer_need_paying_money' => (string) $amountPending,
             'collect_on_delivery_amount' => (string) ($amountPending > 0.0 ? $amountPending : 0.0),
             'change_for' => (string) $changeFor,
+            'change_amount' => (string) max(0.0, $changeFor - $amountPending),
+            'needs_change' => $changeFor > 0.009,
         ];
 
         if (($snapshot['address_display'] ?? '') === '' && $addressDisplay !== '') {
