@@ -1121,10 +1121,47 @@ class IntegrationController extends AbstractController
         }
 
         $closeResult = $this->iFoodService->closeStore($provider);
-        // Retorna o status real do iFood apos a operacao para evitar estado otimista incorreto
-        $result = ($closeResult['errno'] === 0)
-            ? $this->iFoodService->getStoreStatus($provider)
-            : $closeResult;
+        $result = $closeResult;
+        if (($closeResult['errno'] ?? 1) === 0) {
+            $statusResult = $this->iFoodService->getStoreStatus($provider);
+            if (($statusResult['errno'] ?? 1) === 0) {
+                $statusData = is_array($statusResult['data'] ?? null) ? $statusResult['data'] : [];
+                $closeData = is_array($closeResult['data'] ?? null) ? $closeResult['data'] : [];
+                $createdInterruption = is_array($closeData['interruption'] ?? null)
+                    ? $closeData['interruption']
+                    : null;
+
+                if ($createdInterruption !== null) {
+                    $createdInterruptionId = $this->normalizeString($createdInterruption['id'] ?? null);
+                    $interruptions = is_array($statusData['interruptions'] ?? null)
+                        ? $statusData['interruptions']
+                        : [];
+
+                    $alreadyPresent = false;
+                    if ($createdInterruptionId !== '') {
+                        foreach ($interruptions as $interruption) {
+                            if ($this->normalizeString($interruption['id'] ?? null) === $createdInterruptionId) {
+                                $alreadyPresent = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!$alreadyPresent) {
+                        $interruptions[] = $createdInterruption;
+                    }
+
+                    $statusData['interruptions'] = $interruptions;
+                }
+
+                if (($closeData['online'] ?? null) === false) {
+                    $statusData['online'] = false;
+                }
+
+                $statusResult['data'] = $statusData;
+                $result = $statusResult;
+            }
+        }
 
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
