@@ -52,9 +52,7 @@ class DefaultFoodService
     protected function printOrder(Order $order)
     {
         try {
-            $this->orderPrintService->printOrder($order, [], [
-                'sound' => $order->getApp()
-            ]);
+            $this->orderPrintService->printOrder($order);
         } catch (\Throwable $exception) {
             self::$logger?->warning('Marketplace order print skipped because spool generation failed', [
                 'local_order_id' => $order->getId(),
