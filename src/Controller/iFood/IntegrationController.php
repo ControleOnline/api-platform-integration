@@ -754,6 +754,82 @@ class IntegrationController extends AbstractController
         ];
     }
 
+    private function normalizeMerchantStatusLabel(string $status): string
+    {
+        return match (strtoupper($status)) {
+            'AVAILABLE', 'ONLINE', 'OPEN' => 'Online',
+            'UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE' => 'Offline',
+            default => 'Indefinido',
+        };
+    }
+
+    private function buildMerchantStoreDetail(?array $detail, ?array $selectedStore = null): ?array
+    {
+        if (!is_array($detail) || !$detail) {
+            return null;
+        }
+
+        $address = is_array($detail['address'] ?? null) ? $detail['address'] : [];
+        $operations = array_values(array_filter(array_map(function ($operation): ?array {
+            if (!is_array($operation)) {
+                return null;
+            }
+
+            $salesChannels = array_values(array_filter(array_map(function ($channel): ?string {
+                if (is_array($channel)) {
+                    return $this->normalizeString(
+                        $channel['displayName'] ?? $channel['name'] ?? $channel['salesChannel'] ?? $channel['value'] ?? null
+                    );
+                }
+
+                return $this->normalizeString($channel);
+            }, is_array($operation['salesChannels'] ?? null) ? $operation['salesChannels'] : [])));
+
+            return [
+                'name' => $this->normalizeString($operation['name'] ?? $operation['operation'] ?? null),
+                'sales_channels' => $salesChannels,
+            ];
+        }, is_array($detail['operations'] ?? null) ? $detail['operations'] : [])));
+
+        $formattedAddress = implode(', ', array_values(array_filter([
+            $this->normalizeString($address['streetName'] ?? $address['street'] ?? null),
+            $this->normalizeString($address['streetNumber'] ?? $address['number'] ?? null),
+            $this->normalizeString($address['district'] ?? $address['neighborhood'] ?? null),
+            $this->normalizeString($address['city'] ?? null),
+            $this->normalizeString($address['state'] ?? null),
+        ], static fn ($value) => $value !== '')));
+
+        $status = $this->normalizeString(
+            $detail['status'] ?? $detail['merchantStatus'] ?? $selectedStore['status'] ?? null
+        );
+
+        return [
+            'merchant_id' => $this->normalizeString(
+                $detail['id'] ?? $detail['merchantId'] ?? $selectedStore['merchant_id'] ?? null
+            ),
+            'name' => $this->normalizeString($detail['name'] ?? $selectedStore['name'] ?? null),
+            'corporate_name' => $this->normalizeString($detail['corporateName'] ?? null),
+            'description' => $this->normalizeString($detail['description'] ?? null),
+            'type' => $this->normalizeString($detail['merchantType'] ?? $detail['type'] ?? null),
+            'timezone' => $this->normalizeString($detail['timezone'] ?? null),
+            'status' => $status,
+            'status_label' => $this->normalizeMerchantStatusLabel($status),
+            'average_ticket' => $detail['averageTicket'] ?? null,
+            'address' => [
+                'street' => $this->normalizeString($address['streetName'] ?? $address['street'] ?? null),
+                'number' => $this->normalizeString($address['streetNumber'] ?? $address['number'] ?? null),
+                'complement' => $this->normalizeString($address['complement'] ?? null),
+                'district' => $this->normalizeString($address['district'] ?? $address['neighborhood'] ?? null),
+                'city' => $this->normalizeString($address['city'] ?? null),
+                'state' => $this->normalizeString($address['state'] ?? null),
+                'postal_code' => $this->normalizeString($address['postalCode'] ?? $address['zipCode'] ?? null),
+                'country' => $this->normalizeString($address['country'] ?? null),
+                'formatted' => $formattedAddress,
+            ],
+            'operations' => $operations,
+        ];
+    }
+
     private function buildProviderIntegrationDetail(People $provider, bool $refreshRemote = false): array
     {
         $syncResult = null;
@@ -767,11 +843,7 @@ class IntegrationController extends AbstractController
             : [];
         $stores = array_map(function (array $store): array {
             $status = strtoupper((string) ($store['status'] ?? ''));
-            $store['status_label'] = match ($status) {
-                'AVAILABLE', 'ONLINE', 'OPEN' => 'Online',
-                'UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE' => 'Offline',
-                default => 'Indefinido',
-            };
+            $store['status_label'] = $this->normalizeMerchantStatusLabel($status);
             return $store;
         }, $rawStores);
 
@@ -787,6 +859,14 @@ class IntegrationController extends AbstractController
                 }
             }
         }
+
+        $selectedStoreDetailResponse = $merchantId !== ''
+            ? $this->iFoodService->getMerchantDetail($provider)
+            : ['errno' => 0, 'errmsg' => 'ok', 'data' => null];
+        $selectedStoreDetail = $this->buildMerchantStoreDetail(
+            is_array($selectedStoreDetailResponse['data'] ?? null) ? $selectedStoreDetailResponse['data'] : null,
+            $selectedStore
+        );
 
         return [
             'provider' => [
@@ -819,6 +899,13 @@ class IntegrationController extends AbstractController
                 'total' => count($stores),
             ],
             'selected_store' => $selectedStore,
+            'selected_store_detail' => $selectedStoreDetail,
+            'selected_store_detail_error' => (int) ($selectedStoreDetailResponse['errno'] ?? 0) === 0
+                ? null
+                : [
+                    'errno' => $selectedStoreDetailResponse['errno'] ?? 1,
+                    'errmsg' => $selectedStoreDetailResponse['errmsg'] ?? 'Falha ao obter detalhes da loja',
+                ],
             'store_error' => (int) ($storesResponse['errno'] ?? 1) === 0 ? null : [
                 'errno' => $storesResponse['errno'] ?? 1,
                 'errmsg' => $storesResponse['errmsg'] ?? 'Falha ao listar lojas',

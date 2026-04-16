@@ -1911,6 +1911,36 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    public function getMerchantDetail(People $provider): array
+    {
+        $this->init();
+        $stored = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
+        }
+
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
+        }
+
+        $detail = $this->getMerchantDetailRaw($merchantId, $token);
+        if ((int) ($detail['errno'] ?? 1) !== 0 || !is_array($detail['data'] ?? null)) {
+            return [
+                'errno' => (int) ($detail['errno'] ?? 1),
+                'errmsg' => $this->normalizeString($detail['errmsg'] ?? 'Falha ao obter detalhes da loja'),
+                'data' => null,
+            ];
+        }
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => $detail['data'],
+        ];
+    }
+
     public function listMerchants(): array
     {
         return $this->listMerchantsRaw();
