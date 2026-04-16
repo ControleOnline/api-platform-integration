@@ -866,12 +866,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ?? $schedule['scheduledDateTimeEnd']
                 ?? null
         );
+        $takeout = is_array($orderPayload['takeout'] ?? null) ? $orderPayload['takeout'] : [];
+        $dineIn = is_array($orderPayload['dineIn'] ?? null) ? $orderPayload['dineIn'] : [];
         $deliveryDateTime = $this->normalizeString(
             $delivery['deliveryDateTime']
                 ?? $delivery['estimatedDeliveryDate']
                 ?? null
         );
         $preparationStart = $this->normalizeString($orderPayload['preparationStartDateTime'] ?? null);
+        $takeoutMode = strtoupper($this->normalizeString($takeout['mode'] ?? null));
+        $takeoutDateTime = $this->normalizeString(
+            $takeout['takeoutDateTime']
+                ?? $takeout['pickupDateTime']
+                ?? null
+        );
+        $dineInDateTime = $this->normalizeString(
+            $dineIn['deliveryDateTime']
+                ?? $dineIn['dineInDateTime']
+                ?? null
+        );
 
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
@@ -911,6 +924,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ['handoverConfirmationUrl'],
             ['handover_confirmation_url'],
         ]);
+        $pickupAreaCode = $this->extractOrderPayloadValue($orderPayload, [
+            ['pickup', 'area', 'code'],
+            ['pickup', 'areaCode'],
+            ['pickupArea', 'code'],
+            ['takeout', 'pickupArea', 'code'],
+            ['takeout', 'pickupAreaCode'],
+        ]);
+        $pickupAreaType = $this->extractOrderPayloadValue($orderPayload, [
+            ['pickup', 'area', 'type'],
+            ['pickup', 'areaType'],
+            ['pickupArea', 'type'],
+            ['takeout', 'pickupArea', 'type'],
+            ['takeout', 'pickupAreaType'],
+        ]);
 
         if ($handoverConfirmationUrl === '' && $handoverPageUrl !== '') {
             $handoverConfirmationUrl = $handoverPageUrl;
@@ -933,7 +960,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'order_timing' => $orderTiming,
             'delivered_by' => $deliveredBy,
             'delivery_mode' => $deliveryMode,
+            'takeout_mode' => $takeoutMode,
+            'takeout_date_time' => $takeoutDateTime,
+            'dine_in_date_time' => $dineInDateTime,
             'pickup_code' => $pickupCode,
+            'pickup_area_code' => $pickupAreaCode,
+            'pickup_area_type' => $pickupAreaType,
             'handover_code' => $pickupCode,
             'locator' => $locator,
             'handover_page_url' => $handoverPageUrl,
@@ -1609,7 +1641,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'order_timing' => $this->getIfoodExtraDataValue('Order', $orderId, 'order_timing'),
             'delivered_by' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivered_by'),
             'delivery_mode' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_mode'),
+            'takeout_mode' => $this->getIfoodExtraDataValue('Order', $orderId, 'takeout_mode'),
+            'takeout_date_time' => $this->getIfoodExtraDataValue('Order', $orderId, 'takeout_date_time'),
+            'dine_in_date_time' => $this->getIfoodExtraDataValue('Order', $orderId, 'dine_in_date_time'),
             'pickup_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_code'),
+            'pickup_area_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_area_code'),
+            'pickup_area_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'pickup_area_type'),
             'handover_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'handover_code'),
             'locator' => $this->getIfoodExtraDataValue('Order', $orderId, 'locator'),
             'handover_page_url' => $this->getIfoodExtraDataValue('Order', $orderId, 'handover_page_url'),

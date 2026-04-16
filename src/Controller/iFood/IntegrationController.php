@@ -381,6 +381,15 @@ class IntegrationController extends AbstractController
     private function resolveDeliveryContext(Order $order, array $payload, array $storedState): array
     {
         $delivery = is_array($payload['order']['delivery'] ?? null) ? $payload['order']['delivery'] : [];
+        $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+        $orderType = strtoupper($this->normalizeString(
+            $orderPayload['orderType']
+                ?? $storedState['order_type']
+                ?? null
+        ));
+        $isTakeout = $orderType === 'TAKEOUT';
+        $isDineIn = in_array($orderType, ['DINE_IN', 'INDOOR'], true);
+        $isDelivery = !$isTakeout && !$isDineIn;
         $deliveredBy = strtoupper($this->normalizeString(
             $delivery['deliveredBy']
                 ?? $storedState['delivered_by']
@@ -393,20 +402,40 @@ class IntegrationController extends AbstractController
                 ?? null
         ));
 
-        $isStoreDelivery = $deliveredBy === 'MERCHANT'
-            || in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true);
-        $isPlatformDelivery = $deliveredBy === 'IFOOD'
-            || in_array($deliveryMode, ['ifood', 'platform', 'marketplace'], true);
+        $isStoreDelivery = $isDelivery && (
+            $deliveredBy === 'MERCHANT'
+            || in_array($deliveryMode, ['merchant', 'store', 'self', 'self_delivery', 'own', 'own_fleet'], true)
+        );
+        $isPlatformDelivery = $isDelivery && (
+            $deliveredBy === 'IFOOD'
+            || in_array($deliveryMode, ['ifood', 'platform', 'marketplace'], true)
+        );
 
-        $deliveryLabel = 'Entrega indefinida';
-        if ($isStoreDelivery) {
-            $deliveryLabel = 'Entrega da loja';
-        } elseif ($isPlatformDelivery) {
-            $deliveryLabel = 'Entrega iFood';
+        $deliveryLabel = null;
+        if ($isDelivery) {
+            $deliveryLabel = 'Entrega indefinida';
+            if ($isStoreDelivery) {
+                $deliveryLabel = 'Entrega da loja';
+            } elseif ($isPlatformDelivery) {
+                $deliveryLabel = 'Entrega iFood';
+            }
         }
+
+        $orderTypeLabel = match ($orderType) {
+            'DELIVERY' => 'Entrega',
+            'TAKEOUT' => 'Retirada',
+            'DINE_IN', 'INDOOR' => 'Consumir no local',
+            default => $deliveryLabel ?: 'Indefinido',
+        };
 
         return [
             'delivery_label' => $deliveryLabel,
+            'fulfillment_label' => $orderTypeLabel,
+            'order_type' => $orderType !== '' ? $orderType : null,
+            'order_type_label' => $orderTypeLabel,
+            'is_delivery' => $isDelivery,
+            'is_takeout' => $isTakeout,
+            'is_dine_in' => $isDineIn,
             'is_store_delivery' => $isStoreDelivery,
             'is_platform_delivery' => $isPlatformDelivery,
             'delivered_by' => $deliveredBy !== '' ? $deliveredBy : null,
@@ -495,8 +524,108 @@ class IntegrationController extends AbstractController
         ];
     }
 
-    private function buildAddressDetail(Order $order, array $payload, array $storedState): array
+    private function resolveTakeoutModeLabel(?string $mode): ?string
     {
+        $normalized = strtoupper($this->normalizeString($mode));
+        if ($normalized === '') {
+            return null;
+        }
+
+        return match ($normalized) {
+            'DEFAULT' => 'Balcão',
+            'DRIVE_THRU', 'DRIVE_THRU_PICKUP' => 'Drive-thru',
+            'CURBSIDE', 'CURBSIDE_PICKUP' => 'Retirada na vaga',
+            default => ucfirst(strtolower(str_replace('_', ' ', $normalized))),
+        };
+    }
+
+    private function buildFulfillmentDetail(array $deliveryContext): array
+    {
+        return [
+            'order_type' => $deliveryContext['order_type'] ?? null,
+            'order_type_label' => $deliveryContext['order_type_label'] ?? null,
+            'fulfillment_label' => $deliveryContext['fulfillment_label'] ?? null,
+            'is_delivery' => !empty($deliveryContext['is_delivery']),
+            'is_takeout' => !empty($deliveryContext['is_takeout']),
+            'is_dine_in' => !empty($deliveryContext['is_dine_in']),
+        ];
+    }
+
+    private function buildTakeoutDetail(array $payload, array $storedState, array $deliveryContext): array
+    {
+        $orderPayload = $this->resolveOrderPayload($payload);
+        $takeout = is_array($orderPayload['takeout'] ?? null) ? $orderPayload['takeout'] : [];
+        $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
+        $mode = $this->preferredText(
+            $takeout['mode'] ?? null,
+            $storedState['takeout_mode'] ?? null
+        );
+        $pickupAreaCode = $this->preferredText(
+            $pickup['area']['code'] ?? null,
+            $pickup['areaCode'] ?? null,
+            $takeout['pickupArea']['code'] ?? null,
+            $takeout['pickupAreaCode'] ?? null,
+            $storedState['pickup_area_code'] ?? null
+        );
+        $pickupAreaType = $this->preferredText(
+            $pickup['area']['type'] ?? null,
+            $pickup['areaType'] ?? null,
+            $takeout['pickupArea']['type'] ?? null,
+            $takeout['pickupAreaType'] ?? null,
+            $storedState['pickup_area_type'] ?? null
+        );
+
+        return [
+            'is_takeout' => !empty($deliveryContext['is_takeout']),
+            'mode' => $mode,
+            'mode_label' => $this->resolveTakeoutModeLabel($mode),
+            'takeout_date_time' => $this->preferredText(
+                $takeout['takeoutDateTime'] ?? null,
+                $takeout['pickupDateTime'] ?? null,
+                $storedState['takeout_date_time'] ?? null
+            ),
+            'pickup_code' => $this->preferredText(
+                $pickup['code'] ?? null,
+                $storedState['pickup_code'] ?? null
+            ),
+            'pickup_area_code' => $pickupAreaCode,
+            'pickup_area_type' => $pickupAreaType,
+            'pickup_area_type_label' => $this->resolveTakeoutModeLabel($pickupAreaType),
+        ];
+    }
+
+    private function buildDineInDetail(array $payload, array $storedState, array $deliveryContext): array
+    {
+        $orderPayload = $this->resolveOrderPayload($payload);
+        $dineIn = is_array($orderPayload['dineIn'] ?? null) ? $orderPayload['dineIn'] : [];
+
+        return [
+            'is_dine_in' => !empty($deliveryContext['is_dine_in']),
+            'delivery_date_time' => $this->preferredText(
+                $dineIn['deliveryDateTime'] ?? null,
+                $dineIn['dineInDateTime'] ?? null,
+                $storedState['dine_in_date_time'] ?? null
+            ),
+        ];
+    }
+
+    private function buildAddressDetail(Order $order, array $payload, array $storedState, array $deliveryContext = []): array
+    {
+        if (!($deliveryContext['is_delivery'] ?? true)) {
+            return [
+                'display' => null,
+                'street_name' => null,
+                'street_number' => null,
+                'district' => null,
+                'city' => null,
+                'state' => null,
+                'postal_code' => null,
+                'reference' => null,
+                'complement' => null,
+                'poi_address' => null,
+            ];
+        }
+
         $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
         $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
@@ -741,6 +870,7 @@ class IntegrationController extends AbstractController
                 'ifood_id' => $storedState['ifood_id'] ?? null,
                 'ifood_code' => $storedState['ifood_code'] ?? null,
                 'merchant_id' => $storedState['merchant_id'] ?? null,
+                'order_type' => $deliveryContext['order_type'] ?? null,
                 'remote_order_state' => $remoteState,
                 'remote_order_state_label' => $this->resolveRemoteOrderStateLabel($remoteState),
                 'last_event_type' => $storedState['last_event_type'] ?? null,
@@ -758,7 +888,10 @@ class IntegrationController extends AbstractController
                 'last_integration_id' => $storedState['last_integration_id'] ?? null,
             ],
             'customer' => $this->buildCustomerDetail($payload, $storedState, $order),
-            'address' => $this->buildAddressDetail($order, $payload, $storedState),
+            'address' => $this->buildAddressDetail($order, $payload, $storedState, $deliveryContext),
+            'fulfillment' => $this->buildFulfillmentDetail($deliveryContext),
+            'takeout' => $this->buildTakeoutDetail($payload, $storedState, $deliveryContext),
+            'dine_in' => $this->buildDineInDetail($payload, $storedState, $deliveryContext),
             'delivery'      => $this->buildDeliveryDetail($payload, $storedState, $remoteState, $deliveryContext, $capabilities),
             'payment'       => $this->buildPaymentDetail($payload, $storedState),
             'financial'     => $this->buildFinancialDetail($payload, $storedState),
@@ -861,11 +994,13 @@ class IntegrationController extends AbstractController
                 'delivery_arrived_at_destination',
             ], true);
 
-        $isStoreDelivery = !empty($deliveryContext['is_store_delivery']);
-        $hasHandoverFlow = $isStoreDelivery && ($handoverUrl !== '' || $locator !== '' || $pickupCode !== '');
+        $isDeliveryFlow = !empty($deliveryContext['is_delivery']);
+        $isPickupFlow = !empty($deliveryContext['is_takeout']) || !empty($deliveryContext['is_dine_in']);
+        $isStoreDelivery = $isDeliveryFlow && !empty($deliveryContext['is_store_delivery']);
+        $hasHandoverFlow = $isDeliveryFlow && $isStoreDelivery && ($handoverUrl !== '' || $locator !== '' || $pickupCode !== '');
         $canCancel = !$isTerminal;
         $canReady = !$isTerminal && $isPreparing && !$isReadyOrBeyond;
-        $canDelivered = !$isTerminal && $isStoreDelivery && $isDelivering;
+        $canDelivered = !$isTerminal && $isDeliveryFlow && $isStoreDelivery && $isDelivering;
 
         return [
             'can_ready' => $canReady,
@@ -879,6 +1014,9 @@ class IntegrationController extends AbstractController
             'can_open_handover_flow' => $canDelivered && $hasHandoverFlow,
             'is_terminal' => $isTerminal,
             'is_delivering' => $isDelivering,
+            'is_pickup' => $isPickupFlow,
+            'is_dine_in' => !empty($deliveryContext['is_dine_in']),
+            'uses_ready_to_pickup' => $isPickupFlow,
             'remote_state' => $remoteState,
         ];
     }
