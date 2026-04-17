@@ -4069,21 +4069,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function resolveIfoodStreetNumberPayload(array $deliveryAddress): array
     {
         $rawStreetNumber = $this->normalizeString($deliveryAddress['streetNumber'] ?? null);
-        $streetNumberDigits = $this->normalizeDigits($rawStreetNumber);
-        $streetNumber = $streetNumberDigits !== '' ? (int) $streetNumberDigits : 0;
+        $streetNumber = $rawStreetNumber !== '' && ctype_digit($rawStreetNumber)
+            ? (int) $rawStreetNumber
+            : null;
 
         $complement = $this->normalizeString($deliveryAddress['complement'] ?? null);
         $shouldPreserveRawNumber = $rawStreetNumber !== ''
-            && !ctype_digit($rawStreetNumber)
+            && $streetNumber === null
             && stripos($complement, $rawStreetNumber) === false;
 
         if ($shouldPreserveRawNumber) {
-            $complement = trim(sprintf(
-                '%s%s%s',
-                'Numero iFood: ' . $rawStreetNumber,
-                $complement !== '' ? ' | ' : '',
-                $complement
-            ));
+            $complement = trim(sprintf('%s %s', $rawStreetNumber, $complement));
         }
 
         return [
@@ -4141,7 +4137,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'formatted_address' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
             'street_name' => $streetName,
             'street_number_raw' => $streetNumberPayload['street_number_raw'] ?? '',
-            'street_number' => $streetNumberPayload['street_number'] ?? 0,
+            'street_number' => $streetNumberPayload['street_number'] ?? null,
             'neighborhood' => $neighborhood,
             'city' => $city,
             'state_input' => $this->normalizeString($deliveryAddress['state'] ?? null),
@@ -4157,7 +4153,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
             $order->getClient(),
             $postalCode,
-            (int) ($streetNumberPayload['street_number'] ?? 0),
+            $streetNumberPayload['street_number'] ?? null,
             $streetName !== '' ? $streetName : 'Endereço não informado',
             $neighborhood !== '' ? $neighborhood : 'Sem bairro',
             $city !== '' ? $city : 'Sem cidade',
