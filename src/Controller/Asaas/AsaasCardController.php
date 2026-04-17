@@ -8,20 +8,16 @@ use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInt
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use ControleOnline\Service\AsaasService;
-use ControleOnline\Service\CardService;
 use ControleOnline\Service\LoggerService;
-use Doctrine\ORM\EntityManagerInterface;
 
 class AsaasCardController extends AbstractController
 {
     protected static $logger;
 
     public function __construct(
-        private EntityManagerInterface $manager,
         private LoggerService $loggerService,
         protected Security $security,
-        protected AsaasService $asaasService,
-        protected CardService $cardService
+        protected AsaasService $asaasService
     ) {
         self::$logger = $loggerService->getLogger('asaas');
     }
@@ -32,19 +28,8 @@ class AsaasCardController extends AbstractController
         Request $request
     ): JsonResponse {
         try {
-
-
-            $json = json_decode($request->getContent(), true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
-                return new JsonResponse(['error' => 'Invalid JSON'], 400);
-            }
-
-            $card = $this->cardService->findCardById($json['card_id']);
-
-            $this->asaasService->payWithCard($invoice, $card);
-
-            self::$logger->info('Pagamento Asaas criado', ['event' => $json]);
+            $this->asaasService->payWithCardFromContent($invoice, $request->getContent());
+            self::$logger->info('Pagamento Asaas criado', ['invoice' => $invoice->getId()]);
 
             return new JsonResponse(['status' => 'accepted'], 202);
         } catch (\Exception $e) {

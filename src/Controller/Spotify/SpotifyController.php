@@ -28,7 +28,11 @@ class SpotifyController extends AbstractController
             if (!$people)
                 throw new Exception('People not found');
 
-            $spotify_autentication =  json_decode($this->configService->discoveryConfig($people, 'spotify_autentication')?->getConfigValue(), true);
+            $spotify_autentication = $this->configService->getConfig(
+                $people,
+                'spotify_autentication',
+                true
+            );
 
             if (!$spotify_autentication)
                 throw new Exception('Spotify is not configured');

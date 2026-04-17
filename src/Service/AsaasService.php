@@ -34,7 +34,9 @@ class AsaasService
         private OrderService $orderService,
         private WalletService $walletService,
         private StatusService $statusService,
-        private ExtraDataService $extraDataService
+        private ExtraDataService $extraDataService,
+        private CardService $cardService,
+        private RequestPayloadService $requestPayloadService
     ) {}
 
     private function getApiKey(People $people)
@@ -170,6 +172,22 @@ class AsaasService
         }
 
         return $invoice;
+    }
+
+    public function payWithCardFromContent(Invoice $invoice, ?string $content): Invoice
+    {
+        $payload = $this->requestPayloadService->decodeJsonContent($content);
+        $cardId = (int) ($payload['card_id'] ?? 0);
+        if ($cardId <= 0) {
+            throw new \InvalidArgumentException('card_id is required');
+        }
+
+        $card = $this->cardService->findCardById($cardId);
+        if (!$card instanceof Card) {
+            throw new \InvalidArgumentException('Card not found');
+        }
+
+        return $this->payWithCard($invoice, $card);
     }
 
     private function discoveryAsaasCode(object $entity, string $code)

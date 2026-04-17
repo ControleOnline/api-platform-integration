@@ -11,6 +11,7 @@ use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\WhatsAppService;
 use Symfony\Component\HttpFoundation\JsonResponse;
+use ControleOnline\Service\RequestPayloadService;
 
 class ClickSignController extends AbstractController
 {
@@ -18,6 +19,7 @@ class ClickSignController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
+        private RequestPayloadService $requestPayloadService,
         public WhatsAppService $whatsAppService
     ) {
         self::$logger = $loggerService->getLogger('ClickSign');
@@ -30,11 +32,7 @@ class ClickSignController extends AbstractController
         IntegrationService $integrationService
     ): Response {
         $rawInput = $request->getContent();
-        $event = json_decode($rawInput, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
-            return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
-        }
+        $event = $this->requestPayloadService->decodeJsonContent($rawInput);
 
         $integrationService->addIntegration($rawInput, 'ClickSign');
         self::$logger->info('Evento enviado para a fila', ['event' => $event]);

@@ -12,6 +12,7 @@ use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Message\Asaas\WebhookMessage;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
 
 class AsaasWebhookController extends AbstractController
@@ -21,6 +22,7 @@ class AsaasWebhookController extends AbstractController
     public function __construct(
         private EntityManagerInterface $manager,
         private LoggerService $loggerService,
+        private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('asaas');
     }
@@ -45,15 +47,7 @@ class AsaasWebhookController extends AbstractController
             $people = $this->manager->getRepository(People::class)->find($id);
             if (!$people)
                 return new JsonResponse(['error' => 'People not found'], 404);
-
-
-            $json = json_decode($request->getContent(), true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
-                return new JsonResponse(['error' => 'Invalid JSON'], 400);
-            }
-
-
+            $json = $this->requestPayloadService->decodeJsonContent($request->getContent());
 
             $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user, $people);
 

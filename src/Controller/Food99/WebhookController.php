@@ -9,6 +9,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 
 class WebhookController extends AbstractController
 {
@@ -16,6 +17,7 @@ class WebhookController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
+        private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('Food99');
     }
@@ -28,10 +30,11 @@ class WebhookController extends AbstractController
         $rawInput = $request->getContent();
         $headerSign = $request->headers->get('didi-header-sign');
         $appSecret = $_ENV['OAUTH_99FOOD_CLIENT_SECRET'];
-        $payload = json_decode($rawInput, true);
-        if (!is_array($payload)) {
+        try {
+            $payload = $this->requestPayloadService->decodeJsonContent($rawInput);
+        } catch (\InvalidArgumentException $exception) {
             self::$logger->warning('Food99 webhook payload is not valid JSON', [
-                'json_error' => json_last_error_msg(),
+                'json_error' => $exception->getMessage(),
                 'content_length' => strlen($rawInput),
             ]);
 

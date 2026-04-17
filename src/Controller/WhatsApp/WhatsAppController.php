@@ -9,6 +9,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 use ControleOnline\Service\WhatsAppService;
 use Symfony\Component\HttpFoundation\JsonResponse;
 
@@ -18,7 +19,8 @@ class WhatsAppController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
-        public WhatsAppService $whatsAppService
+        public WhatsAppService $whatsAppService,
+        private RequestPayloadService $requestPayloadService
     ) {
         self::$logger = $loggerService->getLogger('WhatsApp');
     }
@@ -30,9 +32,10 @@ class WhatsAppController extends AbstractController
         IntegrationService $integrationService
     ): Response {
         $rawInput = $request->getContent();
-        $event = json_decode($rawInput, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
+        try {
+            $event = $this->requestPayloadService->decodeJsonContent($rawInput);
+        } catch (\InvalidArgumentException $exception) {
+            self::$logger->error('Erro ao decodificar JSON', ['error' => $exception->getMessage()]);
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
         }
 
@@ -50,9 +53,10 @@ class WhatsAppController extends AbstractController
         Request $request,
     ): Response {
         $rawInput = $request->getContent();
-        $event = json_decode($rawInput, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
+        try {
+            $event = $this->requestPayloadService->decodeJsonContent($rawInput);
+        } catch (\InvalidArgumentException $exception) {
+            self::$logger->error('Erro ao decodificar JSON', ['error' => $exception->getMessage()]);
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
         }
         $phone = $event['phone'];

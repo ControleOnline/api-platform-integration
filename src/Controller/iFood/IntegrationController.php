@@ -6,6 +6,7 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\OrderActionService;
+use ControleOnline\Service\RequestPayloadService;
 use DateTimeImmutable;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -26,6 +27,7 @@ class IntegrationController extends AbstractController
         private Security $security,
         private iFoodService $iFoodService,
         private OrderActionService $orderActionService,
+        private RequestPayloadService $requestPayloadService,
     ) {}
 
     private function normalizeString(mixed $value): string
@@ -73,12 +75,7 @@ class IntegrationController extends AbstractController
             return [];
         }
 
-        $json = json_decode($content, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($json)) {
-            throw new \InvalidArgumentException('Invalid JSON');
-        }
-
-        return $json;
+        return $this->requestPayloadService->decodeJsonContent($content);
     }
 
     private function decodeArrayValue(mixed $value): array
@@ -96,12 +93,11 @@ class IntegrationController extends AbstractController
             return [];
         }
 
-        $decoded = json_decode($normalized, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+        try {
+            return $this->requestPayloadService->decodeJsonContent($normalized);
+        } catch (\InvalidArgumentException) {
             return [];
         }
-
-        return $decoded;
     }
 
     private function resolvePayloadSources(array $otherInformations): array
@@ -188,8 +184,8 @@ class IntegrationController extends AbstractController
             return null;
         }
 
-        $providerId = (int) preg_replace('/\D+/', '', (string) $providerId);
-        if ($providerId <= 0) {
+        $providerId = $this->requestPayloadService->normalizeOptionalNumericId($providerId);
+        if (!$providerId) {
             return null;
         }
 
@@ -213,8 +209,8 @@ class IntegrationController extends AbstractController
 
     private function resolveOrder(string|int $orderId): ?Order
     {
-        $id = (int) preg_replace('/\D+/', '', (string) $orderId);
-        if ($id <= 0) {
+        $id = $this->requestPayloadService->normalizeOptionalNumericId($orderId);
+        if (!$id) {
             return null;
         }
 
@@ -311,12 +307,11 @@ class IntegrationController extends AbstractController
             return [];
         }
 
-        $decoded = json_decode($raw, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+        try {
+            return $this->requestPayloadService->decodeJsonContent($raw);
+        } catch (\InvalidArgumentException) {
             return [];
         }
-
-        return $decoded;
     }
 
     private function payloadHasOrderData(array $payload): bool

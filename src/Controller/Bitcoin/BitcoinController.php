@@ -5,6 +5,7 @@ namespace ControleOnline\Controller\Bitcoin;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Service\BitcoinService;
 use ControleOnline\Service\HydratorService;
+use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
 use Symfony\Component\Routing\Annotation\Route;
@@ -17,14 +18,15 @@ class BitcoinController extends AbstractController
     public function __construct(
         protected EntityManagerInterface $manager,
         private HydratorService $hydratorService,
-        private BitcoinService $bitcoinService
+        private BitcoinService $bitcoinService,
+        private RequestPayloadService $requestPayloadService
     ) {}
 
     #[Route('/bitcoin', name: 'bitcoin_generate', methods: ['POST'])]
     public function __invoke(Request $request): JsonResponse
     {
         try {
-            $json = json_decode($request->getContent(), true);
+            $json = $this->requestPayloadService->decodeJsonContent($request->getContent());
             $invoiceId = $json['invoice'] ?? null;
             if (!$invoiceId) {
                 throw new Exception('Invoice not found');

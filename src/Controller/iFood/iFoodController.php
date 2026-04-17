@@ -4,6 +4,7 @@ namespace ControleOnline\Controller\iFood;
 
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -16,6 +17,7 @@ class iFoodController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
+        private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('iFood');
     }
@@ -43,10 +45,11 @@ class iFoodController extends AbstractController
             return new Response('Invalid signature', Response::HTTP_UNAUTHORIZED);
         }
 
-        $payload = json_decode($rawInput, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($payload)) {
+        try {
+            $payload = $this->requestPayloadService->decodeJsonContent($rawInput);
+        } catch (\InvalidArgumentException $exception) {
             self::$logger->error('iFood webhook JSON decode failed', [
-                'error' => json_last_error_msg(),
+                'error' => $exception->getMessage(),
             ]);
 
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);

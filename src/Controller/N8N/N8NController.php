@@ -10,6 +10,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 
 class N8NController extends AbstractController
 {
@@ -17,6 +18,7 @@ class N8NController extends AbstractController
 
     public function __construct(
         private LoggerService $loggerService,
+        private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('N8N');
     }
@@ -28,9 +30,10 @@ class N8NController extends AbstractController
         IntegrationService $integrationService
     ): Response {
         $rawInput = $request->getContent();
-        $event = json_decode($rawInput, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            self::$logger->error('Erro ao decodificar JSON', ['error' => json_last_error_msg()]);
+        try {
+            $event = $this->requestPayloadService->decodeJsonContent($rawInput);
+        } catch (\InvalidArgumentException $exception) {
+            self::$logger->error('Erro ao decodificar JSON', ['error' => $exception->getMessage()]);
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
         }
         $integrationService->addIntegration($rawInput, 'N8N');

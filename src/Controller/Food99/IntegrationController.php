@@ -7,6 +7,7 @@ use ControleOnline\Entity\People;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -27,6 +28,7 @@ class IntegrationController extends AbstractController
         private Security $security,
         private Food99Service $food99Service,
         private iFoodService $iFoodService,
+        private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('Food99');
     }
@@ -59,12 +61,7 @@ class IntegrationController extends AbstractController
             return [];
         }
 
-        $json = json_decode($content, true);
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($json)) {
-            throw new \InvalidArgumentException('Invalid JSON');
-        }
-
-        return $json;
+        return $this->requestPayloadService->decodeJsonContent($content);
     }
 
     private function canAccessProvider(People $userPeople, People $provider): bool
@@ -106,8 +103,8 @@ class IntegrationController extends AbstractController
             return $userPeople;
         }
 
-        $providerId = (int) preg_replace('/\D+/', '', (string) $providerId);
-        if ($providerId <= 0) {
+        $providerId = $this->requestPayloadService->normalizeOptionalNumericId($providerId);
+        if (!$providerId) {
             return null;
         }
 
@@ -136,8 +133,8 @@ class IntegrationController extends AbstractController
 
     private function resolveOrder(string|int $orderId): ?Order
     {
-        $normalizedOrderId = (int) preg_replace('/\D+/', '', (string) $orderId);
-        if ($normalizedOrderId <= 0) {
+        $normalizedOrderId = $this->requestPayloadService->normalizeOptionalNumericId($orderId);
+        if (!$normalizedOrderId) {
             return null;
         }
 
@@ -1759,7 +1756,7 @@ class IntegrationController extends AbstractController
 
         $result = $this->food99Service->performCancelAction(
             $order,
-            $reasonId !== null && $reasonId !== '' ? (int) preg_replace('/\D+/', '', (string) $reasonId) : null,
+            $this->requestPayloadService->normalizeOptionalNumericId($reasonId),
             $reason !== '' ? $reason : null
         );
 
