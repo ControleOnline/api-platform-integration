@@ -42,6 +42,7 @@ class DefaultFoodService
         protected ConfigService $configService,
         protected DeviceService $deviceService,
         protected OrderPrintService $orderPrintService,
+        protected OrderAutomaticPrintService $orderAutomaticPrintService,
         protected InvoiceService $invoiceService,
         protected WalletService $walletService,
         protected OrderProductService $orderProductService,
@@ -52,7 +53,12 @@ class DefaultFoodService
     protected function printOrder(Order $order)
     {
         try {
-            $this->orderPrintService->printOrder($order);
+            $this->orderAutomaticPrintService->dispatchCompletedOrderPrints(
+                $order,
+                [
+                    'source' => strtolower(trim((string) $order->getApp())) ?: 'marketplace',
+                ]
+            );
         } catch (\Throwable $exception) {
             self::$logger?->warning('Marketplace order print skipped because spool generation failed', [
                 'local_order_id' => $order->getId(),
