@@ -5,7 +5,6 @@ namespace ControleOnline\Controller\iFood;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\iFoodService;
-use ControleOnline\Service\OrderActionService;
 use ControleOnline\Service\RequestPayloadService;
 use DateTimeImmutable;
 use Doctrine\ORM\EntityManagerInterface;
@@ -26,7 +25,6 @@ class IntegrationController extends AbstractController
         private EntityManagerInterface $manager,
         private Security $security,
         private iFoodService $iFoodService,
-        private OrderActionService $orderActionService,
         private RequestPayloadService $requestPayloadService,
     ) {}
 
@@ -1654,74 +1652,6 @@ class IntegrationController extends AbstractController
         return new JsonResponse(['action' => 'option_status_update', 'result' => $result]);
     }
 
-    #[Route('/marketplace/integrations/ifood/orders/{orderId}/ready', name: 'marketplace_integrations_ifood_order_ready', methods: ['POST'])]
-    public function readyOrderAction(string $orderId): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        if (!$this->isIfoodOrder($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $result = $this->iFoodService->performReadyAction($order);
-        } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao executar acao ready no iFood: ' . $this->normalizeString($e->getMessage()),
-            ];
-        }
-
-        return new JsonResponse([
-            'action' => 'ready',
-            'result' => $result,
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
-    #[Route('/marketplace/integrations/ifood/orders/{orderId}/cancel', name: 'marketplace_integrations_ifood_order_cancel', methods: ['POST'])]
-    public function cancelOrderAction(string $orderId, Request $request): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        if (!$this->isIfoodOrder($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $payload = $this->parseJsonBody($request);
-        } catch (\InvalidArgumentException) {
-            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
-        }
-
-        $reason           = $this->normalizeString($payload['reason'] ?? null);
-        $cancellationCode = $this->normalizeString($payload['reason_id'] ?? $payload['cancellationCode'] ?? null);
-        try {
-            $result = $this->iFoodService->performCancelAction(
-                $order,
-                $reason !== '' ? $reason : null,
-                $cancellationCode !== '' ? $cancellationCode : null
-            );
-        } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao executar acao cancel no iFood: ' . $this->normalizeString($e->getMessage()),
-            ];
-        }
-
-        return new JsonResponse([
-            'action' => 'cancel',
-            'result' => $result,
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/cancel-reasons', name: 'marketplace_integrations_ifood_order_cancel_reasons', methods: ['GET'])]
     public function cancelReasonsOrderAction(string $orderId): JsonResponse
     {
@@ -1755,34 +1685,6 @@ class IntegrationController extends AbstractController
         ]);
     }
 
-    #[Route('/marketplace/integrations/ifood/orders/{orderId}/delivered', name: 'marketplace_integrations_ifood_order_delivered', methods: ['POST'])]
-    public function deliveredOrderAction(string $orderId): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        if (!$this->isIfoodOrder($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $result = $this->iFoodService->performDeliveredAction($order);
-        } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao executar acao delivered no iFood: ' . $this->normalizeString($e->getMessage()),
-            ];
-        }
-
-        return new JsonResponse([
-            'action' => 'delivered',
-            'result' => $result,
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/state', name: 'marketplace_integrations_ifood_order_state', methods: ['GET'])]
     public function getOrderState(string $orderId): JsonResponse
     {
@@ -1798,62 +1700,6 @@ class IntegrationController extends AbstractController
         }
 
         return new JsonResponse($this->buildOrderIntegrationDetail($order));
-    }
-
-    #[Route('/marketplace/integrations/ifood/orders/{orderId}/confirm', name: 'marketplace_integrations_ifood_order_confirm', methods: ['POST'])]
-    public function confirmOrderAction(string $orderId): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        if (!$this->isIfoodOrder($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $result = $this->iFoodService->performConfirmAction($order);
-        } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao confirmar pedido no iFood: ' . $this->normalizeString($e->getMessage()),
-            ];
-        }
-
-        return new JsonResponse([
-            'action' => 'confirm',
-            'result' => $result,
-            'state'  => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
-    #[Route('/marketplace/integrations/ifood/orders/{orderId}/start-preparation', name: 'marketplace_integrations_ifood_order_start_preparation', methods: ['POST'])]
-    public function startPreparationOrderAction(string $orderId): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        if (!$this->isIfoodOrder($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $result = $this->iFoodService->performStartPreparationAction($order);
-        } catch (\Throwable $e) {
-            $result = [
-                'errno' => 1,
-                'errmsg' => 'Falha ao iniciar preparo do pedido no iFood: ' . $this->normalizeString($e->getMessage()),
-            ];
-        }
-
-        return new JsonResponse([
-            'action' => 'start_preparation',
-            'result' => $result,
-            'state'  => $this->buildOrderIntegrationDetail($order),
-        ]);
     }
 
     private function mapIfoodPaymentMethodLabel(string $method): string

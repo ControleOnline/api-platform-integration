@@ -1712,61 +1712,6 @@ class IntegrationController extends AbstractController
         return new JsonResponse($this->buildOrderIntegrationDetail($order));
     }
 
-    #[Route('/marketplace/integrations/99food/orders/{orderId}/ready', name: 'marketplace_integrations_food99_order_ready', methods: ['POST'])]
-    public function readyOrderAction(string $orderId): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderErrorResponse();
-        }
-
-        if (!$this->isFood99Order($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        $result = $this->food99Service->performReadyAction($order);
-
-        return new JsonResponse([
-            'action' => 'ready',
-            'result' => $result,
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
-    #[Route('/marketplace/integrations/99food/orders/{orderId}/cancel', name: 'marketplace_integrations_food99_order_cancel', methods: ['POST'])]
-    public function cancelOrderAction(string $orderId, Request $request): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderErrorResponse();
-        }
-
-        if (!$this->isFood99Order($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $payload = $this->parseJsonBody($request);
-        } catch (\InvalidArgumentException) {
-            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
-        }
-
-        $reasonId = $payload['reason_id'] ?? $payload['reasonId'] ?? null;
-        $reason = trim((string) ($payload['reason'] ?? ''));
-
-        $result = $this->food99Service->performCancelAction(
-            $order,
-            $this->requestPayloadService->normalizeOptionalNumericId($reasonId),
-            $reason !== '' ? $reason : null
-        );
-
-        return new JsonResponse([
-            'action' => 'cancel',
-            'result' => $result,
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
     #[Route('/marketplace/integrations/99food/orders/{orderId}/cancel-reasons', name: 'marketplace_integrations_food99_order_cancel_reasons', methods: ['GET'])]
     public function getCancelReasonsAction(string $orderId): JsonResponse
     {
@@ -1814,40 +1759,6 @@ class IntegrationController extends AbstractController
             'action' => 'locator_verify',
             'result' => $verification['result'] ?? [],
             'flow' => $verification['flow'] ?? [],
-            'state' => $this->buildOrderIntegrationDetail($order),
-        ]);
-    }
-
-    #[Route('/marketplace/integrations/99food/orders/{orderId}/delivered', name: 'marketplace_integrations_food99_order_delivered', methods: ['POST'])]
-    public function deliveredOrderAction(string $orderId, Request $request): JsonResponse
-    {
-        $order = $this->resolveOrder($orderId);
-        if (!$order) {
-            return $this->orderErrorResponse();
-        }
-
-        if (!$this->isFood99Order($order)) {
-            return new JsonResponse(['error' => 'Order is not linked to Food99'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        try {
-            $payload = $this->parseJsonBody($request);
-        } catch (\InvalidArgumentException) {
-            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
-        }
-
-        $deliveryCode = trim((string) ($payload['delivery_code'] ?? $payload['deliveryCode'] ?? ''));
-        $locator = trim((string) ($payload['locator'] ?? ''));
-
-        $result = $this->food99Service->performDeliveredAction(
-            $order,
-            $deliveryCode !== '' ? $deliveryCode : null,
-            $locator !== '' ? $locator : null
-        );
-
-        return new JsonResponse([
-            'action' => 'delivered',
-            'result' => $result,
             'state' => $this->buildOrderIntegrationDetail($order),
         ]);
     }
