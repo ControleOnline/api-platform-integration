@@ -29,7 +29,7 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 class iFoodService extends DefaultFoodService implements EventSubscriberInterface
 {
-    private const APP_CONTEXT = 'iFood';
+    private const APP_CONTEXT = Order::APP_IFOOD;
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
     private const SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
     private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB

@@ -22,7 +22,7 @@ use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
 class Food99Service extends DefaultFoodService implements EventSubscriberInterface
 {
-    private const APP_CONTEXT = 'Food99';
+    private const APP_CONTEXT = Order::APP_FOOD99;
     private const LEGACY_ORDER_CONTEXT = 'iFood';
     private const SHOP_CANCEL_REASONS = [
         ['reason_id' => 1010, 'description' => 'Item sold out', 'applicable_to' => 'all'],

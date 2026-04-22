@@ -169,7 +169,7 @@ class IntegrationController extends AbstractController
 
     private function isFood99Order(Order $order): bool
     {
-        return strcasecmp((string) $order->getApp(), 'Food99') === 0;
+        return strcasecmp((string) $order->getApp(), Order::APP_FOOD99) === 0;
     }
 
     private function extractProductIds(array $payload): array
