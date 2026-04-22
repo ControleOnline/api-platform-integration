@@ -3618,8 +3618,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         $deliveryStatus = $this->extractOrderDeliveryStatus($json);
-        $incomingRemoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
         $currentRemoteState = $this->getFood99OrderExtraDataValue((int) $order->getId(), 'remote_order_state');
+        $incomingRemoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
+        $incomingRemoteState = $this->resolveFallbackRemoteOrderStateForDeliveryEvent(
+            $order,
+            $eventType,
+            $incomingRemoteState,
+            $currentRemoteState
+        );
         $remoteState = $this->mergeRemoteOrderStateWithCurrent($currentRemoteState, $incomingRemoteState);
         $eventTimestamp = $this->extractOrderEventTimestamp($json);
         $incomingIsCanceled = $this->shouldApplyLocalCanceledStatus($incomingRemoteState, $eventType);
@@ -3669,6 +3675,49 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->entityManager->flush();
 
         return $order;
+    }
+
+    private function resolveFallbackRemoteOrderStateForDeliveryEvent(
+        Order $order,
+        string $eventType,
+        ?string $incomingRemoteState,
+        ?string $currentRemoteState
+    ): ?string {
+        if ($this->normalizeEventType($eventType) !== 'deliverystatus') {
+            return $incomingRemoteState;
+        }
+
+        if ($this->normalizeRemoteOrderState($incomingRemoteState) !== '') {
+            return $incomingRemoteState;
+        }
+
+        $localRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        if (in_array($localRealStatus, ['closed', 'canceled', 'cancelled'], true)) {
+            return $incomingRemoteState;
+        }
+
+        $normalizedCurrentRemoteState = $this->normalizeRemoteOrderState($currentRemoteState);
+        if (in_array($normalizedCurrentRemoteState, ['ready', 'courier_to_store'], true)) {
+            self::$logger->info('Food99 deliveryStatus fallback promoted order to picked_up', [
+                'local_order_id' => $order->getId(),
+                'current_remote_state' => $normalizedCurrentRemoteState,
+                'local_real_status' => $localRealStatus,
+            ]);
+            return 'picked_up';
+        }
+
+        $localStatusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+        if ($localRealStatus === 'open' && in_array($localStatusName, ['preparing', 'confirmed'], true)) {
+            self::$logger->info('Food99 deliveryStatus fallback promoted preparing order to picked_up', [
+                'local_order_id' => $order->getId(),
+                'current_remote_state' => $normalizedCurrentRemoteState,
+                'local_real_status' => $localRealStatus,
+                'local_status' => $localStatusName,
+            ]);
+            return 'picked_up';
+        }
+
+        return $incomingRemoteState;
     }
 
     private function isCreationLikeOrderEventType(string $eventType): bool
@@ -3812,6 +3861,15 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $statusCode = (int) $normalized;
             if ($statusCode === 160 || $statusCode >= 600) {
                 return 'delivered';
+            }
+            if ($statusCode === 150) {
+                return 'arriving';
+            }
+            if ($statusCode === 140) {
+                return 'delivering';
+            }
+            if ($statusCode === 130) {
+                return 'picked_up';
             }
             if ($statusCode === 120) {
                 return 'courier_to_store';

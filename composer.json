@@ -9,6 +9,11 @@
       "ControleOnline\\Controller\\": "src/Controller/"
     }
   },
+  "autoload-dev": {
+    "psr-4": {
+      "ControleOnline\\Integration\\Tests\\": "tests/"
+    }
+  },
   "authors": [
     {
       "name": "Controle Online",
@@ -18,5 +23,8 @@
   "require": {
     "controleonline/common": "*",
     "symfony/lock": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^12.1"
   }
 }

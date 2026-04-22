@@ -2,7 +2,7 @@
 #
 .DS_Store    
 .thumbs.db
-
+.phpunit.cache
 # Xcode
 #
 build/
