@@ -92,6 +92,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         return array_merge([
             'integration_id' => $integration?->getId(),
+            'logEntity' => $integration,
             'event_type' => $json['type'] ?? null,
             'order_id' => isset($data['order_id']) ? (string) $data['order_id'] : null,
             'order_index' => isset($info['order_index']) ? (string) $info['order_index'] : null,
