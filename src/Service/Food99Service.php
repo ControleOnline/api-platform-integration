@@ -3876,10 +3876,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 return 'arriving';
             }
             if ($statusCode === 140) {
-                return 'delivering';
+                return 'picked_up';
             }
             if ($statusCode === 130) {
-                return 'picked_up';
+                return 'courier_to_store';
             }
             if ($statusCode === 120) {
                 return 'courier_to_store';

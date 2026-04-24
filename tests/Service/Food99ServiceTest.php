@@ -121,8 +121,8 @@ class Food99ServiceTest extends TestCase
     {
         return [
             'courier to store' => ['120', 'courier_to_store'],
-            'picked up' => ['130', 'picked_up'],
-            'delivering' => ['140', 'delivering'],
+            'courier accepted' => ['130', 'courier_to_store'],
+            'picked up' => ['140', 'picked_up'],
             'arriving' => ['150', 'arriving'],
             'delivered' => ['160', 'delivered'],
         ];
