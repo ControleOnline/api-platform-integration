@@ -3525,7 +3525,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'ready' => $this->applyLocalReadyStatus($order),
 
             'picked_up',
-            'arriving',
             'delivering' => $this->applyLocalWayStatus($order),
 
             default => null,
