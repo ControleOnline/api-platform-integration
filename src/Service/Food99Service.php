@@ -6816,8 +6816,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return false;
         }
 
-        return (int) ($oldQueue->getStatus()?->getId() ?? 0) !== $statusOutId
-            && (int) ($newQueue->getStatus()?->getId() ?? 0) === $statusOutId;
+        $oldStatusId = (int) ($oldQueue->getStatus()?->getId() ?? 0);
+        $newStatusId = (int) ($newQueue->getStatus()?->getId() ?? 0);
+
+        return $oldStatusId > 0
+            && $oldStatusId !== $statusOutId
+            && $newStatusId === $statusOutId;
     }
 
     private function areAllOrderProductQueuesReady(Order $order): bool
