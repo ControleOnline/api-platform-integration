@@ -29,7 +29,7 @@ class iFoodController extends AbstractController
     ): Response {
         $rawInput = $request->getContent();
         $signature = trim((string) $request->headers->get('X-IFood-Signature', ''));
-        $secretKey = (string) ($_ENV['OAUTH_IFOOD_CLIENT_SECRET'] ?? '');
+        $secretKey = $this->resolveWebhookSecret();
 
         if ($secretKey === '' || $signature === '') {
             self::$logger->warning('iFood webhook missing signature or secret configuration');
@@ -131,6 +131,27 @@ class iFoodController extends AbstractController
             'accepted' => true,
             'queued' => $queued,
         ], Response::HTTP_ACCEPTED);
+    }
+
+    private function resolveWebhookSecret(): string
+    {
+        $webhookSecret = trim((string) (
+            $_ENV['IFOOD_WEBHOOK_SECRET']
+            ?? $_SERVER['IFOOD_WEBHOOK_SECRET']
+            ?? getenv('IFOOD_WEBHOOK_SECRET')
+            ?: ''
+        ));
+
+        if ($webhookSecret !== '') {
+            return $webhookSecret;
+        }
+
+        return trim((string) (
+            $_ENV['OAUTH_IFOOD_CLIENT_SECRET']
+            ?? $_SERVER['OAUTH_IFOOD_CLIENT_SECRET']
+            ?? getenv('OAUTH_IFOOD_CLIENT_SECRET')
+            ?: ''
+        ));
     }
 
     private function buildWebhookMeta(array $event, string $rawInput): array

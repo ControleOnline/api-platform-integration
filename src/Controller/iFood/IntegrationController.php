@@ -290,6 +290,8 @@ class IntegrationController extends AbstractController
             'concluded', 'closed' => 'Concluido',
             'cancelled', 'canceled' => 'Cancelado',
             'cancellation_requested' => 'Cancelamento solicitado',
+            'handshake_dispute' => 'Negociacao solicitada',
+            'handshake_settlement' => 'Negociacao finalizada',
             default => 'Indefinido',
         };
     }
@@ -953,6 +955,7 @@ class IntegrationController extends AbstractController
                 'order_type' => $deliveryContext['order_type'] ?? null,
                 'remote_order_state' => $remoteState,
                 'remote_order_state_label' => $this->resolveRemoteOrderStateLabel($remoteState),
+                'cancellation_requested' => $remoteState === 'cancellation_requested',
                 'last_event_type' => $storedState['last_event_type'] ?? null,
                 'last_event_at' => $storedState['last_event_at'] ?? null,
                 'last_action' => $storedState['last_action'] ?? null,
@@ -975,6 +978,19 @@ class IntegrationController extends AbstractController
             'delivery'      => $this->buildDeliveryDetail($payload, $storedState, $remoteState, $deliveryContext, $capabilities),
             'payment'       => $this->buildPaymentDetail($payload, $storedState),
             'financial'     => $this->buildFinancialDetail($payload, $storedState),
+            'negotiation'   => [
+                'has_open_dispute' => $remoteState === 'handshake_dispute',
+                'event_type' => $storedState['handshake_event_type'] ?? null,
+                'dispute_id' => $storedState['handshake_dispute_id'] ?? null,
+                'action' => $storedState['handshake_action'] ?? null,
+                'type' => $storedState['handshake_type'] ?? null,
+                'group' => $storedState['handshake_group'] ?? null,
+                'message' => $storedState['handshake_message'] ?? null,
+                'expires_at' => $storedState['handshake_expires_at'] ?? null,
+                'timeout_action' => $storedState['handshake_timeout_action'] ?? null,
+                'settlement_status' => $storedState['handshake_settlement_status'] ?? null,
+                'settlement_reason' => $storedState['handshake_settlement_reason'] ?? null,
+            ],
             'observability' => [
                 'has_action_error' => $this->hasErrnoError($storedState['last_action_errno'] ?? null),
                 'is_healthy' => !$this->hasErrnoError($storedState['last_action_errno'] ?? null),
@@ -1107,7 +1123,9 @@ class IntegrationController extends AbstractController
             $storedState['order_timing'] ?? null,
             $orderPayload['orderTiming'] ?? null
         ) ?? '');
-        $schedule    = is_array($orderPayload['schedule'] ?? null) ? $orderPayload['schedule'] : [];
+        $schedule = is_array($orderPayload['schedule'] ?? null)
+            ? $orderPayload['schedule']
+            : (is_array($orderPayload['scheduled'] ?? null) ? $orderPayload['scheduled'] : []);
 
         $start = $this->preferredText(
             $storedState['scheduled_start'] ?? null,
@@ -1130,6 +1148,7 @@ class IntegrationController extends AbstractController
         $preparationStart = $this->preferredText(
             $storedState['preparation_start'] ?? null,
             $orderPayload['preparationStartDateTime']
+                ?? $schedule['preparationStartDateTime']
                 ?? null
         );
         $isScheduled = $this->preferredBool($storedState['is_scheduled'] ?? null);
@@ -1685,6 +1704,39 @@ class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/marketplace/integrations/ifood/orders/{orderId}/negotiation/{decision}', name: 'marketplace_integrations_ifood_order_negotiation', methods: ['POST'])]
+    public function respondOrderNegotiation(string $orderId, string $decision, Request $request): JsonResponse
+    {
+        $order = $this->resolveOrder($orderId);
+        if (!$order) {
+            return $this->orderNotFound();
+        }
+
+        if (!$this->isIfoodOrder($order)) {
+            return new JsonResponse(['error' => 'Order is not linked to iFood'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $reason = $this->normalizeString($payload['reason'] ?? null);
+        $result = $this->iFoodService->respondHandshakeDispute(
+            $order,
+            $decision,
+            $reason !== '' ? $reason : null
+        );
+        $this->manager->refresh($order);
+
+        return new JsonResponse([
+            'action' => 'negotiation_' . strtolower($decision),
+            'result' => $result,
+            'state' => $this->buildOrderIntegrationDetail($order),
+        ]);
+    }
+
     #[Route('/marketplace/integrations/ifood/orders/{orderId}/state', name: 'marketplace_integrations_ifood_order_state', methods: ['GET'])]
     public function getOrderState(string $orderId): JsonResponse
     {
@@ -1774,8 +1826,26 @@ class IntegrationController extends AbstractController
         $ifoodSubsidy    = 0.0;
         $merchantSubsidy = 0.0;
         $discountTotal   = 0.0;
+        $voucherCodes    = [];
         foreach ($benefits as $benefit) {
+            if (!is_array($benefit)) {
+                continue;
+            }
+
             $discountTotal += (float) ($benefit['value'] ?? 0.0);
+            $campaign = is_array($benefit['campaign'] ?? null) ? $benefit['campaign'] : [];
+            $code = $this->normalizeString(
+                $benefit['code']
+                    ?? $benefit['couponCode']
+                    ?? $benefit['voucherCode']
+                    ?? $campaign['code']
+                    ?? $campaign['name']
+                    ?? $campaign['id']
+                    ?? null
+            );
+            if ($code !== '') {
+                $voucherCodes[$code] = true;
+            }
             foreach ((array) ($benefit['sponsorshipValues'] ?? []) as $sponsor) {
                 $name  = strtoupper($this->normalizeString($sponsor['name'] ?? null));
                 $value = (float) ($sponsor['value'] ?? 0.0);
@@ -1812,8 +1882,9 @@ class IntegrationController extends AbstractController
             'additional_fees'  => $additionalFees,
             'order_amount'     => $orderAmount,
             'discount_total'   => $discountTotal > 0 ? $discountTotal : (float) ($storedState['discount_total'] ?? 0.0),
-            'ifood_subsidy'    => $ifoodSubsidy,
-            'merchant_subsidy' => $merchantSubsidy,
+            'ifood_subsidy'    => $ifoodSubsidy > 0 ? $ifoodSubsidy : (float) ($storedState['ifood_subsidy'] ?? 0.0),
+            'merchant_subsidy' => $merchantSubsidy > 0 ? $merchantSubsidy : (float) ($storedState['merchant_subsidy'] ?? 0.0),
+            'voucher_code'     => implode(', ', array_keys($voucherCodes)) ?: $this->normalizeString($storedState['voucher_code'] ?? null),
             'payment_brand'    => $paymentBrand,
             'change_for'       => $changeFor,
             'payment_labels'   => $paymentLabels,

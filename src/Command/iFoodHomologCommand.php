@@ -208,6 +208,7 @@ class iFoodHomologCommand extends Command
         $this->section('MODULO 5 — EVENTS');
         try {
             $webhookSecretSet = !empty($_ENV['IFOOD_WEBHOOK_SECRET'] ?? getenv('IFOOD_WEBHOOK_SECRET'));
+            $webhookFallbackSecretSet = !empty($_ENV['OAUTH_IFOOD_CLIENT_SECRET'] ?? getenv('OAUTH_IFOOD_CLIENT_SECRET'));
 
             $this->check(
                 'Webhook endpoint registrado (POST /webhook/ifood)',
@@ -220,9 +221,11 @@ class iFoodHomologCommand extends Command
                 'implementado em iFoodController',
             );
             $this->check(
-                'Variavel de ambiente IFOOD_WEBHOOK_SECRET',
-                $webhookSecretSet,
-                $webhookSecretSet ? 'definida' : 'nao definida — verifique .env',
+                'Secret do webhook iFood',
+                $webhookSecretSet || $webhookFallbackSecretSet,
+                $webhookSecretSet
+                    ? 'IFOOD_WEBHOOK_SECRET definido'
+                    : ($webhookFallbackSecretSet ? 'usando fallback OAUTH_IFOOD_CLIENT_SECRET' : 'nao definido — verifique .env'),
             );
             $this->check(
                 'Processamento de evento PLACED (novo pedido)',

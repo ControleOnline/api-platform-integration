@@ -743,6 +743,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
             'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
             'CANCELLATION_REQUESTED', 'ORDER_CANCELLATION_REQUESTED' => 'cancellation_requested',
+            'HANDSHAKE_DISPUTE', 'HSD' => 'handshake_dispute',
+            'HANDSHAKE_SETTLEMENT', 'HSS' => 'handshake_settlement',
             default => strtolower($normalized),
         };
     }
@@ -809,6 +811,78 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return self::SELF_DELIVERY_CONFIRMATION_URL;
     }
 
+    private function resolveOrderSchedulePayload(array $orderPayload): array
+    {
+        if (is_array($orderPayload['schedule'] ?? null)) {
+            return $orderPayload['schedule'];
+        }
+
+        return is_array($orderPayload['scheduled'] ?? null) ? $orderPayload['scheduled'] : [];
+    }
+
+    private function extractOrderBenefitSnapshot(array $orderPayload): array
+    {
+        $benefits = is_array($orderPayload['benefits'] ?? null) ? $orderPayload['benefits'] : [];
+        if ($benefits === []) {
+            return [];
+        }
+
+        $discountTotal = 0.0;
+        $ifoodSubsidy = 0.0;
+        $merchantSubsidy = 0.0;
+        $voucherCodes = [];
+
+        foreach ($benefits as $benefit) {
+            if (!is_array($benefit)) {
+                continue;
+            }
+
+            $discountTotal += (float) ($benefit['value'] ?? 0.0);
+            $campaign = is_array($benefit['campaign'] ?? null) ? $benefit['campaign'] : [];
+            $code = $this->normalizeString(
+                $benefit['code']
+                    ?? $benefit['couponCode']
+                    ?? $benefit['voucherCode']
+                    ?? $campaign['code']
+                    ?? $campaign['name']
+                    ?? $campaign['id']
+                    ?? null
+            );
+            if ($code !== '') {
+                $voucherCodes[$code] = true;
+            }
+
+            foreach ((array) ($benefit['sponsorshipValues'] ?? []) as $sponsorship) {
+                if (!is_array($sponsorship)) {
+                    continue;
+                }
+
+                $sponsorName = strtoupper($this->normalizeString($sponsorship['name'] ?? null));
+                $value = (float) ($sponsorship['value'] ?? 0.0);
+                if ($sponsorName === 'IFOOD') {
+                    $ifoodSubsidy += $value;
+                    continue;
+                }
+
+                if ($sponsorName !== '') {
+                    $merchantSubsidy += $value;
+                }
+            }
+        }
+
+        $snapshot = [
+            'voucher_code' => implode(', ', array_keys($voucherCodes)),
+            'discount_total' => (string) $discountTotal,
+            'ifood_subsidy' => (string) $ifoodSubsidy,
+            'merchant_subsidy' => (string) $merchantSubsidy,
+        ];
+
+        return array_filter(
+            $snapshot,
+            static fn($value) => $value !== null && $value !== '' && $value !== '0'
+        );
+    }
+
     private function extractOrderDetailSnapshot(array $orderPayload): array
     {
         if (!$orderPayload) {
@@ -819,7 +893,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
         $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
         $phone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
-        $schedule = is_array($orderPayload['schedule'] ?? null) ? $orderPayload['schedule'] : [];
+        $schedule = $this->resolveOrderSchedulePayload($orderPayload);
 
         $streetName = $this->normalizeString($deliveryAddress['streetName'] ?? null);
         $streetNumber = $this->normalizeString($deliveryAddress['streetNumber'] ?? null);
@@ -873,7 +947,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ?? $delivery['estimatedDeliveryDate']
                 ?? null
         );
-        $preparationStart = $this->normalizeString($orderPayload['preparationStartDateTime'] ?? null);
+        $preparationStart = $this->normalizeString(
+            $orderPayload['preparationStartDateTime']
+                ?? $schedule['preparationStartDateTime']
+                ?? null
+        );
         $takeoutMode = strtoupper($this->normalizeString($takeout['mode'] ?? null));
         $takeoutDateTime = $this->normalizeString(
             $takeout['takeoutDateTime']
@@ -1012,7 +1090,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return array_filter(
-            $snapshot,
+            array_merge($snapshot, $this->extractOrderBenefitSnapshot($orderPayload)),
             static fn($value) => $value !== null && $value !== ''
         );
     }
@@ -1054,6 +1132,79 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
+    private function extractHandshakeEventSnapshot(array $payload): array
+    {
+        $eventCode = $this->resolveEventCode($payload);
+        if (!in_array($eventCode, ['HANDSHAKE_DISPUTE', 'HSD', 'HANDSHAKE_SETTLEMENT', 'HSS'], true)) {
+            return [];
+        }
+
+        $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
+        $dispute = is_array($payload['dispute'] ?? null) ? $payload['dispute'] : [];
+        $settlement = is_array($payload['settlement'] ?? null) ? $payload['settlement'] : [];
+        $source = array_merge($metadata, $dispute, $settlement);
+        $acceptReasons = [];
+        foreach ((array) ($source['acceptCancellationReasons'] ?? []) as $reason) {
+            $normalizedReason = strtoupper($this->normalizeString($reason));
+            if ($normalizedReason !== '') {
+                $acceptReasons[$normalizedReason] = true;
+            }
+        }
+
+        $snapshot = [
+            'handshake_event_type' => $eventCode,
+            'handshake_dispute_id' => $this->normalizeString(
+                $source['disputeId']
+                    ?? $source['dispute_id']
+                    ?? $source['id']
+                    ?? $payload['id']
+                    ?? null
+            ),
+            'handshake_action' => $this->normalizeString($source['action'] ?? null),
+            'handshake_type' => $this->normalizeString(
+                $source['handshakeType']
+                    ?? $source['handshake_type']
+                    ?? $source['type']
+                    ?? null
+            ),
+            'handshake_group' => $this->normalizeString(
+                $source['handshakeGroup']
+                    ?? $source['handshake_group']
+                    ?? $source['group']
+                    ?? null
+            ),
+            'handshake_message' => $this->normalizeString(
+                $source['message']
+                    ?? $source['description']
+                    ?? $source['reason']
+                    ?? null
+            ),
+            'handshake_expires_at' => $this->normalizeString(
+                $source['expiresAt']
+                    ?? $source['expires_at']
+                    ?? null
+            ),
+            'handshake_timeout_action' => $this->normalizeString(
+                $source['timeoutAction']
+                    ?? $source['timeout_action']
+                    ?? null
+            ),
+            'handshake_accept_reasons' => implode(',', array_keys($acceptReasons)),
+            'handshake_settlement_status' => $this->normalizeString(
+                $source['settlementStatus']
+                    ?? $source['status']
+                    ?? null
+            ),
+            'handshake_settlement_reason' => $this->normalizeString(
+                $source['settlementReason']
+                    ?? $source['reason']
+                    ?? null
+            ),
+        ];
+
+        return array_filter($snapshot, static fn($value) => $value !== null && $value !== '');
+    }
+
     private function persistIncomingEventState(Order $order, Integration $integration, array $payload): void
     {
         $eventCode = $this->resolveEventCode($payload);
@@ -1082,6 +1233,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $statePayload = array_merge($statePayload, $this->extractOrderDetailSnapshot($orderPayload));
             $this->syncOrderComments($order, $statePayload['remark'] ?? null);
         }
+
+        $statePayload = array_merge($statePayload, $this->extractHandshakeEventSnapshot($payload));
 
         $this->persistOrderIntegrationState($order, $statePayload);
     }
@@ -1670,11 +1823,26 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'remark' => $this->getIfoodExtraDataValue('Order', $orderId, 'remark'),
             'payment_liability' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_liability'),
             'payment_wallet_name' => $this->getIfoodExtraDataValue('Order', $orderId, 'payment_wallet_name'),
+            'voucher_code' => $this->getIfoodExtraDataValue('Order', $orderId, 'voucher_code'),
+            'discount_total' => $this->getIfoodExtraDataValue('Order', $orderId, 'discount_total'),
+            'ifood_subsidy' => $this->getIfoodExtraDataValue('Order', $orderId, 'ifood_subsidy'),
+            'merchant_subsidy' => $this->getIfoodExtraDataValue('Order', $orderId, 'merchant_subsidy'),
             'scheduled_start' => $this->getIfoodExtraDataValue('Order', $orderId, 'scheduled_start'),
             'scheduled_end' => $this->getIfoodExtraDataValue('Order', $orderId, 'scheduled_end'),
             'delivery_date_time' => $this->getIfoodExtraDataValue('Order', $orderId, 'delivery_date_time'),
             'preparation_start' => $this->getIfoodExtraDataValue('Order', $orderId, 'preparation_start'),
             'is_scheduled' => $this->getIfoodExtraDataValue('Order', $orderId, 'is_scheduled'),
+            'handshake_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_event_type'),
+            'handshake_dispute_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_dispute_id'),
+            'handshake_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_action'),
+            'handshake_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_type'),
+            'handshake_group' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_group'),
+            'handshake_message' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_message'),
+            'handshake_expires_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_expires_at'),
+            'handshake_timeout_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_timeout_action'),
+            'handshake_accept_reasons' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_accept_reasons'),
+            'handshake_settlement_status' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_status'),
+            'handshake_settlement_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_reason'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
             'last_event_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_at'),
             'last_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_action'),
@@ -4801,6 +4969,69 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $result;
     }
 
+    public function respondHandshakeDispute(Order $order, string $decision, ?string $reason = null): array
+    {
+        $this->init();
+
+        $storedState = $this->getStoredOrderIntegrationState($order);
+        $disputeId = $this->normalizeString($storedState['handshake_dispute_id'] ?? null);
+        if ($disputeId === '') {
+            return $this->buildUnavailableOrderActionResponse('Pedido iFood sem negociacao aberta.');
+        }
+
+        $normalizedDecision = strtolower($this->normalizeString($decision));
+        if (!in_array($normalizedDecision, ['accept', 'reject'], true)) {
+            return $this->buildUnavailableOrderActionResponse('Acao de negociacao iFood invalida.');
+        }
+
+        $validNegotiationReasons = [
+            'HIGH_STORE_DEMAND',
+            'UNKNOWN_ISSUE',
+            'CUSTOMER_SATISFACTION',
+            'INVENTORY_CHECK',
+            'SYSTEM_ISSUE',
+            'WRONG_ORDER',
+            'PRODUCT_QUALITY',
+            'LATE_DELIVERY',
+            'CUSTOMER_REQUEST',
+        ];
+        $payload = [];
+        $normalizedReason = $this->normalizeString($reason);
+        $normalizedReasonCode = strtoupper($normalizedReason);
+        if (!in_array($normalizedReasonCode, $validNegotiationReasons, true)) {
+            $normalizedReasonCode = 'UNKNOWN_ISSUE';
+        }
+
+        if ($normalizedDecision === 'accept') {
+            $acceptReasons = array_filter(array_map(
+                static fn($value) => strtoupper(trim((string) $value)),
+                explode(',', (string) ($storedState['handshake_accept_reasons'] ?? ''))
+            ));
+            if ($acceptReasons !== []) {
+                $payload['reason'] = in_array($normalizedReasonCode, $acceptReasons, true)
+                    ? $normalizedReasonCode
+                    : reset($acceptReasons);
+            }
+        }
+
+        if ($normalizedDecision === 'reject') {
+            $payload['reason'] = $normalizedReasonCode;
+        }
+
+        $handshakeAction = strtoupper($this->normalizeString($storedState['handshake_action'] ?? null));
+        $localStatusOnSuccess = $normalizedDecision === 'accept' && $handshakeAction === 'CANCELLATION'
+            ? ['realStatus' => 'canceled', 'status' => 'canceled']
+            : null;
+
+        return $this->persistOrderActionResult(
+            $order,
+            'handshake_' . $normalizedDecision,
+            $this->callIfoodDisputeAction($disputeId, '/' . $normalizedDecision, $payload),
+            'handshake_settlement',
+            $localStatusOnSuccess
+        );
+    }
+
     public function performReadyAction(Order $order): array
     {
         $this->init();
@@ -4967,6 +5198,67 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         } catch (\Throwable $e) {
             self::$logger->error('iFood order action error', [
                 'order_id' => $orderId,
+                'action' => $actionPath,
+                'error' => $e->getMessage(),
+            ]);
+            return [
+                'status' => 500,
+                'body' => [
+                    'message' => $e->getMessage(),
+                ],
+            ];
+        }
+    }
+
+    private function callIfoodDisputeAction(string $disputeId, string $actionPath, array $payload = []): ?array
+    {
+        try {
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->warning('iFood dispute action skipped because token is unavailable', [
+                    'dispute_id' => $disputeId,
+                    'action' => $actionPath,
+                ]);
+                return null;
+            }
+
+            $endpoint = self::API_BASE_URL . '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
+
+            try {
+                $response = $this->httpClient->request(
+                    'POST',
+                    $endpoint,
+                    [
+                        'headers' => [
+                            'Authorization' => 'Bearer ' . $token,
+                            'Content-Type' => 'application/json',
+                        ],
+                        'json' => $this->normalizeIfoodRequestPayload($payload),
+                    ]
+                );
+
+                return [
+                    'status' => $response->getStatusCode(),
+                    'body' => $this->decodeIfoodActionResponseBody((string) $response->getContent(false)),
+                ];
+            } catch (\Throwable $e) {
+                self::$logger->error('iFood dispute action endpoint error', [
+                    'dispute_id' => $disputeId,
+                    'action' => $actionPath,
+                    'endpoint' => $endpoint,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return [
+                    'status' => 500,
+                    'body' => [
+                        'message' => $e->getMessage(),
+                    ],
+                ];
+            }
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood dispute action error', [
+                'dispute_id' => $disputeId,
                 'action' => $actionPath,
                 'error' => $e->getMessage(),
             ]);
