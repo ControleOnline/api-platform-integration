@@ -214,15 +214,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function sanitizePayloadForLog(array $payload): array
     {
-        foreach ([
-            'auth_token',
-            'app_secret',
-            'appSecret',
-            'access_token',
-            'finance_access_token',
-            'deliveryCode',
-            'delivery_code',
-        ] as $secretKey) {
+        foreach (
+            [
+                'auth_token',
+                'app_secret',
+                'appSecret',
+                'access_token',
+                'finance_access_token',
+                'deliveryCode',
+                'delivery_code',
+            ] as $secretKey
+        ) {
             if (isset($payload[$secretKey])) {
                 $payload[$secretKey] = '***';
             }
@@ -1972,8 +1974,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         string $orderId,
         string $orderCode,
         bool $allowCodeFallback = true
-    ): ?Order
-    {
+    ): ?Order {
         if ($orderId !== '') {
             $order = $this->findFood99OrderByLegacyAwareExtraData('id', $orderId);
             if ($order instanceof Order) {
@@ -2136,8 +2137,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         int $attempts = 5,
         int $sleepMicroseconds = 250000,
         bool $allowCodeFallback = true
-    ): ?Order
-    {
+    ): ?Order {
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
             $existing = $this->findExistingIntegratedOrder($orderId, $orderCode, $allowCodeFallback);
             if ($existing instanceof Order) {
@@ -3514,9 +3514,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         match ($normalizedRemoteState) {
             'new' => $this->applyLocalOpenStatus($order),
-            'accepted', 'preparing' => $this->applyLocalPreparingStatus($order),
-            'ready', 'courier_to_store' => $this->applyLocalReadyStatus($order),
-            'picked_up', 'delivering', 'arriving' => $this->applyLocalWayStatus($order),
+
+            'accepted',
+            'preparing',
+            //'courier_to_store',
+            //'arriving' 
+            => $this->applyLocalPreparingStatus($order),
+
+            'ready' => $this->applyLocalReadyStatus($order),
+
+            'picked_up',
+            'delivering' => $this->applyLocalWayStatus($order),
+
             default => null,
         };
     }
