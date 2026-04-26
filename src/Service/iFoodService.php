@@ -5102,6 +5102,27 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador remoto.');
         }
 
+        $dispatchFlow = $this->resolveDispatchFlowForOrder($order);
+        $storedState = $this->getStoredOrderIntegrationState($order);
+        $remoteState = strtolower($this->normalizeString($storedState['remote_order_state'] ?? null));
+        $realStatus = strtolower($this->normalizeString($order->getStatus()?->getRealStatus()));
+        $statusName = strtolower($this->normalizeString($order->getStatus()?->getStatus()));
+        $alreadyDispatched = $dispatchFlow === 'merchant'
+            && (
+                ($realStatus === 'pending' && $statusName === 'way')
+                || in_array($remoteState, ['dispatching', 'dispatched', 'order_dispatched'], true)
+            );
+
+        if ($alreadyDispatched) {
+            return $this->persistOrderActionResult(
+                $order,
+                'delivered',
+                ['status' => 200, 'body' => ['message' => 'ok']],
+                'concluded',
+                ['realStatus' => 'closed', 'status' => 'closed']
+            );
+        }
+
         return $this->persistOrderActionResult(
             $order,
             'delivered',

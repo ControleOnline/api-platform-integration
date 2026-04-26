@@ -1107,9 +1107,13 @@ class IntegrationController extends AbstractController
         $isPickupFlow = !empty($deliveryContext['is_takeout']) || !empty($deliveryContext['is_dine_in']);
         $isStoreDelivery = $isDeliveryFlow && !empty($deliveryContext['is_store_delivery']);
         $hasHandoverFlow = $isDeliveryFlow && $isStoreDelivery && ($handoverUrl !== '' || $locator !== '' || $pickupCode !== '');
+        $isStoreDeliveryReady = $isStoreDelivery && (
+            ($realStatus === 'pending' && in_array($statusName, ['ready', 'way'], true))
+            || in_array($remoteState, ['ready', 'dispatching', 'dispatched', 'order_dispatched'], true)
+        );
         $canCancel = !$isTerminal;
         $canReady = !$isTerminal && $isPreparing && !$isReadyOrBeyond;
-        $canDelivered = !$isTerminal && $isDeliveryFlow && $isStoreDelivery && $isDelivering;
+        $canDelivered = !$isTerminal && $isDeliveryFlow && $isStoreDelivery && ($isDelivering || $isStoreDeliveryReady);
 
         return [
             'can_ready' => $canReady,
