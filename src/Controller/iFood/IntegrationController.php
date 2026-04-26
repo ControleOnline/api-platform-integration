@@ -450,6 +450,16 @@ class IntegrationController extends AbstractController
         return null;
     }
 
+    private function normalizePickupCode(mixed $value, mixed $displayId = null): ?string
+    {
+        $normalized = $this->normalizeString($value);
+        if ($normalized === '') {
+            return null;
+        }
+
+        return $normalized === $this->normalizeString($displayId) ? null : $normalized;
+    }
+
     private function preferredBool(mixed ...$values): ?bool
     {
         foreach ($values as $value) {
@@ -550,7 +560,9 @@ class IntegrationController extends AbstractController
     {
         $orderPayload = $this->resolveOrderPayload($payload);
         $takeout = is_array($orderPayload['takeout'] ?? null) ? $orderPayload['takeout'] : [];
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
         $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
+        $displayId = $this->normalizeString($orderPayload['displayId'] ?? null);
         $mode = $this->preferredText(
             $takeout['mode'] ?? null,
             $storedState['takeout_mode'] ?? null
@@ -580,8 +592,9 @@ class IntegrationController extends AbstractController
                 $storedState['takeout_date_time'] ?? null
             ),
             'pickup_code' => $this->preferredText(
-                $pickup['code'] ?? null,
-                $storedState['pickup_code'] ?? null
+                $delivery['pickupCode'] ?? null,
+                $delivery['pickup_code'] ?? null,
+                $this->normalizePickupCode($storedState['pickup_code'] ?? null, $displayId)
             ),
             'pickup_area_code' => $pickupAreaCode,
             'pickup_area_type' => $pickupAreaType,
@@ -1034,7 +1047,7 @@ class IntegrationController extends AbstractController
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
         $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
         $customerPhone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
-        $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
+        $displayId = $this->normalizeString($orderPayload['displayId'] ?? null);
 
         $locator = $this->preferredText(
             $delivery['locator'] ?? null,
@@ -1045,9 +1058,9 @@ class IntegrationController extends AbstractController
             $storedState['locator'] ?? null,
         ) ?? '';
         $pickupCode = $this->preferredText(
-            $pickup['code'] ?? null,
             $delivery['pickupCode'] ?? null,
-            $storedState['pickup_code'] ?? null,
+            $delivery['pickup_code'] ?? null,
+            $this->normalizePickupCode($storedState['pickup_code'] ?? null, $displayId),
         ) ?? '';
         $handoverUrl = $this->preferredText(
             $delivery['handoverConfirmationUrl'] ?? null,
@@ -1918,17 +1931,17 @@ class IntegrationController extends AbstractController
         $orderPayload = $this->resolveOrderPayload($payload);
         $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
-        $pickup = is_array($orderPayload['pickup'] ?? null) ? $orderPayload['pickup'] : [];
         $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
         $customerPhone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
         $liveTracking = is_array($delivery['liveTracking'] ?? null)
             ? $delivery['liveTracking'] : [];
         $riderData    = is_array($liveTracking['rider'] ?? null) ? $liveTracking['rider'] : [];
 
+        $displayId = $this->normalizeString($orderPayload['displayId'] ?? null);
         $pickupCode = $this->normalizeString(
-            $pickup['code']
-                ?? $delivery['pickupCode']
-                ?? $storedState['pickup_code']
+            $delivery['pickupCode']
+                ?? $delivery['pickup_code']
+                ?? $this->normalizePickupCode($storedState['pickup_code'] ?? null, $displayId)
                 ?? null
         );
         $handoverCode = $this->normalizeString(

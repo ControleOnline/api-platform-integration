@@ -966,11 +966,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
+        $displayId = $this->normalizeString($orderPayload['displayId'] ?? null);
         $pickupCode = $this->extractOrderPayloadValue($orderPayload, [
-            ['pickup', 'code'],
             ['delivery', 'pickupCode'],
             ['delivery', 'pickup_code'],
-            ['pickupCode'],
         ]);
         $locator = $this->extractOrderPayloadValue($orderPayload, [
             ['delivery', 'locator'],
@@ -1034,6 +1033,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $snapshot = [
+            'code' => $displayId,
             'order_type' => $orderType,
             'order_timing' => $orderTiming,
             'delivered_by' => $deliveredBy,
@@ -1215,7 +1215,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $statePayload = [
             'id' => $orderId,
-            'code' => $orderId,
             'merchant_id' => $merchantId,
             'last_event_type' => $eventCode,
             'last_event_at' => $eventTimestamp,
@@ -1858,6 +1857,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'last_integration_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_integration_id'),
         ];
 
+        $storedRemoteId = $this->normalizeString($state['ifood_id'] ?? null);
+        $storedDisplayId = $this->normalizeString($state['ifood_code'] ?? null);
+        if ($storedDisplayId !== '' && ($storedDisplayId === $storedRemoteId || str_contains($storedDisplayId, '-'))) {
+            $state['ifood_code'] = '';
+        }
+
         $otherInformations = $this->getDecodedOrderOtherInformations($order);
         $latestEventType = $this->normalizeString($otherInformations['latest_event_type'] ?? null);
         if ($latestEventType !== '' && is_array($otherInformations[$latestEventType] ?? null)) {
@@ -1865,18 +1870,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $state['last_event_type'] = $state['last_event_type'] ?: $latestEventType;
             $state['last_event_at'] = $state['last_event_at'] ?: $this->extractEventTimestamp($payload);
             $state['ifood_id'] = $state['ifood_id'] ?: $this->normalizeString($payload['orderId'] ?? null);
-            $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($payload['orderId'] ?? null);
             $state['merchant_id'] = $state['merchant_id'] ?: $this->normalizeString($payload['merchantId'] ?? null);
             $state['remote_order_state'] = $state['remote_order_state'] ?: $this->resolveRemoteOrderStateByEventCode($latestEventType);
 
             if (is_array($payload['order'] ?? null)) {
                 $snapshot = $this->extractOrderDetailSnapshot($payload['order']);
+                $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($snapshot['code'] ?? null);
                 foreach ($snapshot as $fieldName => $fieldValue) {
                     if (($state[$fieldName] ?? '') === '' && $fieldValue !== '') {
                         $state[$fieldName] = $fieldValue;
                     }
                 }
             }
+
         }
 
         return $state;
@@ -3839,7 +3845,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->entityManager->persist($order);
             $this->entityManager->flush();
             $this->discoveryFoodCode($order, $orderId, 'id');
-            $this->discoveryFoodCode($order, $orderId, 'code');
 
             $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
             if (is_array($orderDetails['delivery'] ?? null)) {
@@ -3870,7 +3875,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $extendedState = [
                 'id' => $orderId,
-                'code' => $orderId,
+                'code' => $this->normalizeString($orderDetails['displayId'] ?? null),
                 'merchant_id' => $merchantId,
                 'last_event_type' => $snapshotKey,
                 'last_event_at' => $this->extractEventTimestamp($json),
