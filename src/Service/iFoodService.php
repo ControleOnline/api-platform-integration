@@ -63,10 +63,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $orderId = $this->normalizeString($event['orderId'] ?? null);
         if ($orderId === '') {
-            self::$logger->warning('iFood event ignored because orderId is missing', [
-                'integration_id' => $integration->getId(),
+            self::$logger->warning('iFood event ignored because orderId is missing', $this->buildLogContext($integration, $event, [
                 'event_code' => $eventCode,
-            ]);
+            ]));
             return null;
         }
 
@@ -74,11 +73,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $orderAlreadyExisted = $order instanceof Order;
         if (!$order instanceof Order) {
             if (!$this->shouldCreateOrderFromEvent($eventCode)) {
-                self::$logger->warning('iFood event ignored because local order does not exist and event should not create a new order', [
-                    'integration_id' => $integration->getId(),
+                self::$logger->warning('iFood event ignored because local order does not exist and event should not create a new order', $this->buildLogContext($integration, $event, [
                     'event_code' => $eventCode,
                     'order_id' => $orderId,
-                ]);
+                ]));
                 return null;
             }
 
@@ -86,23 +84,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if (!$order instanceof Order) {
-            self::$logger->warning('iFood event ignored because local order could not be resolved', [
-                'integration_id' => $integration->getId(),
+            self::$logger->warning('iFood event ignored because local order could not be resolved', $this->buildLogContext($integration, $event, [
                 'event_code' => $eventCode,
                 'order_id' => $orderId,
-            ]);
+            ]));
             return null;
         }
 
         $this->appendOrderEventPayload($order, $eventCode, $event);
         $this->persistIncomingEventState($order, $integration, $event);
 
-        self::$logger->info('iFood integration resolved local order for event', [
+        self::$logger->info('iFood integration resolved local order for event', $this->buildLogContext($integration, $event, [
             'order_id' => $orderId,
             'local_order_id' => $order->getId(),
             'event_code' => $eventCode,
             'order_already_existed' => $orderAlreadyExisted,
-        ]);
+        ]));
 
         if ($orderAlreadyExisted) {
             $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
@@ -151,10 +148,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $payload = json_decode((string) $integration->getBody(), true);
         if (json_last_error() !== JSON_ERROR_NONE || !is_array($payload)) {
-            self::$logger->warning('iFood payload ignored because JSON is invalid', [
-                'integration_id' => $integration->getId(),
+            self::$logger->warning('iFood payload ignored because JSON is invalid', $this->buildLogContext($integration, [], [
                 'json_error' => json_last_error_msg(),
-            ]);
+            ]));
             return null;
         }
 
@@ -169,6 +165,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return $payload;
+    }
+
+    private function buildLogContext(?Integration $integration = null, array $event = [], array $extra = []): array
+    {
+        $meta = $event !== [] ? $this->extractWebhookMeta($event) : [];
+        $orderId = $this->normalizeString($event['orderId'] ?? ($meta['order_id'] ?? null));
+        $merchantId = $this->normalizeString($event['merchantId'] ?? ($meta['shop_id'] ?? null));
+        $eventId = $this->normalizeString($meta['event_id'] ?? null);
+
+        return array_merge([
+            'integration_id' => $integration?->getId(),
+            'logEntity' => $integration,
+            'event_code' => $event !== [] ? $this->resolveEventCode($event) : null,
+            'order_id' => $orderId !== '' ? $orderId : null,
+            'merchant_id' => $merchantId !== '' ? $merchantId : null,
+            'webhook_event_id' => $eventId !== '' ? $eventId : null,
+        ], $extra);
     }
 
     private function normalizeString(mixed $value): string
