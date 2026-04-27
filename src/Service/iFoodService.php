@@ -4862,6 +4862,31 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $hasQueueEntry;
     }
 
+    private function shouldAutoReadyFromQueue(Order $order): bool
+    {
+        $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $status = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+
+        if ($realStatus === 'open') {
+            return true;
+        }
+
+        if ($realStatus !== 'pending' || $status !== 'ready') {
+            return false;
+        }
+
+        $state = $this->getStoredOrderIntegrationState($order);
+        $remoteState = strtolower($this->normalizeString($state['remote_order_state'] ?? null));
+        $lastAction = strtolower($this->normalizeString($state['last_action'] ?? null));
+        $lastActionErrno = $this->normalizeString($state['last_action_errno'] ?? null);
+
+        if (in_array($remoteState, ['ready', 'dispatching', 'dispatched', 'order_dispatched'], true)) {
+            return false;
+        }
+
+        return !($lastAction === 'ready' && $lastActionErrno === '0');
+    }
+
     private function handleOrderProductQueueReadyTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): void
     {
         if (!$this->isReadyQueueTransition($oldQueue, $newQueue)) {
@@ -4873,8 +4898,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return;
         }
 
-        $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
-        if ($realStatus !== 'open' || !$this->areAllOrderProductQueuesReady($order)) {
+        if (!$this->shouldAutoReadyFromQueue($order) || !$this->areAllOrderProductQueuesReady($order)) {
             return;
         }
 
