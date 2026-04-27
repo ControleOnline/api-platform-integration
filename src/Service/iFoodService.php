@@ -8,6 +8,7 @@ use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
+use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\People;
@@ -4793,12 +4794,69 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             || (bool) ($oldAction['remote_sync'] ?? false) !== (bool) ($newAction['remote_sync'] ?? false);
     }
 
+    private function isReadyQueueTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): bool
+    {
+        $statusOutId = (int) ($newQueue->getQueue()?->getStatusOut()?->getId() ?? 0);
+        if ($statusOutId <= 0) {
+            return false;
+        }
+
+        $oldStatusId = (int) ($oldQueue->getStatus()?->getId() ?? 0);
+        $newStatusId = (int) ($newQueue->getStatus()?->getId() ?? 0);
+
+        return $oldStatusId !== $statusOutId
+            && $newStatusId === $statusOutId;
+    }
+
+    private function areAllOrderProductQueuesReady(Order $order): bool
+    {
+        $hasQueueEntry = false;
+
+        foreach ($order->getOrderProducts() as $orderProduct) {
+            foreach ($orderProduct->getOrderProductQueues() as $queueEntry) {
+                $hasQueueEntry = true;
+                $statusOutId = (int) ($queueEntry->getQueue()?->getStatusOut()?->getId() ?? 0);
+                $currentStatusId = (int) ($queueEntry->getStatus()?->getId() ?? 0);
+
+                if ($statusOutId <= 0 || $currentStatusId !== $statusOutId) {
+                    return false;
+                }
+            }
+        }
+
+        return $hasQueueEntry;
+    }
+
+    private function handleOrderProductQueueReadyTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): void
+    {
+        if (!$this->isReadyQueueTransition($oldQueue, $newQueue)) {
+            return;
+        }
+
+        $order = $newQueue->getOrderProduct()?->getOrder();
+        if (!$order instanceof Order || $order->getApp() !== self::APP_CONTEXT) {
+            return;
+        }
+
+        $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        if ($realStatus !== 'open' || !$this->areAllOrderProductQueuesReady($order)) {
+            return;
+        }
+
+        $this->performReadyAction($order);
+    }
+
     // HANDLER DE MUDANÇA DE ENTIDADE
     // Quando um pedido do iFood muda de status, dispara sincronização com o iFood
     public function onEntityChanged(EntityChangedEvent $event)
     {
         $oldEntity = $event->getOldEntity();
         $entity = $event->getEntity();
+
+        if ($entity instanceof OrderProductQueue && $oldEntity instanceof OrderProductQueue) {
+            $this->handleOrderProductQueueReadyTransition($oldEntity, $entity);
+            return;
+        }
 
         if (!$entity instanceof Order || !$oldEntity instanceof Order)
             return;
