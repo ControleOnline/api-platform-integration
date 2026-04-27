@@ -1151,6 +1151,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $acceptReasons[$normalizedReason] = true;
             }
         }
+        $alternatives = is_array($source['alternatives'] ?? null) ? $source['alternatives'] : [];
+        $alternative = is_array($alternatives[0] ?? null) ? $alternatives[0] : [];
+        $alternativeMetadata = is_array($alternative['metadata'] ?? null) ? $alternative['metadata'] : [];
+        $alternativeAmount = is_array($alternativeMetadata['maxAmount'] ?? null)
+            ? $alternativeMetadata['maxAmount']
+            : (is_array($alternativeMetadata['amount'] ?? null) ? $alternativeMetadata['amount'] : []);
+        $alternativeTimes = is_array($alternativeMetadata['allowedsAdditionalTimeInMinutes'] ?? null)
+            ? $alternativeMetadata['allowedsAdditionalTimeInMinutes']
+            : (is_array($alternativeMetadata['allowedAdditionalTimeInMinutes'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeInMinutes'] : []);
+        $alternativeReasons = is_array($alternativeMetadata['allowedsAdditionalTimeReasons'] ?? null)
+            ? $alternativeMetadata['allowedsAdditionalTimeReasons']
+            : (is_array($alternativeMetadata['allowedAdditionalTimeReasons'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeReasons'] : []);
 
         $snapshot = [
             'handshake_event_type' => $eventCode,
@@ -1191,6 +1203,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ?? null
             ),
             'handshake_accept_reasons' => implode(',', array_keys($acceptReasons)),
+            'handshake_alternative_type' => strtoupper($this->normalizeString($alternative['type'] ?? null)),
+            'handshake_alternative_amount_value' => $this->normalizeString($alternativeAmount['value'] ?? null),
+            'handshake_alternative_amount_currency' => $this->normalizeString($alternativeAmount['currency'] ?? null),
+            'handshake_alternative_time_minutes' => $this->normalizeString($alternativeTimes[0] ?? null),
+            'handshake_alternative_reason' => strtoupper($this->normalizeString($alternativeReasons[0] ?? null)),
             'handshake_settlement_status' => $this->normalizeString(
                 $source['settlementStatus']
                     ?? $source['status']
@@ -1841,6 +1858,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'handshake_expires_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_expires_at'),
             'handshake_timeout_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_timeout_action'),
             'handshake_accept_reasons' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_accept_reasons'),
+            'handshake_alternative_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_type'),
+            'handshake_alternative_amount_value' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_value'),
+            'handshake_alternative_amount_currency' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_currency'),
+            'handshake_alternative_time_minutes' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_time_minutes'),
+            'handshake_alternative_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_reason'),
             'handshake_settlement_status' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_status'),
             'handshake_settlement_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_reason'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
@@ -5043,7 +5065,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $normalizedDecision = strtolower($this->normalizeString($decision));
-        if (!in_array($normalizedDecision, ['accept', 'reject'], true)) {
+        if (!in_array($normalizedDecision, ['accept', 'reject', 'alternative'], true)) {
             return $this->buildUnavailableOrderActionResponse('Acao de negociacao iFood invalida.');
         }
 
@@ -5079,6 +5101,35 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         if ($normalizedDecision === 'reject') {
             $payload['reason'] = $normalizedReasonCode;
+        }
+
+        if ($normalizedDecision === 'alternative') {
+            $alternativeType = strtoupper($this->normalizeString($storedState['handshake_alternative_type'] ?? null));
+            $payload['type'] = $alternativeType;
+            $payload['metadata'] = [];
+
+            if (in_array($alternativeType, ['REFUND', 'BENEFIT'], true)) {
+                $amountValue = $this->normalizeString($storedState['handshake_alternative_amount_value'] ?? null);
+                $amountCurrency = $this->normalizeString($storedState['handshake_alternative_amount_currency'] ?? null) ?: 'BRL';
+                if ($amountValue !== '') {
+                    $payload['metadata']['amount'] = [
+                        'value' => $amountValue,
+                        'currency' => $amountCurrency,
+                    ];
+                }
+            }
+
+            if ($alternativeType === 'ADDITIONAL_TIME') {
+                $minutes = (int) $this->normalizeString($storedState['handshake_alternative_time_minutes'] ?? null);
+                if ($minutes > 0) {
+                    $payload['metadata']['additionalTimeInMinutes'] = $minutes;
+                    $payload['metadata']['reason'] = $this->normalizeString($storedState['handshake_alternative_reason'] ?? null) ?: $normalizedReasonCode;
+                }
+            }
+
+            if ($payload['type'] === '' || $payload['metadata'] === []) {
+                return $this->buildUnavailableOrderActionResponse('Pedido iFood sem alternativa valida para contraproposta.');
+            }
         }
 
         $handshakeAction = strtoupper($this->normalizeString($storedState['handshake_action'] ?? null));
@@ -5467,7 +5518,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $payload = [];
         if ($cancellationCode !== null && $cancellationCode !== '') {
-            $payload['cancellationCode'] = $cancellationCode;
+            $payload['reason'] = $cancellationCode;
         }
         return $this->callIfoodOrderAction($orderId, '/requestCancellation', $payload);
     }
