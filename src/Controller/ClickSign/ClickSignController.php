@@ -26,7 +26,7 @@ class ClickSignController extends AbstractController
     }
 
     #[Route('/webhook/clicksign', name: 'clicksign_webhook', methods: ['POST'])]
-    #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+    #[Security("is_granted('ROLE_HUMAN')")]
     public function handleClickSignWebhook(
         Request $request,
         IntegrationService $integrationService

@@ -24,7 +24,7 @@ class N8NController extends AbstractController
     }
 
     #[Route('/webhook/N8N', name: 'n8n_webhook', methods: ['POST'])]
-    #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+    #[Security("is_granted('ROLE_HUMAN')")]
     public function handleN8NWebhook(
         Request $request,
         IntegrationService $integrationService

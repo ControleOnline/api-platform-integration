@@ -26,7 +26,7 @@ class WhatsAppController extends AbstractController
     }
 
     #[Route('/webhook/whatsapp', name: 'whatsapp_webhook', methods: ['POST'])]
-    #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+    #[Security("is_granted('ROLE_HUMAN')")]
     public function handleWhatsappWebhook(
         Request $request,
         IntegrationService $integrationService
@@ -48,7 +48,7 @@ class WhatsAppController extends AbstractController
 
 
     #[Route('/whatsapp/create-session', name: 'whatsapp_session', methods: ['POST'])]
-    #[Security("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+    #[Security("is_granted('ROLE_HUMAN')")]
     public function handleWhatsappCreateSession(
         Request $request,
     ): Response {

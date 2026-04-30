@@ -4,6 +4,7 @@ namespace ControleOnline\Controller\iFood;
 
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
+use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\RequestPayloadService;
 use DateTimeImmutable;
@@ -16,7 +17,7 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use Symfony\Component\Security\Http\Attribute\Security as SecurityAttribute;
 
-#[SecurityAttribute("is_granted('ROLE_ADMIN') or is_granted('ROLE_CLIENT')")]
+#[SecurityAttribute("is_granted('ROLE_HUMAN')")]
 class IntegrationController extends AbstractController
 {
     private const IFOOD_SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
@@ -24,6 +25,7 @@ class IntegrationController extends AbstractController
     public function __construct(
         private EntityManagerInterface $manager,
         private Security $security,
+        private PeopleService $peopleService,
         private iFoodService $iFoodService,
         private RequestPayloadService $requestPayloadService,
     ) {}
@@ -56,14 +58,6 @@ class IntegrationController extends AbstractController
         $people = $user->getPeople();
 
         return $people instanceof People ? $people : null;
-    }
-
-    private function isAdminUser(): bool
-    {
-        $user = $this->security->getToken()?->getUser();
-        $roles = is_object($user) && method_exists($user, 'getRoles') ? (array) $user->getRoles() : [];
-
-        return in_array('ROLE_ADMIN', $roles, true);
     }
 
     private function parseJsonBody(Request $request): array
@@ -137,10 +131,6 @@ class IntegrationController extends AbstractController
 
     private function canAccessProvider(People $provider): bool
     {
-        if ($this->isAdminUser()) {
-            return true;
-        }
-
         $userPeople = $this->getAuthenticatedPeople();
         if (!$userPeople) {
             return false;
@@ -150,20 +140,22 @@ class IntegrationController extends AbstractController
             return true;
         }
 
-        $sql = <<<SQL
-            SELECT COUNT(1)
-            FROM people_link
-            WHERE company_id = :companyId
-              AND people_id = :peopleId
-              AND enable = 1
-        SQL;
+        return $this->peopleService->canAccessCompany($provider, $userPeople);
+    }
 
-        $count = (int) $this->manager->getConnection()->fetchOne($sql, [
-            'companyId' => $provider->getId(),
-            'peopleId' => $userPeople->getId(),
-        ]);
+    private function resolveDefaultProvider(?People $userPeople): ?People
+    {
+        if (!$userPeople) {
+            return null;
+        }
 
-        return $count > 0;
+        if ($this->peopleService->canAccessCompany($userPeople, $userPeople)) {
+            return $userPeople;
+        }
+
+        $companies = $this->peopleService->getMyCompanies();
+
+        return count($companies) === 1 ? $companies[0] : null;
     }
 
     private function resolveProvider(Request $request, array $payload = []): ?People
@@ -176,10 +168,7 @@ class IntegrationController extends AbstractController
         $userPeople = $this->getAuthenticatedPeople();
 
         if (!$providerId) {
-            if ($userPeople && $this->canAccessProvider($userPeople)) {
-                return $userPeople;
-            }
-            return null;
+            return $this->resolveDefaultProvider($userPeople);
         }
 
         $providerId = $this->requestPayloadService->normalizeOptionalNumericId($providerId);
