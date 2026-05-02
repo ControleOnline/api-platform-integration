@@ -229,7 +229,6 @@ class MarketplaceOrderInvoiceCorrectionService
                 'J'
             );
             $walletName = self::FOOD99_NAME;
-            $paymentTypeName = Order::APP_FOOD99;
             $marketplaceLabel = self::FOOD99_NAME;
         } else {
             $snapshot = $this->iFoodService->getOrderHomologationSnapshot($order);
@@ -242,7 +241,6 @@ class MarketplaceOrderInvoiceCorrectionService
                 'J'
             );
             $walletName = Order::APP_IFOOD;
-            $paymentTypeName = Order::APP_IFOOD;
             $marketplaceLabel = Order::APP_IFOOD;
         }
 
@@ -304,7 +302,8 @@ class MarketplaceOrderInvoiceCorrectionService
 
         $settlementPaymentType = $this->resolveMarketplacePaymentType(
             $order->getProvider(),
-            $paymentTypeName,
+            $marketplaceLabel,
+            self::PURPOSE_WEEKLY_SETTLEMENT,
             'weekly_settlement',
             $providerWallet,
             $marketplaceWallet
@@ -614,13 +613,14 @@ class MarketplaceOrderInvoiceCorrectionService
 
     private function resolveMarketplacePaymentType(
         People $provider,
-        string $paymentTypeName,
+        string $marketplaceLabel,
+        string $purpose,
         string $paymentCode,
         ?Wallet $sourceWallet = null,
         ?Wallet $destinationWallet = null
     ): PaymentType {
         $paymentType = $this->walletService->discoverPaymentType($provider, [
-            'paymentType' => $paymentTypeName,
+            'paymentType' => $this->resolveMarketplacePaymentTypeLabel($marketplaceLabel, $purpose),
             'frequency' => 'single',
             'installments' => 'single',
         ]);
@@ -634,6 +634,22 @@ class MarketplaceOrderInvoiceCorrectionService
         }
 
         return $paymentType;
+    }
+
+    private function resolveMarketplacePaymentTypeLabel(string $marketplaceLabel, string $purpose): string
+    {
+        $normalizedMarketplaceLabel = trim($marketplaceLabel) !== '' ? trim($marketplaceLabel) : 'Marketplace';
+
+        return match ($purpose) {
+            self::PURPOSE_WEEKLY_SETTLEMENT => sprintf('%s - Repasse semanal', $normalizedMarketplaceLabel),
+            self::PURPOSE_CUSTOMER_COLLECTION => sprintf('%s - Cobranca na entrega', $normalizedMarketplaceLabel),
+            self::PURPOSE_SERVICE_FEE => sprintf('%s - Taxa de servico', $normalizedMarketplaceLabel),
+            self::PURPOSE_SMALL_ORDER_FEE => sprintf('%s - Taxa de pedido minimo', $normalizedMarketplaceLabel),
+            self::PURPOSE_MEAL_TOP_UP_FEE => sprintf('%s - Complemento de beneficio', $normalizedMarketplaceLabel),
+            self::PURPOSE_MERCHANT_DISCOUNT => sprintf('%s - Desconto subsidiado pela loja', $normalizedMarketplaceLabel),
+            self::PURPOSE_COURIER_PAYMENT => sprintf('%s - Pagamento do motoboy', $normalizedMarketplaceLabel),
+            default => sprintf('%s - %s', $normalizedMarketplaceLabel, $purpose),
+        };
     }
 
     private function resolveCourierPeople(array $context): ?People
