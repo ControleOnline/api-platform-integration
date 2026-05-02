@@ -1924,6 +1924,143 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $state;
     }
 
+    public function getOrderHomologationSnapshot(Order $order): array
+    {
+        $this->init();
+
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        $latestEventType = $this->normalizeString($otherInformations['latest_event_type'] ?? null);
+        $payload = $latestEventType !== '' && is_array($otherInformations[$latestEventType] ?? null)
+            ? $otherInformations[$latestEventType]
+            : [];
+        $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+
+        if ($orderPayload === []) {
+            return [
+                'financial' => null,
+                'payment' => null,
+                'customer' => null,
+                'delivery' => null,
+                'address' => null,
+                'notes' => null,
+                'identifiers' => null,
+                'raw_payload_available' => false,
+            ];
+        }
+
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
+        $customer = is_array($orderPayload['customer'] ?? null) ? $orderPayload['customer'] : [];
+        $phone = is_array($customer['phone'] ?? null) ? $customer['phone'] : [];
+        $payments = is_array($orderPayload['payments'] ?? null) ? $orderPayload['payments'] : [];
+        $methods = is_array($payments['methods'] ?? null) ? $payments['methods'] : [];
+        $firstMethod = is_array($methods[0] ?? null) ? $methods[0] : [];
+        $total = is_array($orderPayload['total'] ?? null) ? $orderPayload['total'] : [];
+        $additionalFees = is_array($orderPayload['additionalFees'] ?? null) ? $orderPayload['additionalFees'] : [];
+        $benefitSnapshot = $this->extractOrderBenefitSnapshot($orderPayload);
+
+        $itemsTotal = round((float) ($total['subTotal'] ?? 0), 2);
+        $deliveryFee = round((float) ($total['deliveryFee'] ?? 0), 2);
+        $serviceFee = round(array_reduce($additionalFees, function (float $sum, mixed $fee): float {
+            if (!is_array($fee)) {
+                return $sum;
+            }
+
+            return $sum + (float) ($fee['value'] ?? 0);
+        }, 0.0), 2);
+        $discountTotal = round((float) (($total['benefits'] ?? null) ?: ($benefitSnapshot['discount_total'] ?? 0)), 2);
+        $ifoodSubsidy = round((float) ($benefitSnapshot['ifood_subsidy'] ?? 0), 2);
+        $merchantSubsidy = round((float) ($benefitSnapshot['merchant_subsidy'] ?? 0), 2);
+        $customerTotal = round((float) ($total['orderAmount'] ?? 0), 2);
+        $amountPaid = round((float) ($payments['prepaid'] ?? 0), 2);
+        $amountPending = round((float) ($payments['pending'] ?? 0), 2);
+        $customerNeedPayingMoney = $amountPending > 0 ? $amountPending : $customerTotal;
+        $changeFor = round((float) ($firstMethod['cash']['changeFor'] ?? 0), 2);
+        $changeAmount = $changeFor > $customerNeedPayingMoney
+            ? round(max(0, $changeFor - $customerNeedPayingMoney), 2)
+            : 0.0;
+        $isPaidOnline = $amountPaid > 0 && $amountPending <= 0.009;
+        $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
+        $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
+        $isStoreDelivery = $this->isMerchantDeliveryContext($deliveredBy, $deliveryMode);
+
+        return [
+            'financial' => [
+                'currency' => 'BRL',
+                'items_total' => $itemsTotal,
+                'delivery_fee' => $deliveryFee,
+                'service_fee' => $serviceFee,
+                'small_order_fee' => 0.0,
+                'meal_top_up_fee' => 0.0,
+                'tip_total' => 0.0,
+                'subtotal_before_discounts' => round($itemsTotal + $deliveryFee + $serviceFee, 2),
+                'discount_total' => $discountTotal,
+                'store_discount_total' => $merchantSubsidy,
+                'platform_discount_total' => $ifoodSubsidy,
+                'promotions_total' => $discountTotal,
+                'items_discount_total' => 0.0,
+                'delivery_discount_total' => 0.0,
+                'coupon_discount_total' => 0.0,
+                'customer_total' => $customerTotal,
+                'customer_need_paying_money' => $customerNeedPayingMoney,
+                'store_receivable_total' => $customerTotal,
+                'real_pay_total' => $amountPaid,
+                'refund_total' => 0.0,
+                'store_charged_delivery_price' => $deliveryFee,
+                'shop_paid_money' => 0.0,
+                'ifood_subsidy' => $ifoodSubsidy,
+                'merchant_subsidy' => $merchantSubsidy,
+                'payment_brand' => $this->normalizeString($firstMethod['card']['brand'] ?? null),
+                'change_for' => $changeFor,
+            ],
+            'payment' => [
+                'pay_type' => $this->normalizeString($firstMethod['type'] ?? null),
+                'pay_method' => $this->normalizeString($firstMethod['method'] ?? null),
+                'pay_channel' => $this->normalizeString($firstMethod['card']['brand'] ?? ($firstMethod['method'] ?? null)),
+                'selected_payment_label' => $this->normalizeString($firstMethod['method'] ?? null),
+                'amount_paid' => $amountPaid,
+                'amount_pending' => $amountPending,
+                'collect_on_delivery_amount' => $amountPending,
+                'customer_need_paying_money' => $customerNeedPayingMoney,
+                'shop_paid_money' => 0.0,
+                'change_for' => $changeFor,
+                'change_amount' => $changeAmount,
+                'needs_change' => $changeAmount > 0.009,
+                'is_fully_paid' => $amountPending <= 0.009,
+                'is_paid_online' => $isPaidOnline,
+            ],
+            'customer' => [
+                'name' => $this->normalizeString($customer['name'] ?? null),
+                'phone' => $this->normalizeString($phone['number'] ?? null),
+            ],
+            'delivery' => [
+                'delivered_by' => $deliveredBy,
+                'delivery_mode' => $deliveryMode,
+                'is_store_delivery' => $isStoreDelivery,
+                'is_platform_delivery' => !$isStoreDelivery,
+            ],
+            'address' => [
+                'display' => $this->normalizeString($deliveryAddress['formattedAddress'] ?? null),
+                'street_name' => $this->normalizeString($deliveryAddress['streetName'] ?? null),
+                'street_number' => $this->normalizeString($deliveryAddress['streetNumber'] ?? null),
+                'district' => $this->normalizeString($deliveryAddress['neighborhood'] ?? null),
+                'city' => $this->normalizeString($deliveryAddress['city'] ?? null),
+                'state' => $this->normalizeString($deliveryAddress['state'] ?? null),
+                'postal_code' => $this->normalizeString($deliveryAddress['postalCode'] ?? null),
+                'reference' => $this->normalizeString($deliveryAddress['reference'] ?? null),
+                'complement' => $this->normalizeString($deliveryAddress['complement'] ?? null),
+            ],
+            'notes' => [
+                'remark' => $this->extractOrderRemarkFromPayload($orderPayload),
+            ],
+            'identifiers' => [
+                'ifood_code' => $this->normalizeString($orderPayload['displayId'] ?? null),
+                'ifood_id' => $this->normalizeString($payload['orderId'] ?? null),
+            ],
+            'raw_payload_available' => true,
+        ];
+    }
+
     public function getSelfDeliveryConfirmationUrl(): string
     {
         return self::SELF_DELIVERY_CONFIRMATION_URL;

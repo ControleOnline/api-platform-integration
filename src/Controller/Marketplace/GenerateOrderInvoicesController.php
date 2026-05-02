@@ -4,6 +4,7 @@ namespace ControleOnline\Controller\Marketplace;
 
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
+use ControleOnline\Service\MarketplaceOrderInvoiceCorrectionService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -22,6 +23,7 @@ class GenerateOrderInvoicesController extends AbstractController
         private Security $security,
         private PeopleService $peopleService,
         private RequestPayloadService $requestPayloadService,
+        private MarketplaceOrderInvoiceCorrectionService $marketplaceOrderInvoiceCorrectionService,
     ) {}
 
     private function getAuthenticatedPeople(): ?People
@@ -105,12 +107,12 @@ class GenerateOrderInvoicesController extends AbstractController
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        // Stub route so the app can wire the action before the invoice rules land.
+        $result = $this->marketplaceOrderInvoiceCorrectionService->rebuild($order);
+
         return new JsonResponse([
-            'accepted' => true,
-            'order_id' => $order->getId(),
-            'app' => $order->getApp(),
-            'message' => 'Pedido enviado ao backend. A logica de criacao das invoices ainda sera implementada.',
-        ], Response::HTTP_ACCEPTED);
+            'success' => true,
+            'message' => 'Invoices financeiras do marketplace recalculadas com sucesso.',
+            'data' => $result,
+        ], Response::HTTP_OK);
     }
 }
