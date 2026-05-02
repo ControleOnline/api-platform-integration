@@ -107,7 +107,13 @@ class GenerateOrderInvoicesController extends AbstractController
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->marketplaceOrderInvoiceCorrectionService->rebuild($order);
+        try {
+            $result = $this->marketplaceOrderInvoiceCorrectionService->rebuild($order);
+        } catch (\RuntimeException $exception) {
+            return new JsonResponse([
+                'error' => $exception->getMessage(),
+            ], Response::HTTP_CONFLICT);
+        }
 
         return new JsonResponse([
             'success' => true,

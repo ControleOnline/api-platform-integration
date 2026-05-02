@@ -34,42 +34,45 @@ class MarketplaceOrderInvoiceCorrectionService
         private WalletService $walletService,
         private PeopleService $peopleService,
         private StatusService $statusService,
+        private OrderService $orderService,
         private Food99Service $food99Service,
         private iFoodService $iFoodService,
     ) {}
 
     public function rebuild(Order $order): array
     {
-        $context = $this->buildContext($order);
+        $financialOrder = $this->orderService->resolveFinancialOrder($order);
+        $context = $this->buildContext($financialOrder);
         $connection = $this->entityManager->getConnection();
         $connection->beginTransaction();
 
         try {
-            $removedInvoices = $this->purgeManagedMarketplaceInvoices($order, $context['app']);
+            $this->assertNoLegacyMarketplaceInvoices($financialOrder, $context['app']);
+            $removedInvoices = $this->purgeManagedMarketplaceInvoices($financialOrder, $context['app']);
             $this->entityManager->flush();
             $createdInvoices = [];
             $warnings = [];
 
             if ($context['customer_collection_amount'] > 0) {
-                $customer = $order->getPayer() instanceof People
-                    ? $order->getPayer()
-                    : $order->getClient();
+                $customer = $financialOrder->getPayer() instanceof People
+                    ? $financialOrder->getPayer()
+                    : $financialOrder->getClient();
 
                 if ($customer instanceof People) {
                     $createdInvoices[] = $this->createSingleOrderInvoice(
-                        $order,
+                        $financialOrder,
                         $context,
                         self::PURPOSE_CUSTOMER_COLLECTION,
                         $customer,
-                        $order->getProvider(),
+                        $financialOrder->getProvider(),
                         $context['customer_collection_amount'],
                         $context['pending_status'],
-                        $this->resolveOrderReferenceDate($order),
+                        $this->resolveOrderReferenceDate($financialOrder),
                         null,
                         $context['provider_wallet'],
                         sprintf(
                             'Recebimento na entrega do pedido #%s via %s',
-                            (string) $order->getId(),
+                            (string) $financialOrder->getId(),
                             $context['marketplace_label']
                         ),
                         [
@@ -84,23 +87,23 @@ class MarketplaceOrderInvoiceCorrectionService
             }
 
             if ($context['weekly_settlement_amount'] > 0) {
-                $createdInvoices[] = $this->syncWeeklySettlementInvoice($order, $context);
+                $createdInvoices[] = $this->syncWeeklySettlementInvoice($financialOrder, $context);
             }
 
-            foreach ($this->buildProviderPayables($order, $context) as $payable) {
+            foreach ($this->buildProviderPayables($financialOrder, $context) as $payable) {
                 if (($payable['amount'] ?? 0) <= 0) {
                     continue;
                 }
 
                 $createdInvoices[] = $this->createSingleOrderInvoice(
-                    $order,
+                    $financialOrder,
                     $context,
                     (string) $payable['purpose'],
-                    $order->getProvider(),
+                    $financialOrder->getProvider(),
                     $context['marketplace_people'],
                     (float) $payable['amount'],
                     $context['paid_status'],
-                    $this->resolveOrderReferenceDate($order),
+                    $this->resolveOrderReferenceDate($financialOrder),
                     $context['provider_wallet'],
                     $context['marketplace_wallet'],
                     (string) $payable['description'],
@@ -117,19 +120,19 @@ class MarketplaceOrderInvoiceCorrectionService
                 if ($courier instanceof People) {
                     $courierWallet = $this->walletService->discoverWallet($courier, $context['wallet_name']);
                     $createdInvoices[] = $this->createSingleOrderInvoice(
-                        $order,
+                        $financialOrder,
                         $context,
                         self::PURPOSE_COURIER_PAYMENT,
                         $context['marketplace_people'],
                         $courier,
                         $context['courier_payment_amount'],
                         $context['paid_status'],
-                        $this->resolveOrderReferenceDate($order),
+                        $this->resolveOrderReferenceDate($financialOrder),
                         $context['marketplace_wallet'],
                         $courierWallet,
                         sprintf(
                             'Pagamento do motoboy do pedido #%s pela %s',
-                            (string) $order->getId(),
+                            (string) $financialOrder->getId(),
                             $context['marketplace_label']
                         ),
                         [
@@ -149,7 +152,7 @@ class MarketplaceOrderInvoiceCorrectionService
             $connection->commit();
 
             return [
-                'order_id' => $order->getId(),
+                'order_id' => $financialOrder->getId(),
                 'app' => $context['app'],
                 'wallet' => $context['wallet_name'],
                 'due_date' => $context['weekly_due_date']->format('Y-m-d'),
@@ -173,6 +176,41 @@ class MarketplaceOrderInvoiceCorrectionService
             }
 
             throw $exception;
+        }
+    }
+
+    private function assertNoLegacyMarketplaceInvoices(Order $order, string $app): void
+    {
+        $orderInvoices = is_iterable($order->getInvoice()) ? $order->getInvoice()->toArray() : [];
+
+        foreach ($orderInvoices as $orderInvoice) {
+            if (!$orderInvoice instanceof OrderInvoice) {
+                continue;
+            }
+
+            $invoice = $orderInvoice->getInvoice();
+            if (!$invoice instanceof Invoice) {
+                continue;
+            }
+
+            $metadata = $this->readMarketplaceMetadata($invoice, $app);
+            if ($metadata === []) {
+                continue;
+            }
+
+            if (($metadata['generated_by'] ?? null) === self::GENERATED_BY) {
+                continue;
+            }
+
+            if (
+                ($metadata['marketplace'] ?? null) === $app
+                || isset($metadata['invoice_purpose'])
+                || isset($metadata['financial_kind'])
+            ) {
+                throw new \RuntimeException(
+                    'Pedido possui invoices legadas de marketplace. A limpeza automatica foi bloqueada para evitar apagar dados antigos.'
+                );
+            }
         }
     }
 
@@ -667,9 +705,8 @@ class MarketplaceOrderInvoiceCorrectionService
             return false;
         }
 
-        return ($metadata['marketplace'] ?? null) === $app
-            || isset($metadata['invoice_purpose'])
-            || isset($metadata['financial_kind']);
+        return ($metadata['generated_by'] ?? null) === self::GENERATED_BY
+            && ($metadata['marketplace'] ?? null) === $app;
     }
 
     private function resolveOrderInvoiceShare(OrderInvoice $orderInvoice, Invoice $invoice): float
