@@ -1828,6 +1828,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $value;
         }
 
+        if (is_object($value)) {
+            $normalized = json_decode(json_encode($value), true);
+
+            return is_array($normalized) ? $normalized : [];
+        }
+
         if (!is_string($value)) {
             return [];
         }
@@ -1855,6 +1861,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         try {
             $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));
+            if ($otherInformations === []) {
+                $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations());
+            }
         } catch (\Throwable) {
             $otherInformations = [];
         }
