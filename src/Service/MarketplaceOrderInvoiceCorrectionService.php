@@ -571,6 +571,15 @@ class MarketplaceOrderInvoiceCorrectionService
             return null;
         }
 
+        if ($phone === []) {
+            $existingCourier = $this->entityManager->getRepository(People::class)->findOneBy([
+                'name' => $name,
+                'peopleType' => 'F',
+            ]);
+
+            return $existingCourier instanceof People ? $existingCourier : null;
+        }
+
         return $this->peopleService->discoveryPeople(
             null,
             null,
