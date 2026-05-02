@@ -4,6 +4,7 @@ namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
@@ -55,12 +56,19 @@ class IntegrationService
         $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
         $method = 'integrate';
         $handled = false;
+        $result = null;
         if ($this->container->has($serviceName)) {
             $service = $this->container->get($serviceName);
             if (method_exists($service, $method)) {
                 $handled = true;
-                $service->$method($integration);
+                $result = $service->$method($integration);
             }
+        }
+
+        if ($handled && $this->shouldGenerateMarketplaceFinancial($integration, $result)) {
+            $this->container
+                ->get(MarketplaceOrderFinancialGenerationService::class)
+                ->generate($result);
         }
 
         if (!$handled) {
@@ -71,6 +79,28 @@ class IntegrationService
 
         $this->manager->persist($integration);
         $this->manager->flush();
+    }
+
+    private function shouldGenerateMarketplaceFinancial(Integration $integration, mixed $result): bool
+    {
+        if (!$result instanceof Order) {
+            return false;
+        }
+
+        if (strcasecmp((string) $result->getApp(), Order::APP_FOOD99) !== 0) {
+            return false;
+        }
+
+        if (strcasecmp((string) $integration->getQueueName(), 'Food99') !== 0) {
+            return false;
+        }
+
+        $body = json_decode((string) $integration->getBody(), true);
+        if (!is_array($body)) {
+            return false;
+        }
+
+        return strtolower(trim((string) ($body['type'] ?? ''))) === 'ordernew';
     }
 
 

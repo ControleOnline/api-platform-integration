@@ -13,15 +13,18 @@ use DateTime;
 use DateTimeInterface;
 use Doctrine\ORM\EntityManagerInterface;
 
-class MarketplaceOrderInvoiceCorrectionService
+class MarketplaceOrderFinancialGenerationService
 {
-    private const GENERATED_BY = 'marketplace_financial_correction';
+    private const GENERATED_BY = 'marketplace_financial_generation';
+    private const LEGACY_GENERATED_BY = 'marketplace_financial_correction';
+    private const PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT = 'customer_marketplace_payment';
     private const PURPOSE_WEEKLY_SETTLEMENT = 'weekly_settlement';
     private const PURPOSE_CUSTOMER_COLLECTION = 'customer_collection';
     private const PURPOSE_SERVICE_FEE = 'service_fee';
     private const PURPOSE_SMALL_ORDER_FEE = 'small_order_fee';
     private const PURPOSE_MEAL_TOP_UP_FEE = 'meal_top_up_fee';
     private const PURPOSE_MERCHANT_DISCOUNT = 'merchant_discount';
+    private const PURPOSE_PLATFORM_DISCOUNT = 'platform_discount';
     private const PURPOSE_COURIER_PAYMENT = 'courier_payment';
     private const IFOOD_DOCUMENT = '14380200000121';
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
@@ -39,7 +42,7 @@ class MarketplaceOrderInvoiceCorrectionService
         private iFoodService $iFoodService,
     ) {}
 
-    public function rebuild(Order $order): array
+    public function generate(Order $order): array
     {
         $financialOrder = $this->orderService->resolveFinancialOrder($order);
         $context = $this->buildContext($financialOrder);
@@ -86,6 +89,39 @@ class MarketplaceOrderInvoiceCorrectionService
                 }
             }
 
+            if ($context['customer_marketplace_payment_amount'] > 0) {
+                $customer = $financialOrder->getPayer() instanceof People
+                    ? $financialOrder->getPayer()
+                    : $financialOrder->getClient();
+
+                if ($customer instanceof People) {
+                    $createdInvoices[] = $this->createSingleOrderInvoice(
+                        $financialOrder,
+                        $context,
+                        self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT,
+                        $customer,
+                        $context['marketplace_people'],
+                        $context['customer_marketplace_payment_amount'],
+                        $context['paid_status'],
+                        $this->resolveOrderReferenceDate($financialOrder),
+                        null,
+                        $context['marketplace_wallet'],
+                        sprintf(
+                            'Pagamento online do cliente para %s no pedido #%s',
+                            $context['marketplace_label'],
+                            (string) $financialOrder->getId()
+                        ),
+                        [
+                            'financial_kind' => 'marketplace_customer_payment',
+                            'settled_by' => 'customer',
+                        ],
+                        'customer_online_payment'
+                    );
+                } else {
+                    $warnings[] = 'Pedido sem cliente/pagador para gerar invoice de pagamento online ao marketplace.';
+                }
+            }
+
             if ($context['weekly_settlement_amount'] > 0) {
                 $createdInvoices[] = $this->syncWeeklySettlementInvoice($financialOrder, $context);
             }
@@ -112,6 +148,31 @@ class MarketplaceOrderInvoiceCorrectionService
                         'settled_by' => 'marketplace_offset',
                     ],
                     (string) $payable['payment_code']
+                );
+            }
+
+            foreach ($this->buildMarketplaceOffsets($financialOrder, $context) as $offset) {
+                if (($offset['amount'] ?? 0) <= 0) {
+                    continue;
+                }
+
+                $createdInvoices[] = $this->createSingleOrderInvoice(
+                    $financialOrder,
+                    $context,
+                    (string) $offset['purpose'],
+                    $context['marketplace_people'],
+                    $context['marketplace_people'],
+                    (float) $offset['amount'],
+                    $context['paid_status'],
+                    $this->resolveOrderReferenceDate($financialOrder),
+                    $context['marketplace_wallet'],
+                    $context['marketplace_wallet'],
+                    (string) $offset['description'],
+                    [
+                        'financial_kind' => 'marketplace_internal_offset',
+                        'settled_by' => 'marketplace_offset',
+                    ],
+                    (string) $offset['payment_code']
                 );
             }
 
@@ -161,6 +222,7 @@ class MarketplaceOrderInvoiceCorrectionService
                 'summary' => [
                     'weekly_settlement_amount' => $context['weekly_settlement_amount'],
                     'customer_collection_amount' => $context['customer_collection_amount'],
+                    'customer_marketplace_payment_amount' => $context['customer_marketplace_payment_amount'],
                     'courier_payment_amount' => $context['courier_payment_amount'],
                     'service_fee_amount' => $context['service_fee_amount'],
                     'small_order_fee_amount' => $context['small_order_fee_amount'],
@@ -198,7 +260,7 @@ class MarketplaceOrderInvoiceCorrectionService
                 continue;
             }
 
-            if (($metadata['generated_by'] ?? null) === self::GENERATED_BY) {
+            if ($this->isManagedGeneratedMarketplaceMetadata($metadata)) {
                 continue;
             }
 
@@ -269,6 +331,7 @@ class MarketplaceOrderInvoiceCorrectionService
         $smallOrderFeeAmount = $this->money($financial['small_order_fee'] ?? 0);
         $mealTopUpFeeAmount = $this->money($financial['meal_top_up_fee'] ?? 0);
         $customerTotal = $this->money($financial['customer_total'] ?? 0);
+        $amountPaid = $this->money($payment['amount_paid'] ?? 0);
         $shopPaidMoney = $this->money($financial['shop_paid_money'] ?? 0);
         $deliveryFeeAmount = $this->money($financial['delivery_fee'] ?? 0);
         $collectOnDeliveryAmount = $this->money(
@@ -322,6 +385,9 @@ class MarketplaceOrderInvoiceCorrectionService
             'weekly_due_date' => $this->resolveWeeklyDueDate($order),
             'weekly_settlement_amount' => $weeklySettlementAmount,
             'customer_collection_amount' => $isPaidOnline ? 0.0 : $collectOnDeliveryAmount,
+            'customer_marketplace_payment_amount' => $isPaidOnline
+                ? ($amountPaid > 0 ? $amountPaid : $customerTotal)
+                : 0.0,
             'courier_payment_amount' => $isPlatformDelivery ? $deliveryFeeAmount : 0.0,
             'service_fee_amount' => $serviceFeeAmount,
             'small_order_fee_amount' => $smallOrderFeeAmount,
@@ -367,7 +433,7 @@ class MarketplaceOrderInvoiceCorrectionService
 
         throw new \RuntimeException(
             sprintf(
-                'Resumo financeiro da integracao indisponivel para o pedido #%s. O backend nao encontrou um payload rico o suficiente para recalcular as invoices.',
+                'Resumo financeiro da integracao indisponivel para o pedido #%s. O backend nao encontrou um payload rico o suficiente para gerar as invoices financeiras.',
                 (string) $order->getId()
             )
         );
@@ -406,15 +472,31 @@ class MarketplaceOrderInvoiceCorrectionService
                 ),
                 'payment_code' => 'meal_top_up_fee',
             ],
+        ];
+    }
+
+    private function buildMarketplaceOffsets(Order $order, array $context): array
+    {
+        return [
             [
                 'purpose' => self::PURPOSE_MERCHANT_DISCOUNT,
                 'amount' => $context['merchant_discount_amount'],
                 'description' => sprintf(
-                    'Desconto subsidiado pela loja no pedido #%s do marketplace %s',
-                    (string) $order->getId(),
-                    $context['marketplace_label']
+                    'Compensacao interna %s do desconto subsidiado pela loja no pedido #%s',
+                    $context['marketplace_label'],
+                    (string) $order->getId()
                 ),
                 'payment_code' => 'merchant_discount',
+            ],
+            [
+                'purpose' => self::PURPOSE_PLATFORM_DISCOUNT,
+                'amount' => $context['platform_discount_amount'],
+                'description' => sprintf(
+                    'Compensacao interna %s do desconto subsidiado pela plataforma no pedido #%s',
+                    $context['marketplace_label'],
+                    (string) $order->getId(),
+                ),
+                'payment_code' => 'platform_discount',
             ],
         ];
     }
@@ -581,7 +663,7 @@ class MarketplaceOrderInvoiceCorrectionService
             }
 
             $metadata = $this->readMarketplaceMetadata($candidate, $context['app']);
-            if (($metadata['generated_by'] ?? null) !== self::GENERATED_BY) {
+            if (!$this->isManagedGeneratedMarketplaceMetadata($metadata)) {
                 continue;
             }
 
@@ -642,12 +724,14 @@ class MarketplaceOrderInvoiceCorrectionService
         $normalizedMarketplaceLabel = trim($marketplaceLabel) !== '' ? trim($marketplaceLabel) : 'Marketplace';
 
         return match ($purpose) {
+            self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT => sprintf('%s - Pagamento online do cliente', $normalizedMarketplaceLabel),
             self::PURPOSE_WEEKLY_SETTLEMENT => sprintf('%s - Repasse semanal', $normalizedMarketplaceLabel),
             self::PURPOSE_CUSTOMER_COLLECTION => sprintf('%s - Cobranca na entrega', $normalizedMarketplaceLabel),
             self::PURPOSE_SERVICE_FEE => sprintf('%s - Taxa de servico', $normalizedMarketplaceLabel),
             self::PURPOSE_SMALL_ORDER_FEE => sprintf('%s - Taxa de pedido minimo', $normalizedMarketplaceLabel),
             self::PURPOSE_MEAL_TOP_UP_FEE => sprintf('%s - Complemento de beneficio', $normalizedMarketplaceLabel),
             self::PURPOSE_MERCHANT_DISCOUNT => sprintf('%s - Desconto subsidiado pela loja', $normalizedMarketplaceLabel),
+            self::PURPOSE_PLATFORM_DISCOUNT => sprintf('%s - Desconto subsidiado pela plataforma', $normalizedMarketplaceLabel),
             self::PURPOSE_COURIER_PAYMENT => sprintf('%s - Pagamento do motoboy', $normalizedMarketplaceLabel),
             default => sprintf('%s - %s', $normalizedMarketplaceLabel, $purpose),
         };
@@ -758,8 +842,20 @@ class MarketplaceOrderInvoiceCorrectionService
             return false;
         }
 
-        return ($metadata['generated_by'] ?? null) === self::GENERATED_BY
+        return $this->isManagedGeneratedMarketplaceMetadata($metadata)
             && ($metadata['marketplace'] ?? null) === $app;
+    }
+
+    private function isManagedGeneratedMarketplaceMetadata(array $metadata): bool
+    {
+        return in_array(
+            (string) ($metadata['generated_by'] ?? ''),
+            [
+                self::GENERATED_BY,
+                self::LEGACY_GENERATED_BY,
+            ],
+            true
+        );
     }
 
     private function resolveOrderInvoiceShare(OrderInvoice $orderInvoice, Invoice $invoice): float
