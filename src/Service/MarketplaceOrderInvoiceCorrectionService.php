@@ -250,6 +250,8 @@ class MarketplaceOrderInvoiceCorrectionService
         $payment = is_array($snapshot['payment'] ?? null) ? $snapshot['payment'] : [];
         $delivery = is_array($snapshot['delivery'] ?? null) ? $snapshot['delivery'] : [];
 
+        $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
+
         $providerWallet = $this->walletService->discoverWallet($order->getProvider(), $walletName);
         $marketplaceWallet = $this->walletService->discoverWallet($marketplacePeople, $walletName);
         $pendingStatus = $this->statusService->discoveryStatus('pending', 'waiting payment', 'invoice');
@@ -336,6 +338,40 @@ class MarketplaceOrderInvoiceCorrectionService
                 'phone' => $this->text($state['rider_phone'] ?? $delivery['rider_phone'] ?? null),
             ],
         ];
+    }
+
+    private function assertMarketplaceFinancialSnapshotIsUsable(Order $order, array $financial, array $payment): void
+    {
+        $orderPrice = $this->money($order->getPrice());
+        if ($orderPrice <= 0) {
+            return;
+        }
+
+        $relevantAmounts = [
+            $financial['items_total'] ?? null,
+            $financial['customer_total'] ?? null,
+            $financial['discount_total'] ?? null,
+            $financial['delivery_fee'] ?? null,
+            $financial['service_fee'] ?? null,
+            $financial['shop_paid_money'] ?? null,
+            $payment['customer_need_paying_money'] ?? null,
+            $payment['collect_on_delivery_amount'] ?? null,
+            $payment['amount_paid'] ?? null,
+            $payment['amount_pending'] ?? null,
+        ];
+
+        foreach ($relevantAmounts as $amount) {
+            if ($this->money($amount) > 0) {
+                return;
+            }
+        }
+
+        throw new \RuntimeException(
+            sprintf(
+                'Resumo financeiro da integracao indisponivel para o pedido #%s. O backend nao encontrou um payload rico o suficiente para recalcular as invoices.',
+                (string) $order->getId()
+            )
+        );
     }
 
     private function buildProviderPayables(Order $order, array $context): array

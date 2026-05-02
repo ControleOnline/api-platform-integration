@@ -2265,6 +2265,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             self::LEGACY_ORDER_CONTEXT,
         ]);
 
+        $bestPayload = [];
+        $bestScore = -1;
+
         foreach (array_unique($candidateKeys) as $candidateKey) {
             $candidate = $otherInformations[$candidateKey] ?? null;
             if (is_string($candidate)) {
@@ -2280,14 +2283,68 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 continue;
             }
 
-            $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-            $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
-            if (!empty($orderInfo) || !empty($data)) {
-                return $payload;
+            $score = $this->scoreFood99StoredPayload($payload);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestPayload = $payload;
             }
         }
 
-        return [];
+        return $bestScore > 0 ? $bestPayload : [];
+    }
+
+    private function scoreFood99StoredPayload(array $payload): int
+    {
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $price = is_array($orderInfo['price'] ?? null)
+            ? $orderInfo['price']
+            : (is_array($data['price'] ?? null) ? $data['price'] : []);
+        $items = is_array($orderInfo['order_items'] ?? null)
+            ? $orderInfo['order_items']
+            : (is_array($data['order_items'] ?? null) ? $data['order_items'] : []);
+        $receiveAddress = is_array($orderInfo['receive_address'] ?? null)
+            ? $orderInfo['receive_address']
+            : (is_array($data['receive_address'] ?? null) ? $data['receive_address'] : []);
+        $promotions = is_array($orderInfo['promotions'] ?? null)
+            ? $orderInfo['promotions']
+            : (is_array($data['promotions'] ?? null) ? $data['promotions'] : []);
+
+        $score = 0;
+
+        if ($orderInfo !== []) {
+            $score += 10;
+        }
+
+        if ($price !== []) {
+            $score += 40;
+        }
+
+        if ($items !== []) {
+            $score += 20;
+        }
+
+        if ($receiveAddress !== []) {
+            $score += 10;
+        }
+
+        if ($promotions !== []) {
+            $score += 10;
+        }
+
+        if (isset($price['order_price']) || isset($price['customer_need_paying_money']) || isset($price['real_pay_price'])) {
+            $score += 40;
+        }
+
+        if (isset($orderInfo['pay_type']) || isset($orderInfo['pay_method']) || isset($orderInfo['delivery_type'])) {
+            $score += 20;
+        }
+
+        if (isset($data['order_id']) || isset($orderInfo['order_id'])) {
+            $score += 1;
+        }
+
+        return $score;
     }
 
     private function normalizeFood99Money(mixed $value): float
