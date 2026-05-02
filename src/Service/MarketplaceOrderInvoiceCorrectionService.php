@@ -493,7 +493,8 @@ class MarketplaceOrderInvoiceCorrectionService
     ): Invoice {
         $paymentType = $this->resolveMarketplacePaymentType(
             $order->getProvider(),
-            $context['marketplace_label'] === self::FOOD99_NAME ? Order::APP_FOOD99 : Order::APP_IFOOD,
+            (string) ($context['marketplace_label'] ?? ''),
+            $purpose,
             $paymentCode,
             $sourceWallet,
             $destinationWallet
