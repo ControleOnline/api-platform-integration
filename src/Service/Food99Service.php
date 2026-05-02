@@ -1939,9 +1939,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $normalizedPayload = $payload;
 
-        for ($depth = 0; $depth < 5; $depth++) {
+        for ($depth = 0; $depth < 32; $depth++) {
             $candidate = $normalizedPayload[self::APP_CONTEXT] ?? null;
             if (!is_array($candidate)) {
+                break;
+            }
+
+            if ($candidate === $normalizedPayload) {
                 break;
             }
 
@@ -2278,7 +2282,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 continue;
             }
 
-            $payload = $this->unwrapStoredOrderPayload($candidate);
+            $payload = $this->resolveBestPayloadFromStoredOrderCandidate($candidate, $latestEventType);
             if (!is_array($payload) || empty($payload)) {
                 continue;
             }
@@ -2287,6 +2291,52 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             if ($score > $bestScore) {
                 $bestScore = $score;
                 $bestPayload = $payload;
+            }
+        }
+
+        return $bestScore > 0 ? $bestPayload : [];
+    }
+
+    private function resolveBestPayloadFromStoredOrderCandidate(array $candidate, string $preferredEventType = ''): array
+    {
+        $payload = $this->unwrapStoredOrderPayload($candidate);
+        if (!is_array($payload) || empty($payload)) {
+            return [];
+        }
+
+        $bestPayload = $payload;
+        $bestScore = $this->scoreFood99StoredPayload($payload);
+        $containerLatestEventType = $this->normalizeIncomingFood99Value($payload['latest_event_type'] ?? null);
+        $eventCandidateKeys = array_values(array_unique(array_filter([
+            $preferredEventType,
+            $containerLatestEventType,
+            'orderDetailSync',
+            'orderNew',
+            'deliveryStatus',
+            'orderReady',
+            'orderConfirm',
+            'orderFinish',
+        ], static fn(string $value): bool => $value !== '')));
+
+        foreach ($eventCandidateKeys as $eventCandidateKey) {
+            $eventPayload = $payload[$eventCandidateKey] ?? null;
+            if (is_string($eventPayload)) {
+                $eventPayload = $this->decodeOrderOtherInformationsValue($eventPayload);
+            }
+
+            if (!is_array($eventPayload) || empty($eventPayload)) {
+                continue;
+            }
+
+            $eventPayload = $this->unwrapStoredOrderPayload($eventPayload);
+            if (!is_array($eventPayload) || empty($eventPayload)) {
+                continue;
+            }
+
+            $score = $this->scoreFood99StoredPayload($eventPayload);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestPayload = $eventPayload;
             }
         }
 
