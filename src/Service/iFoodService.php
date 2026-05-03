@@ -1789,6 +1789,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return $value;
         }
 
+        if (is_object($value)) {
+            $normalized = json_decode(json_encode($value), true);
+
+            return is_array($normalized) ? $normalized : [];
+        }
+
         if (!is_string($value)) {
             return [];
         }
@@ -1804,7 +1810,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function getDecodedOrderOtherInformations(Order $order): array
     {
         try {
-            return $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));
+            $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));
+
+            return $otherInformations !== []
+                ? $otherInformations
+                : $this->decodeOrderOtherInformationsValue($order->getOtherInformations());
         } catch (\Throwable) {
             return [];
         }

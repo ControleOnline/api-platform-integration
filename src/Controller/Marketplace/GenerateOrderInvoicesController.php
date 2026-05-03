@@ -4,7 +4,7 @@ namespace ControleOnline\Controller\Marketplace;
 
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
-use ControleOnline\Service\MarketplaceOrderInvoiceCorrectionService;
+use ControleOnline\Service\MarketplaceOrderFinancialGenerationService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -23,7 +23,7 @@ class GenerateOrderInvoicesController extends AbstractController
         private Security $security,
         private PeopleService $peopleService,
         private RequestPayloadService $requestPayloadService,
-        private MarketplaceOrderInvoiceCorrectionService $marketplaceOrderInvoiceCorrectionService,
+        private MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService,
     ) {}
 
     private function getAuthenticatedPeople(): ?People
@@ -107,11 +107,17 @@ class GenerateOrderInvoicesController extends AbstractController
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $result = $this->marketplaceOrderInvoiceCorrectionService->rebuild($order);
+        try {
+            $result = $this->marketplaceOrderFinancialGenerationService->generate($order);
+        } catch (\RuntimeException $exception) {
+            return new JsonResponse([
+                'error' => $exception->getMessage(),
+            ], Response::HTTP_CONFLICT);
+        }
 
         return new JsonResponse([
             'success' => true,
-            'message' => 'Invoices financeiras do marketplace recalculadas com sucesso.',
+            'message' => 'Financeiro do marketplace gerado com sucesso.',
             'data' => $result,
         ], Response::HTTP_OK);
     }

@@ -1828,6 +1828,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $value;
         }
 
+        if (is_object($value)) {
+            $normalized = json_decode(json_encode($value), true);
+
+            return is_array($normalized) ? $normalized : [];
+        }
+
         if (!is_string($value)) {
             return [];
         }
@@ -1855,6 +1861,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         try {
             $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));
+            if ($otherInformations === []) {
+                $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations());
+            }
         } catch (\Throwable) {
             $otherInformations = [];
         }
@@ -1939,9 +1948,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $normalizedPayload = $payload;
 
-        for ($depth = 0; $depth < 5; $depth++) {
+        for ($depth = 0; $depth < 32; $depth++) {
             $candidate = $normalizedPayload[self::APP_CONTEXT] ?? null;
             if (!is_array($candidate)) {
+                break;
+            }
+
+            if ($candidate === $normalizedPayload) {
                 break;
             }
 
@@ -2265,6 +2278,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             self::LEGACY_ORDER_CONTEXT,
         ]);
 
+        $bestPayload = [];
+        $bestScore = -1;
+
         foreach (array_unique($candidateKeys) as $candidateKey) {
             $candidate = $otherInformations[$candidateKey] ?? null;
             if (is_string($candidate)) {
@@ -2275,19 +2291,119 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 continue;
             }
 
-            $payload = $this->unwrapStoredOrderPayload($candidate);
+            $payload = $this->resolveBestPayloadFromStoredOrderCandidate($candidate, $latestEventType);
             if (!is_array($payload) || empty($payload)) {
                 continue;
             }
 
-            $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-            $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
-            if (!empty($orderInfo) || !empty($data)) {
-                return $payload;
+            $score = $this->scoreFood99StoredPayload($payload);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestPayload = $payload;
             }
         }
 
-        return [];
+        return $bestScore > 0 ? $bestPayload : [];
+    }
+
+    private function resolveBestPayloadFromStoredOrderCandidate(array $candidate, string $preferredEventType = ''): array
+    {
+        $payload = $this->unwrapStoredOrderPayload($candidate);
+        if (!is_array($payload) || empty($payload)) {
+            return [];
+        }
+
+        $bestPayload = $payload;
+        $bestScore = $this->scoreFood99StoredPayload($payload);
+        $containerLatestEventType = $this->normalizeIncomingFood99Value($payload['latest_event_type'] ?? null);
+        $eventCandidateKeys = array_values(array_unique(array_filter([
+            $preferredEventType,
+            $containerLatestEventType,
+            'orderDetailSync',
+            'orderNew',
+            'deliveryStatus',
+            'orderReady',
+            'orderConfirm',
+            'orderFinish',
+        ], static fn(string $value): bool => $value !== '')));
+
+        foreach ($eventCandidateKeys as $eventCandidateKey) {
+            $eventPayload = $payload[$eventCandidateKey] ?? null;
+            if (is_string($eventPayload)) {
+                $eventPayload = $this->decodeOrderOtherInformationsValue($eventPayload);
+            }
+
+            if (!is_array($eventPayload) || empty($eventPayload)) {
+                continue;
+            }
+
+            $eventPayload = $this->unwrapStoredOrderPayload($eventPayload);
+            if (!is_array($eventPayload) || empty($eventPayload)) {
+                continue;
+            }
+
+            $score = $this->scoreFood99StoredPayload($eventPayload);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestPayload = $eventPayload;
+            }
+        }
+
+        return $bestScore > 0 ? $bestPayload : [];
+    }
+
+    private function scoreFood99StoredPayload(array $payload): int
+    {
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $price = is_array($orderInfo['price'] ?? null)
+            ? $orderInfo['price']
+            : (is_array($data['price'] ?? null) ? $data['price'] : []);
+        $items = is_array($orderInfo['order_items'] ?? null)
+            ? $orderInfo['order_items']
+            : (is_array($data['order_items'] ?? null) ? $data['order_items'] : []);
+        $receiveAddress = is_array($orderInfo['receive_address'] ?? null)
+            ? $orderInfo['receive_address']
+            : (is_array($data['receive_address'] ?? null) ? $data['receive_address'] : []);
+        $promotions = is_array($orderInfo['promotions'] ?? null)
+            ? $orderInfo['promotions']
+            : (is_array($data['promotions'] ?? null) ? $data['promotions'] : []);
+
+        $score = 0;
+
+        if ($orderInfo !== []) {
+            $score += 10;
+        }
+
+        if ($price !== []) {
+            $score += 40;
+        }
+
+        if ($items !== []) {
+            $score += 20;
+        }
+
+        if ($receiveAddress !== []) {
+            $score += 10;
+        }
+
+        if ($promotions !== []) {
+            $score += 10;
+        }
+
+        if (isset($price['order_price']) || isset($price['customer_need_paying_money']) || isset($price['real_pay_price'])) {
+            $score += 40;
+        }
+
+        if (isset($orderInfo['pay_type']) || isset($orderInfo['pay_method']) || isset($orderInfo['delivery_type'])) {
+            $score += 20;
+        }
+
+        if (isset($data['order_id']) || isset($orderInfo['order_id'])) {
+            $score += 1;
+        }
+
+        return $score;
     }
 
     private function normalizeFood99Money(mixed $value): float
