@@ -82,7 +82,6 @@ class MarketplaceOrderFinancialGenerationService
                             'financial_kind' => 'account_receivable',
                             'settled_by' => 'customer',
                         ],
-                        'collect_on_delivery'
                     );
                 } else {
                     $warnings[] = 'Pedido sem cliente/pagador para gerar invoice de cobranca na entrega.';
@@ -115,7 +114,6 @@ class MarketplaceOrderFinancialGenerationService
                             'financial_kind' => 'marketplace_customer_payment',
                             'settled_by' => 'customer',
                         ],
-                        'customer_online_payment'
                     );
                 } else {
                     $warnings[] = 'Pedido sem cliente/pagador para gerar invoice de pagamento online ao marketplace.';
@@ -147,7 +145,6 @@ class MarketplaceOrderFinancialGenerationService
                         'financial_kind' => 'account_payable',
                         'settled_by' => 'marketplace_offset',
                     ],
-                    (string) $payable['payment_code']
                 );
             }
 
@@ -172,7 +169,6 @@ class MarketplaceOrderFinancialGenerationService
                         'financial_kind' => 'marketplace_internal_offset',
                         'settled_by' => 'marketplace_offset',
                     ],
-                    (string) $offset['payment_code']
                 );
             }
 
@@ -202,7 +198,6 @@ class MarketplaceOrderFinancialGenerationService
                             'courier_name' => $context['courier']['name'] ?? null,
                             'courier_phone' => $context['courier']['phone'] ?? null,
                         ],
-                        'courier_payment'
                     );
                 } else {
                     $warnings[] = 'Pedido sem motoboy identificavel para gerar invoice de pagamento ao entregador.';
@@ -363,11 +358,10 @@ class MarketplaceOrderFinancialGenerationService
                 )
             );
 
-        $settlementPaymentType = $this->resolveMarketplacePaymentType(
+        $invoicePaymentType = $this->resolveMarketplaceInvoicePaymentType(
             $order->getProvider(),
-            $marketplaceLabel,
-            self::PURPOSE_WEEKLY_SETTLEMENT,
-            'weekly_settlement',
+            $this->resolveMarketplaceInvoicePaymentMethodLabel($payment, $state, $marketplaceLabel),
+            $this->resolveMarketplaceInvoicePaymentCode($payment, $state),
             $providerWallet,
             $marketplaceWallet
         );
@@ -381,7 +375,7 @@ class MarketplaceOrderFinancialGenerationService
             'marketplace_wallet' => $marketplaceWallet,
             'pending_status' => $pendingStatus,
             'paid_status' => $paidStatus,
-            'settlement_payment_type' => $settlementPaymentType,
+            'invoice_payment_type' => $invoicePaymentType,
             'weekly_due_date' => $this->resolveWeeklyDueDate($order),
             'weekly_settlement_amount' => $weeklySettlementAmount,
             'customer_collection_amount' => $isPaidOnline ? 0.0 : $collectOnDeliveryAmount,
@@ -519,7 +513,8 @@ class MarketplaceOrderFinancialGenerationService
             $invoice->setPrice($this->money($invoice->getPrice() + $context['weekly_settlement_amount']));
             $invoice->setDueDate($context['weekly_due_date']);
             $invoice->setStatus($context['pending_status']);
-            $invoice->setPaymentType($context['settlement_payment_type']);
+            $invoice->setPaymentType($context['invoice_payment_type']);
+            $invoice->setInvoiceType($this->resolveMarketplaceInvoiceType(self::PURPOSE_WEEKLY_SETTLEMENT));
             $invoice->setDescription($description);
             $this->applyMarketplaceMetadata($invoice, $context, self::PURPOSE_WEEKLY_SETTLEMENT, [
                 'financial_kind' => 'account_receivable',
@@ -546,7 +541,8 @@ class MarketplaceOrderFinancialGenerationService
             null,
             $description
         );
-        $invoice->setPaymentType($context['settlement_payment_type']);
+        $invoice->setPaymentType($context['invoice_payment_type']);
+        $invoice->setInvoiceType($this->resolveMarketplaceInvoiceType(self::PURPOSE_WEEKLY_SETTLEMENT));
         $this->applyMarketplaceMetadata($invoice, $context, self::PURPOSE_WEEKLY_SETTLEMENT, [
             'financial_kind' => 'account_receivable',
             'grouping' => 'weekly',
@@ -570,18 +566,8 @@ class MarketplaceOrderFinancialGenerationService
         ?Wallet $sourceWallet,
         ?Wallet $destinationWallet,
         string $description,
-        array $metadata,
-        string $paymentCode
+        array $metadata
     ): Invoice {
-        $paymentType = $this->resolveMarketplacePaymentType(
-            $order->getProvider(),
-            (string) ($context['marketplace_label'] ?? ''),
-            $purpose,
-            $paymentCode,
-            $sourceWallet,
-            $destinationWallet
-        );
-
         $invoice = $this->invoiceService->createInvoice(
             null,
             $payer,
@@ -596,7 +582,8 @@ class MarketplaceOrderFinancialGenerationService
             null,
             $description
         );
-        $invoice->setPaymentType($paymentType);
+        $invoice->setPaymentType($context['invoice_payment_type']);
+        $invoice->setInvoiceType($this->resolveMarketplaceInvoiceType($purpose));
         $this->applyMarketplaceMetadata($invoice, $context, $purpose, $metadata);
         $this->entityManager->persist($invoice);
         $this->linkInvoiceToOrder($order, $invoice, $amount);
@@ -694,16 +681,15 @@ class MarketplaceOrderFinancialGenerationService
         $this->entityManager->persist($orderInvoice);
     }
 
-    private function resolveMarketplacePaymentType(
+    private function resolveMarketplaceInvoicePaymentType(
         People $provider,
-        string $marketplaceLabel,
-        string $purpose,
-        string $paymentCode,
+        string $paymentMethodLabel,
+        ?string $paymentCode = null,
         ?Wallet $sourceWallet = null,
         ?Wallet $destinationWallet = null
     ): PaymentType {
         $paymentType = $this->walletService->discoverPaymentType($provider, [
-            'paymentType' => $this->resolveMarketplacePaymentTypeLabel($marketplaceLabel, $purpose),
+            'paymentType' => $paymentMethodLabel !== '' ? $paymentMethodLabel : 'Marketplace payment',
             'frequency' => 'single',
             'installments' => 'single',
         ]);
@@ -719,21 +705,83 @@ class MarketplaceOrderFinancialGenerationService
         return $paymentType;
     }
 
-    private function resolveMarketplacePaymentTypeLabel(string $marketplaceLabel, string $purpose): string
+    private function resolveMarketplaceInvoicePaymentMethodLabel(
+        array $payment,
+        array $state,
+        string $marketplaceLabel
+    ): string
     {
+        $candidates = [
+            $this->text($payment['pay_method_label'] ?? null),
+            $this->text($payment['selected_payment_label'] ?? null),
+            $this->text($payment['pay_type_label'] ?? null),
+            $this->text($state['pay_method_label'] ?? null),
+            $this->text($state['selected_payment_label'] ?? null),
+            $this->text($state['pay_type_label'] ?? null),
+            $this->mapMarketplacePaymentLabel($payment['pay_method'] ?? $state['pay_method'] ?? null),
+            $this->mapMarketplacePaymentLabel($payment['pay_type'] ?? $state['pay_type'] ?? null),
+            $this->mapMarketplacePaymentLabel($payment['pay_channel'] ?? $state['pay_channel'] ?? null),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
         $normalizedMarketplaceLabel = trim($marketplaceLabel) !== '' ? trim($marketplaceLabel) : 'Marketplace';
 
+        return sprintf('%s payment', $normalizedMarketplaceLabel);
+    }
+
+    private function resolveMarketplaceInvoicePaymentCode(array $payment, array $state): ?string
+    {
+        $candidates = [
+            $this->text($payment['pay_channel'] ?? null),
+            $this->text($state['pay_channel'] ?? null),
+            $this->text($payment['pay_method'] ?? null),
+            $this->text($state['pay_method'] ?? null),
+            $this->text($payment['pay_type'] ?? null),
+            $this->text($state['pay_type'] ?? null),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveMarketplaceInvoiceType(string $purpose): string
+    {
         return match ($purpose) {
-            self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT => sprintf('%s - Pagamento online do cliente', $normalizedMarketplaceLabel),
-            self::PURPOSE_WEEKLY_SETTLEMENT => sprintf('%s - Repasse semanal', $normalizedMarketplaceLabel),
-            self::PURPOSE_CUSTOMER_COLLECTION => sprintf('%s - Cobranca na entrega', $normalizedMarketplaceLabel),
-            self::PURPOSE_SERVICE_FEE => sprintf('%s - Taxa de servico', $normalizedMarketplaceLabel),
-            self::PURPOSE_SMALL_ORDER_FEE => sprintf('%s - Taxa de pedido minimo', $normalizedMarketplaceLabel),
-            self::PURPOSE_MEAL_TOP_UP_FEE => sprintf('%s - Complemento de beneficio', $normalizedMarketplaceLabel),
-            self::PURPOSE_MERCHANT_DISCOUNT => sprintf('%s - Desconto subsidiado pela loja', $normalizedMarketplaceLabel),
-            self::PURPOSE_PLATFORM_DISCOUNT => sprintf('%s - Desconto subsidiado pela plataforma', $normalizedMarketplaceLabel),
-            self::PURPOSE_COURIER_PAYMENT => sprintf('%s - Pagamento do motoboy', $normalizedMarketplaceLabel),
-            default => sprintf('%s - %s', $normalizedMarketplaceLabel, $purpose),
+            self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT,
+            self::PURPOSE_CUSTOMER_COLLECTION,
+            self::PURPOSE_COURIER_PAYMENT => Invoice::TYPE_PAYMENT,
+            self::PURPOSE_MERCHANT_DISCOUNT,
+            self::PURPOSE_PLATFORM_DISCOUNT => Invoice::TYPE_DISCOUNT,
+            self::PURPOSE_SERVICE_FEE,
+            self::PURPOSE_SMALL_ORDER_FEE,
+            self::PURPOSE_MEAL_TOP_UP_FEE => Invoice::TYPE_TAX,
+            default => Invoice::TYPE_INVOICE,
+        };
+    }
+
+    private function mapMarketplacePaymentLabel(mixed $value): string
+    {
+        $normalizedValue = strtoupper($this->text($value));
+
+        return match ($normalizedValue) {
+            'PIX' => 'Pix',
+            'CASH', 'MONEY' => 'Dinheiro',
+            'DEBIT', 'DEBIT_CARD' => 'Debito',
+            'CREDIT', 'CREDIT_CARD' => 'Credito',
+            'MEAL_VOUCHER' => 'Refeicao',
+            'FOOD_VOUCHER' => 'Alimentacao',
+            'DIGITAL_WALLET' => 'Carteira digital',
+            default => '',
         };
     }
 
