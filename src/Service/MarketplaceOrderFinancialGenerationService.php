@@ -713,9 +713,11 @@ class MarketplaceOrderFinancialGenerationService
     {
         $candidates = [
             $this->text($payment['pay_method_label'] ?? null),
+            $this->mapMarketplacePaymentLabel($payment['selected_payment_label'] ?? null),
             $this->text($payment['selected_payment_label'] ?? null),
             $this->text($payment['pay_type_label'] ?? null),
             $this->text($state['pay_method_label'] ?? null),
+            $this->mapMarketplacePaymentLabel($state['selected_payment_label'] ?? null),
             $this->text($state['selected_payment_label'] ?? null),
             $this->text($state['pay_type_label'] ?? null),
             $this->mapMarketplacePaymentLabel($payment['pay_method'] ?? $state['pay_method'] ?? null),
