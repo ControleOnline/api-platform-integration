@@ -1176,6 +1176,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $alternativeReasons = is_array($alternativeMetadata['allowedsAdditionalTimeReasons'] ?? null)
             ? $alternativeMetadata['allowedsAdditionalTimeReasons']
             : (is_array($alternativeMetadata['allowedAdditionalTimeReasons'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeReasons'] : []);
+        $evidences = is_array($source['evidences'] ?? null) ? $source['evidences'] : [];
+        $evidence = is_array($evidences[0] ?? null) ? $evidences[0] : [];
 
         $snapshot = [
             'handshake_event_type' => $eventCode,
@@ -1184,6 +1186,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ?? $source['dispute_id']
                     ?? $source['id']
                     ?? $payload['id']
+                    ?? null
+            ),
+            'handshake_created_at' => $this->normalizeString(
+                $source['createdAt']
+                    ?? $source['created_at']
                     ?? null
             ),
             'handshake_action' => $this->normalizeString($source['action'] ?? null),
@@ -1216,11 +1223,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ?? null
             ),
             'handshake_accept_reasons' => implode(',', array_keys($acceptReasons)),
+            'handshake_alternative_id' => $this->normalizeString($alternative['id'] ?? null),
             'handshake_alternative_type' => strtoupper($this->normalizeString($alternative['type'] ?? null)),
             'handshake_alternative_amount_value' => $this->normalizeString($alternativeAmount['value'] ?? null),
             'handshake_alternative_amount_currency' => $this->normalizeString($alternativeAmount['currency'] ?? null),
             'handshake_alternative_time_minutes' => $this->normalizeString($alternativeTimes[0] ?? null),
             'handshake_alternative_reason' => strtoupper($this->normalizeString($alternativeReasons[0] ?? null)),
+            'handshake_evidence_url' => $this->normalizeString($evidence['url'] ?? null),
+            'handshake_evidence_content_type' => $this->normalizeString($evidence['contentType'] ?? ($evidence['content_type'] ?? null)),
             'handshake_settlement_status' => $this->normalizeString(
                 $source['settlementStatus']
                     ?? $source['status']
@@ -1874,6 +1884,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'is_scheduled' => $this->getIfoodExtraDataValue('Order', $orderId, 'is_scheduled'),
             'handshake_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_event_type'),
             'handshake_dispute_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_dispute_id'),
+            'handshake_created_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_created_at'),
             'handshake_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_action'),
             'handshake_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_type'),
             'handshake_group' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_group'),
@@ -1881,11 +1892,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'handshake_expires_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_expires_at'),
             'handshake_timeout_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_timeout_action'),
             'handshake_accept_reasons' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_accept_reasons'),
+            'handshake_alternative_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_id'),
             'handshake_alternative_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_type'),
             'handshake_alternative_amount_value' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_value'),
             'handshake_alternative_amount_currency' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_currency'),
             'handshake_alternative_time_minutes' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_time_minutes'),
             'handshake_alternative_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_reason'),
+            'handshake_evidence_url' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_evidence_url'),
+            'handshake_evidence_content_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_evidence_content_type'),
             'handshake_settlement_status' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_status'),
             'handshake_settlement_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_reason'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),

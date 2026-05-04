@@ -92,6 +92,16 @@ class IntegrationController extends AbstractController
         }
     }
 
+    private function splitStoredCsv(mixed $value): array
+    {
+        $items = array_filter(array_map(
+            static fn($item) => trim((string) $item),
+            explode(',', (string) $value)
+        ));
+
+        return array_values(array_unique($items));
+    }
+
     private function resolvePayloadSources(array $otherInformations): array
     {
         $sources = [];
@@ -919,6 +929,14 @@ class IntegrationController extends AbstractController
         $deliveryContext = $this->resolveDeliveryContext($order, $payload, $storedState);
         $remoteState = $this->normalizeString($storedState['remote_order_state'] ?? null);
         $capabilities = $this->resolveOrderActionCapabilities($order, $storedState, $deliveryContext, $payload);
+        $handshakeEventType = strtoupper($this->normalizeString($storedState['handshake_event_type'] ?? null));
+        $lastAction = strtolower($this->normalizeString($storedState['last_action'] ?? null));
+        $hasSettledDispute = in_array($handshakeEventType, ['HANDSHAKE_SETTLEMENT', 'HSS'], true)
+            || $this->normalizeString($storedState['handshake_settlement_status'] ?? null) !== ''
+            || ($lastAction !== '' && str_starts_with($lastAction, 'handshake_') && !$this->hasErrnoError($storedState['last_action_errno'] ?? null));
+        $hasOpenDispute = $this->normalizeString($storedState['handshake_dispute_id'] ?? null) !== ''
+            && !$hasSettledDispute;
+        $evidenceUrl = $this->normalizeString($storedState['handshake_evidence_url'] ?? null);
         $orderComments = method_exists($order, 'getComments')
             ? $this->normalizeString($order->getComments())
             : '';
@@ -981,17 +999,24 @@ class IntegrationController extends AbstractController
             'payment'       => $this->buildPaymentDetail($payload, $storedState),
             'financial'     => $this->buildFinancialDetail($payload, $storedState),
             'negotiation'   => [
-                'has_open_dispute' => $remoteState === 'handshake_dispute',
+                'has_open_dispute' => $hasOpenDispute,
                 'event_type' => $storedState['handshake_event_type'] ?? null,
                 'dispute_id' => $storedState['handshake_dispute_id'] ?? null,
+                'created_at' => $storedState['handshake_created_at'] ?? null,
                 'action' => $storedState['handshake_action'] ?? null,
                 'type' => $storedState['handshake_type'] ?? null,
                 'group' => $storedState['handshake_group'] ?? null,
                 'message' => $storedState['handshake_message'] ?? null,
                 'expires_at' => $storedState['handshake_expires_at'] ?? null,
                 'timeout_action' => $storedState['handshake_timeout_action'] ?? null,
+                'accept_reasons' => $this->splitStoredCsv($storedState['handshake_accept_reasons'] ?? null),
+                'evidences' => $evidenceUrl !== '' ? [[
+                    'url' => $evidenceUrl,
+                    'content_type' => $storedState['handshake_evidence_content_type'] ?? null,
+                ]] : [],
                 'alternative' => [
                     'available' => $this->normalizeString($storedState['handshake_alternative_type'] ?? null) !== '',
+                    'id' => $storedState['handshake_alternative_id'] ?? null,
                     'type' => $storedState['handshake_alternative_type'] ?? null,
                     'amount_value' => $storedState['handshake_alternative_amount_value'] ?? null,
                     'amount_currency' => $storedState['handshake_alternative_amount_currency'] ?? null,
