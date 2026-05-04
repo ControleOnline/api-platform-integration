@@ -5326,6 +5326,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             if ($payload['type'] === '' || $payload['metadata'] === []) {
+                if (in_array($alternativeType, ['REFUND', 'BENEFIT'], true)) {
+                    return $this->buildUnavailableOrderActionResponse('Pedido iFood sem valor permitido para contraproposta de reembolso.');
+                }
+
+                if ($alternativeType === 'ADDITIONAL_TIME') {
+                    return $this->buildUnavailableOrderActionResponse('Pedido iFood sem tempo permitido para contraproposta.');
+                }
+
                 return $this->buildUnavailableOrderActionResponse('Pedido iFood sem alternativa valida para contraproposta.');
             }
         }

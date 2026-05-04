@@ -937,6 +937,12 @@ class IntegrationController extends AbstractController
         $hasOpenDispute = $this->normalizeString($storedState['handshake_dispute_id'] ?? null) !== ''
             && !$hasSettledDispute;
         $evidenceUrl = $this->normalizeString($storedState['handshake_evidence_url'] ?? null);
+        $alternativeType = strtoupper($this->normalizeString($storedState['handshake_alternative_type'] ?? null));
+        $alternativeAmountValue = $this->normalizeString($storedState['handshake_alternative_amount_value'] ?? null);
+        $alternativeTimeMinutes = (int) $this->normalizeString($storedState['handshake_alternative_time_minutes'] ?? null);
+        $alternativePayloadComplete = in_array($alternativeType, ['REFUND', 'BENEFIT'], true)
+            ? ((int) $alternativeAmountValue > 0)
+            : ($alternativeType === 'ADDITIONAL_TIME' && $alternativeTimeMinutes > 0);
         $orderComments = method_exists($order, 'getComments')
             ? $this->normalizeString($order->getComments())
             : '';
@@ -1016,6 +1022,7 @@ class IntegrationController extends AbstractController
                 ]] : [],
                 'alternative' => [
                     'available' => $this->normalizeString($storedState['handshake_alternative_type'] ?? null) !== '',
+                    'payload_complete' => $alternativePayloadComplete,
                     'id' => $storedState['handshake_alternative_id'] ?? null,
                     'type' => $storedState['handshake_alternative_type'] ?? null,
                     'amount_value' => $storedState['handshake_alternative_amount_value'] ?? null,
