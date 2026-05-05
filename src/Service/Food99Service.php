@@ -5045,12 +5045,16 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 CASE WHEN EXISTS (
                     SELECT 1
                     FROM product_group pg_req
+                    INNER JOIN product_group_parent pg_parent_req
+                        ON pg_parent_req.product_group_id = pg_req.id
+                       AND pg_parent_req.parent_product_id = p.id
+                       AND pg_parent_req.active = 1
                     INNER JOIN product_group_product pgp_req
                         ON pgp_req.product_group_id = pg_req.id
+                       AND pgp_req.product_id = p.id
                     INNER JOIN product child_req
                         ON child_req.id = pgp_req.product_child_id
-                    WHERE pg_req.parent_product_id = p.id
-                      AND pg_req.active = 1
+                    WHERE pg_req.active = 1
                       AND pgp_req.active = 1
                       AND child_req.active = 1
                       AND pgp_req.product_type IN ('component', 'package')
@@ -5128,7 +5132,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $sql = <<<SQL
             SELECT
-                pg.parent_product_id AS parent_product_id,
+                group_parent.parent_product_id AS parent_product_id,
                 pg.id AS product_group_id,
                 pg.product_group AS product_group_name,
                 pg.required AS group_required,
@@ -5143,10 +5147,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 child_pf.file_id AS child_cover_file_id,
                 ed_child.data_value AS child_food99_code
             FROM product_group pg
+            INNER JOIN product_group_parent group_parent
+                ON group_parent.product_group_id = pg.id
+               AND group_parent.active = 1
             INNER JOIN product_group_product pgp
                 ON pgp.product_group_id = pg.id
+               AND pgp.product_id = group_parent.parent_product_id
             INNER JOIN product parent
-                ON parent.id = pg.parent_product_id
+                ON parent.id = group_parent.parent_product_id
             INNER JOIN product child
                 ON child.id = pgp.product_child_id
             LEFT JOIN product_file child_pf ON child_pf.id = (
@@ -5167,9 +5175,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
               AND pg.active = 1
               AND pgp.active = 1
               AND pgp.product_type IN ('component', 'package')
-              AND pg.parent_product_id IN (%s)
+              AND group_parent.parent_product_id IN (%s)
             ORDER BY
-                pg.parent_product_id ASC,
+                group_parent.parent_product_id ASC,
                 COALESCE(pg.group_order, 0) ASC,
                 pg.id ASC,
                 child.product ASC,

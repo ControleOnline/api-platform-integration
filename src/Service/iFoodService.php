@@ -2722,7 +2722,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $sql = <<<SQL
             SELECT
-                pg.parent_product_id AS parent_product_id,
+                group_parent.parent_product_id AS parent_product_id,
                 pg.id AS product_group_id,
                 pg.product_group AS product_group_name,
                 pg.required AS group_required,
@@ -2742,10 +2742,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 child.active AS child_active,
                 child_pf.file_id AS child_cover_file_id
             FROM product_group pg
+            INNER JOIN product_group_parent group_parent
+                ON group_parent.product_group_id = pg.id
+               AND group_parent.active = 1
             INNER JOIN product_group_product pgp
                 ON pgp.product_group_id = pg.id
+               AND pgp.product_id = group_parent.parent_product_id
             INNER JOIN product parent
-                ON parent.id = pg.parent_product_id
+                ON parent.id = group_parent.parent_product_id
             INNER JOIN product child
                 ON child.id = pgp.product_child_id
             LEFT JOIN product_file child_pf ON child_pf.id = (
@@ -2756,9 +2760,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             WHERE parent.company_id = :providerId
               AND parent.active = 1
               AND pgp.product_type IN ('component', 'package')
-              AND pg.parent_product_id IN (%s)
+              AND group_parent.parent_product_id IN (%s)
             ORDER BY
-                pg.parent_product_id ASC,
+                group_parent.parent_product_id ASC,
                 COALESCE(pg.group_order, 0) ASC,
                 pg.id ASC,
                 pgp.id ASC,
