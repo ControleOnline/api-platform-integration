@@ -1236,6 +1236,26 @@ class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/marketplace/integrations/catalog/status', name: 'marketplace_integrations_catalog_status', methods: ['GET'])]
+    public function getCatalogSyncStatus(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        return new JsonResponse([
+            'provider' => [
+                'id' => $provider->getId(),
+                'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
+            ],
+            'platforms' => [
+                '99food' => $this->food99Service->getCatalogSyncStatus($provider),
+                'ifood' => $this->iFoodService->getCatalogSyncStatus($provider),
+            ],
+        ]);
+    }
+
     #[Route('/marketplace/integrations/99food/store', name: 'marketplace_integrations_food99_store', methods: ['GET'])]
     public function getStore(Request $request): JsonResponse
     {
@@ -1632,6 +1652,9 @@ class IntegrationController extends AbstractController
 
             $this->food99Service->ensureMenuProductCodes($provider, $productIds);
             $result = $this->food99Service->uploadStoreMenu($provider, $preview['payload']);
+            if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
+                $this->food99Service->markProductsCatalogSynced($provider, $productIds);
+            }
             $detail = $this->buildLocalIntegrationDetail($provider);
 
             return new JsonResponse([

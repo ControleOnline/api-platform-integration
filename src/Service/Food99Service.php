@@ -4208,6 +4208,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         ))));
         $publishedItemIdSet = array_flip($publishedItemIds);
         $localCandidateIds = [];
+        $syncedProductIds = [];
 
         foreach ($this->fetchMenuProducts($provider) as $row) {
             $productId = (int) ($row['id'] ?? 0);
@@ -4224,6 +4225,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $this->upsertFood99ExtraDataValue('Product', $productId, 'published', $published ? '1' : '0');
+            if ($published) {
+                $syncedProductIds[] = $productId;
+            }
         }
 
         $remoteOnlyItemCount = count(array_diff($publishedItemIds, array_unique($localCandidateIds)));
@@ -4231,6 +4235,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'remote_only_item_count' => $remoteOnlyItemCount,
             'last_sync_at' => date('Y-m-d H:i:s'),
         ]);
+
+        $this->markProductsCatalogSynced($provider, $syncedProductIds);
     }
 
     private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
@@ -5213,7 +5219,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $blockers[] = 'Produto com preco invalido';
         }
 
-        return [
+        $view = [
             'id' => $productId,
             'name' => $productName,
             'description' => trim((string) ($row['description'] ?? '')),
@@ -5231,6 +5237,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'eligible' => empty($blockers),
             'blockers' => $blockers,
         ];
+
+        $view['sync'] = $this->buildFood99ProductSyncState($view, $published);
+
+        return $view;
     }
 
     public function listSelectableMenuProducts(People $provider): array
@@ -5248,6 +5258,276 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'eligible_product_count' => count(array_filter($products, fn(array $product) => $product['eligible'])),
             'products' => $products,
         ];
+    }
+
+    private function normalizeCatalogSyncHashPayload(mixed $value): mixed
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_array($value)) {
+            $normalized = [];
+            foreach ($value as $key => $item) {
+                $normalized[$key] = $this->normalizeCatalogSyncHashPayload($item);
+            }
+
+            if (!array_is_list($normalized)) {
+                ksort($normalized);
+            }
+
+            return $normalized;
+        }
+
+        if (is_float($value)) {
+            return round($value, 4);
+        }
+
+        if (is_bool($value) || is_int($value) || is_string($value) || $value === null) {
+            return $value;
+        }
+
+        return (string) $value;
+    }
+
+    private function buildCatalogSyncHash(array $payload): string
+    {
+        $json = json_encode(
+            $this->normalizeCatalogSyncHashPayload($payload),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+
+        return hash('sha256', is_string($json) ? $json : '');
+    }
+
+    private function buildFood99ProductSyncHash(array $product): string
+    {
+        return $this->buildCatalogSyncHash([
+            'id' => (int) ($product['id'] ?? 0),
+            'name' => trim((string) ($product['name'] ?? '')),
+            'description' => trim((string) ($product['description'] ?? '')),
+            'price' => round((float) ($product['price'] ?? 0), 2),
+            'type' => trim((string) ($product['type'] ?? '')),
+            'category_id' => (int) ($product['category']['id'] ?? 0),
+            'category_name' => trim((string) ($product['category']['name'] ?? '')),
+            'app_item_id' => trim((string) (
+                $product['food99_code']
+                ?? $product['suggested_app_item_id']
+                ?? $product['id']
+                ?? ''
+            )),
+            'has_required_modifiers' => !empty($product['has_required_modifiers']),
+            'image_url' => trim((string) ($product['image_url'] ?? '')),
+        ]);
+    }
+
+    private function buildFood99CategorySyncHash(array $category): string
+    {
+        return $this->buildCatalogSyncHash([
+            'id' => (int) ($category['id'] ?? 0),
+            'name' => trim((string) ($category['name'] ?? '')),
+            'color' => trim((string) ($category['color'] ?? '')),
+            'icon' => trim((string) ($category['icon'] ?? '')),
+            'parent_id' => (int) ($category['parent_id'] ?? 0),
+        ]);
+    }
+
+    private function buildFood99ProductSyncState(array $product, ?bool $publishedOverride = null): array
+    {
+        $productId = (int) ($product['id'] ?? 0);
+        $published = $publishedOverride ?? (!empty($product['published_remotely']) || !empty($product['food99_published']));
+        $currentHash = $this->buildFood99ProductSyncHash($product);
+        $storedHash = $this->getFood99ExtraDataValue('Product', $productId, 'sync_hash') ?? '';
+        $hasStoredHash = $storedHash !== '';
+        $dirty = $published && (!$hasStoredHash || !hash_equals($storedHash, $currentHash));
+        $remoteId = trim((string) (
+            $product['food99_code']
+            ?? $product['suggested_app_item_id']
+            ?? ($published ? ($product['id'] ?? '') : '')
+        ));
+
+        return [
+            'platform' => '99food',
+            'remote_id' => $remoteId !== '' ? $remoteId : null,
+            'published' => (bool) $published,
+            'eligible' => !empty($product['eligible']),
+            'synced' => (bool) ($published && !$dirty),
+            'dirty' => (bool) $dirty,
+            'last_synced_at' => $this->getFood99ExtraDataValue('Product', $productId, 'sync_synced_at'),
+            'status' => !$published ? 'not_synced' : ($dirty ? 'dirty' : 'synced'),
+        ];
+    }
+
+    private function buildFood99CategorySyncState(array $category, array $productIds, bool $published, bool $eligible): array
+    {
+        $categoryId = (int) ($category['id'] ?? 0);
+        $currentHash = $this->buildFood99CategorySyncHash($category);
+        $storedHash = $this->getFood99ExtraDataValue('Category', $categoryId, 'sync_hash') ?? '';
+        $hasStoredHash = $storedHash !== '';
+        $dirty = $published && (!$hasStoredHash || !hash_equals($storedHash, $currentHash));
+        $remoteId = $published && $categoryId > 0 ? (string) $categoryId : null;
+
+        return [
+            'platform' => '99food',
+            'remote_id' => $remoteId,
+            'published' => (bool) $published,
+            'eligible' => $eligible,
+            'synced' => (bool) ($published && !$dirty),
+            'dirty' => (bool) $dirty,
+            'last_synced_at' => $this->getFood99ExtraDataValue('Category', $categoryId, 'sync_synced_at'),
+            'status' => !$published ? 'not_synced' : ($dirty ? 'dirty' : 'synced'),
+            'product_ids' => array_values(array_unique(array_map('intval', $productIds))),
+        ];
+    }
+
+    private function fetchMenuCategories(People $provider): array
+    {
+        $sql = <<<SQL
+            SELECT
+                c.id,
+                c.name,
+                c.color,
+                c.icon,
+                c.parent_id
+            FROM category c
+            WHERE c.company_id = :providerId
+              AND c.context = 'products'
+            ORDER BY c.name ASC
+        SQL;
+
+        return $this->entityManager->getConnection()->fetchAllAssociative($sql, [
+            'providerId' => (int) $provider->getId(),
+        ]);
+    }
+
+    public function getCatalogSyncStatus(People $provider): array
+    {
+        $this->init();
+
+        $storedState = $this->getStoredIntegrationState($provider);
+        $productsResponse = $this->listSelectableMenuProducts($provider);
+        $products = is_array($productsResponse['products'] ?? null) ? $productsResponse['products'] : [];
+        $categories = $this->fetchMenuCategories($provider);
+        $categoryProductIds = [];
+        $categoryEligibleProductIds = [];
+        $categoryPublished = [];
+        $eligibleProductIds = [];
+        $publishedProductIds = [];
+
+        $productStatuses = array_map(function (array $product) use (&$categoryProductIds, &$categoryEligibleProductIds, &$categoryPublished, &$eligibleProductIds, &$publishedProductIds): array {
+            $productId = (int) ($product['id'] ?? 0);
+            $categoryId = (int) ($product['category']['id'] ?? 0);
+            $sync = is_array($product['sync'] ?? null) ? $product['sync'] : $this->buildFood99ProductSyncState($product);
+
+            if ($categoryId > 0 && $productId > 0) {
+                $categoryProductIds[$categoryId][] = $productId;
+            }
+
+            if (!empty($sync['eligible']) && $productId > 0) {
+                $eligibleProductIds[] = $productId;
+                if ($categoryId > 0) {
+                    $categoryEligibleProductIds[$categoryId][] = $productId;
+                }
+            }
+
+            if (!empty($sync['published']) && $productId > 0) {
+                $publishedProductIds[] = $productId;
+                if ($categoryId > 0) {
+                    $categoryPublished[$categoryId] = true;
+                }
+            }
+
+            return array_merge($sync, [
+                'id' => $productId,
+                'name' => $product['name'] ?? null,
+                'category_id' => $categoryId ?: null,
+                'blockers' => $product['blockers'] ?? [],
+            ]);
+        }, $products);
+
+        $categoryStatuses = array_map(function (array $category) use ($categoryProductIds, $categoryEligibleProductIds, $categoryPublished): array {
+            $categoryId = (int) ($category['id'] ?? 0);
+            $productIds = $categoryProductIds[$categoryId] ?? [];
+            $eligibleIds = $categoryEligibleProductIds[$categoryId] ?? [];
+            $sync = $this->buildFood99CategorySyncState(
+                $category,
+                $productIds,
+                !empty($categoryPublished[$categoryId]),
+                !empty($eligibleIds)
+            );
+
+            return array_merge($sync, [
+                'id' => $categoryId,
+                'name' => $category['name'] ?? null,
+                'eligible_product_ids' => array_values(array_unique(array_map('intval', $eligibleIds))),
+            ]);
+        }, $categories);
+
+        return [
+            'platform' => [
+                'key' => '99food',
+                'label' => '99Food',
+                'active' => !empty($storedState['connected']) || !empty($storedState['remote_connected']),
+                'connected' => !empty($storedState['connected']),
+                'remote_connected' => !empty($storedState['remote_connected']),
+                'store_code' => $storedState['food99_code'] ?? null,
+                'last_sync_at' => $storedState['last_sync_at'] ?? null,
+                'last_error_message' => $storedState['last_error_message'] ?? null,
+            ],
+            'products' => $productStatuses,
+            'categories' => $categoryStatuses,
+            'eligible_product_ids' => array_values(array_unique(array_map('intval', $eligibleProductIds))),
+            'published_product_ids' => array_values(array_unique(array_map('intval', $publishedProductIds))),
+            'minimum_required_items' => (int) ($productsResponse['minimum_required_items'] ?? 5),
+        ];
+    }
+
+    private function markCategoriesCatalogSynced(People $provider, array $categoryIds): void
+    {
+        $categoryIdSet = array_flip(array_map('intval', $categoryIds));
+        if (empty($categoryIdSet)) {
+            return;
+        }
+
+        foreach ($this->fetchMenuCategories($provider) as $category) {
+            $categoryId = (int) ($category['id'] ?? 0);
+            if ($categoryId <= 0 || !isset($categoryIdSet[$categoryId])) {
+                continue;
+            }
+
+            $this->upsertFood99ExtraDataValue('Category', $categoryId, 'sync_hash', $this->buildFood99CategorySyncHash($category));
+            $this->upsertFood99ExtraDataValue('Category', $categoryId, 'sync_synced_at', date('Y-m-d H:i:s'));
+        }
+    }
+
+    public function markProductsCatalogSynced(People $provider, array $productIds): void
+    {
+        $this->init();
+
+        $rows = $this->fetchMenuProducts($provider, $this->normalizeProductIds($productIds));
+        if (empty($rows)) {
+            return;
+        }
+
+        $categoryIds = [];
+        foreach ($rows as $row) {
+            $product = $this->buildMenuProductView($row);
+            $productId = (int) ($product['id'] ?? 0);
+            if ($productId <= 0 || empty($product['eligible'])) {
+                continue;
+            }
+
+            $this->upsertFood99ExtraDataValue('Product', $productId, 'sync_hash', $this->buildFood99ProductSyncHash($product));
+            $this->upsertFood99ExtraDataValue('Product', $productId, 'sync_synced_at', date('Y-m-d H:i:s'));
+            $this->upsertFood99ExtraDataValue('Product', $productId, 'published', '1');
+
+            $categoryId = (int) ($product['category']['id'] ?? 0);
+            if ($categoryId > 0) {
+                $categoryIds[] = $categoryId;
+            }
+        }
+
+        $this->markCategoriesCatalogSynced($provider, $categoryIds);
     }
 
     private function resolvePublishedRemoteItemIds(?array $menuDetails): array
@@ -5287,6 +5567,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return array_map(function (array $product) use ($remoteItemIdSet) {
             $candidateId = (string) ($product['food99_code'] ?: $product['suggested_app_item_id'] ?: $product['id']);
             $product['published_remotely'] = isset($remoteItemIdSet[$candidateId]);
+            $product['sync'] = $this->buildFood99ProductSyncState($product, $product['published_remotely']);
 
             return $product;
         }, $products);

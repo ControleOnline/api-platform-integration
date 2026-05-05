@@ -2405,7 +2405,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $remoteEntry = $remoteByEc[$ec] ?? null;
 
-        return [
+        $view = [
             'id'               => $productId,
             'name'             => $name,
             'description'      => trim((string) ($row['description'] ?? '')),
@@ -2420,6 +2420,269 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'ifood_status'     => $remoteEntry['status'] ?? null,
             'cover_image_url'  => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
         ];
+
+        $view['sync'] = $this->buildIfoodProductSyncState($view, $remoteEntry !== null);
+
+        return $view;
+    }
+
+    private function normalizeCatalogSyncHashPayload(mixed $value): mixed
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_array($value)) {
+            $normalized = [];
+            foreach ($value as $key => $item) {
+                $normalized[$key] = $this->normalizeCatalogSyncHashPayload($item);
+            }
+
+            if (!array_is_list($normalized)) {
+                ksort($normalized);
+            }
+
+            return $normalized;
+        }
+
+        if (is_float($value)) {
+            return round($value, 4);
+        }
+
+        if (is_bool($value) || is_int($value) || is_string($value) || $value === null) {
+            return $value;
+        }
+
+        return (string) $value;
+    }
+
+    private function buildCatalogSyncHash(array $payload): string
+    {
+        $json = json_encode(
+            $this->normalizeCatalogSyncHashPayload($payload),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+
+        return hash('sha256', is_string($json) ? $json : '');
+    }
+
+    private function buildIfoodProductSyncHash(array $product): string
+    {
+        return $this->buildCatalogSyncHash([
+            'id' => (int) ($product['id'] ?? 0),
+            'name' => trim((string) ($product['name'] ?? '')),
+            'description' => trim((string) ($product['description'] ?? '')),
+            'price' => round((float) ($product['price'] ?? 0), 2),
+            'type' => trim((string) ($product['type'] ?? '')),
+            'category_id' => (int) ($product['category']['id'] ?? 0),
+            'category_name' => trim((string) ($product['category']['name'] ?? '')),
+            'has_required_modifiers' => !empty($product['has_required_modifiers']),
+            'cover_image_url' => trim((string) ($product['cover_image_url'] ?? '')),
+        ]);
+    }
+
+    private function buildIfoodCategorySyncHash(array $category): string
+    {
+        return $this->buildCatalogSyncHash([
+            'id' => (int) ($category['id'] ?? 0),
+            'name' => trim((string) ($category['name'] ?? '')),
+            'color' => trim((string) ($category['color'] ?? '')),
+            'icon' => trim((string) ($category['icon'] ?? '')),
+            'parent_id' => (int) ($category['parent_id'] ?? 0),
+        ]);
+    }
+
+    private function buildIfoodProductSyncState(array $product, ?bool $publishedOverride = null): array
+    {
+        $productId = (int) ($product['id'] ?? 0);
+        $published = $publishedOverride ?? !empty($product['published_remotely']);
+        $currentHash = $this->buildIfoodProductSyncHash($product);
+        $storedHash = $this->getIfoodExtraDataValue('Product', $productId, 'sync_hash') ?? '';
+        $hasStoredHash = $storedHash !== '';
+        $dirty = $published && (!$hasStoredHash || !hash_equals($storedHash, $currentHash));
+        $remoteId = trim((string) ($product['ifood_item_id'] ?? ''));
+
+        return [
+            'platform' => 'ifood',
+            'remote_id' => $remoteId !== '' ? $remoteId : null,
+            'published' => (bool) $published,
+            'eligible' => !empty($product['eligible']),
+            'synced' => (bool) ($published && !$dirty),
+            'dirty' => (bool) $dirty,
+            'last_synced_at' => $this->getIfoodExtraDataValue('Product', $productId, 'sync_synced_at'),
+            'status' => !$published ? 'not_synced' : ($dirty ? 'dirty' : 'synced'),
+        ];
+    }
+
+    private function buildIfoodCategorySyncState(array $category, array $productIds, bool $published, bool $eligible): array
+    {
+        $categoryId = (int) ($category['id'] ?? 0);
+        $currentHash = $this->buildIfoodCategorySyncHash($category);
+        $storedHash = $this->getIfoodExtraDataValue('Category', $categoryId, 'sync_hash') ?? '';
+        $hasStoredHash = $storedHash !== '';
+        $dirty = $published && (!$hasStoredHash || !hash_equals($storedHash, $currentHash));
+        $remoteId = $this->getIfoodExtraDataValue('Category', $categoryId, 'code');
+
+        return [
+            'platform' => 'ifood',
+            'remote_id' => $remoteId,
+            'published' => (bool) $published,
+            'eligible' => $eligible,
+            'synced' => (bool) ($published && !$dirty),
+            'dirty' => (bool) $dirty,
+            'last_synced_at' => $this->getIfoodExtraDataValue('Category', $categoryId, 'sync_synced_at'),
+            'status' => !$published ? 'not_synced' : ($dirty ? 'dirty' : 'synced'),
+            'product_ids' => array_values(array_unique(array_map('intval', $productIds))),
+        ];
+    }
+
+    private function fetchCatalogCategories(People $provider): array
+    {
+        $sql = <<<SQL
+            SELECT
+                c.id,
+                c.name,
+                c.color,
+                c.icon,
+                c.parent_id
+            FROM category c
+            WHERE c.company_id = :providerId
+              AND c.context = 'products'
+            ORDER BY c.name ASC
+        SQL;
+
+        return $this->entityManager->getConnection()->fetchAllAssociative($sql, [
+            'providerId' => (int) $provider->getId(),
+        ]);
+    }
+
+    public function getCatalogSyncStatus(People $provider): array
+    {
+        $this->init();
+
+        $storedState = $this->getStoredIntegrationState($provider);
+        $productsResponse = $this->listSelectableMenuProducts($provider);
+        $products = is_array($productsResponse['products'] ?? null) ? $productsResponse['products'] : [];
+        $categories = $this->fetchCatalogCategories($provider);
+        $categoryProductIds = [];
+        $categoryEligibleProductIds = [];
+        $categoryPublished = [];
+        $eligibleProductIds = [];
+        $publishedProductIds = [];
+
+        $productStatuses = array_map(function (array $product) use (&$categoryProductIds, &$categoryEligibleProductIds, &$categoryPublished, &$eligibleProductIds, &$publishedProductIds): array {
+            $productId = (int) ($product['id'] ?? 0);
+            $categoryId = (int) ($product['category']['id'] ?? 0);
+            $sync = is_array($product['sync'] ?? null) ? $product['sync'] : $this->buildIfoodProductSyncState($product);
+
+            if ($categoryId > 0 && $productId > 0) {
+                $categoryProductIds[$categoryId][] = $productId;
+            }
+
+            if (!empty($sync['eligible']) && $productId > 0) {
+                $eligibleProductIds[] = $productId;
+                if ($categoryId > 0) {
+                    $categoryEligibleProductIds[$categoryId][] = $productId;
+                }
+            }
+
+            if (!empty($sync['published']) && $productId > 0) {
+                $publishedProductIds[] = $productId;
+                if ($categoryId > 0) {
+                    $categoryPublished[$categoryId] = true;
+                }
+            }
+
+            return array_merge($sync, [
+                'id' => $productId,
+                'name' => $product['name'] ?? null,
+                'category_id' => $categoryId ?: null,
+                'blockers' => $product['blockers'] ?? [],
+            ]);
+        }, $products);
+
+        $categoryStatuses = array_map(function (array $category) use ($categoryProductIds, $categoryEligibleProductIds, $categoryPublished): array {
+            $categoryId = (int) ($category['id'] ?? 0);
+            $productIds = $categoryProductIds[$categoryId] ?? [];
+            $eligibleIds = $categoryEligibleProductIds[$categoryId] ?? [];
+            $sync = $this->buildIfoodCategorySyncState(
+                $category,
+                $productIds,
+                !empty($categoryPublished[$categoryId]) || $this->getIfoodExtraDataValue('Category', $categoryId, 'code') !== null,
+                !empty($eligibleIds)
+            );
+
+            return array_merge($sync, [
+                'id' => $categoryId,
+                'name' => $category['name'] ?? null,
+                'eligible_product_ids' => array_values(array_unique(array_map('intval', $eligibleIds))),
+            ]);
+        }, $categories);
+
+        return [
+            'platform' => [
+                'key' => 'ifood',
+                'label' => 'iFood',
+                'active' => !empty($storedState['connected']) || !empty($storedState['remote_connected']),
+                'connected' => !empty($storedState['connected']),
+                'remote_connected' => !empty($storedState['remote_connected']),
+                'store_code' => $storedState['ifood_code'] ?? $storedState['merchant_id'] ?? null,
+                'last_sync_at' => $storedState['last_sync_at'] ?? null,
+                'last_error_message' => $storedState['last_error_message'] ?? null,
+            ],
+            'products' => $productStatuses,
+            'categories' => $categoryStatuses,
+            'eligible_product_ids' => array_values(array_unique(array_map('intval', $eligibleProductIds))),
+            'published_product_ids' => array_values(array_unique(array_map('intval', $publishedProductIds))),
+            'minimum_required_items' => (int) ($productsResponse['minimum_required_items'] ?? 1),
+        ];
+    }
+
+    private function markCategoriesCatalogSynced(People $provider, array $categoryIds): void
+    {
+        $categoryIdSet = array_flip(array_map('intval', $categoryIds));
+        if (empty($categoryIdSet)) {
+            return;
+        }
+
+        foreach ($this->fetchCatalogCategories($provider) as $category) {
+            $categoryId = (int) ($category['id'] ?? 0);
+            if ($categoryId <= 0 || !isset($categoryIdSet[$categoryId])) {
+                continue;
+            }
+
+            $this->upsertIfoodExtraDataValue('Category', $categoryId, 'sync_hash', $this->buildIfoodCategorySyncHash($category));
+            $this->upsertIfoodExtraDataValue('Category', $categoryId, 'sync_synced_at', date('Y-m-d H:i:s'));
+        }
+    }
+
+    public function markProductsCatalogSynced(People $provider, array $productIds): void
+    {
+        $this->init();
+
+        $rows = $this->fetchCatalogProducts($provider, $this->normalizeProductIds($productIds));
+        if (empty($rows)) {
+            return;
+        }
+
+        $categoryIds = [];
+        foreach ($rows as $row) {
+            $product = $this->buildIfoodMenuProductView($row, []);
+            $productId = (int) ($product['id'] ?? 0);
+            if ($productId <= 0 || empty($product['eligible'])) {
+                continue;
+            }
+
+            $this->upsertIfoodExtraDataValue('Product', $productId, 'sync_hash', $this->buildIfoodProductSyncHash($product));
+            $this->upsertIfoodExtraDataValue('Product', $productId, 'sync_synced_at', date('Y-m-d H:i:s'));
+
+            $categoryId = (int) ($product['category']['id'] ?? 0);
+            if ($categoryId > 0) {
+                $categoryIds[] = $categoryId;
+            }
+        }
+
+        $this->markCategoriesCatalogSynced($provider, $categoryIds);
     }
 
     public function publishMenu(People $provider, array $productIds = []): array
@@ -2496,6 +2759,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $pushed = 0;
         $errors = [];
+        $pushedProductIds = [];
         $sequence = 0;
         foreach ($groupedProducts as $group) {
             $sequence++;
@@ -2528,6 +2792,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $resolvedCategoryId);
                 if ($result['ok']) {
                     $pushed++;
+                    $pushedProductIds[] = (int) ($prod['id'] ?? 0);
                 } else {
                     $errors[] = [
                         'product_id'   => $prod['id'],
@@ -2550,6 +2815,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         /* atualiza published_remotely nos produtos locais */
         if ($pushed > 0) {
             $this->syncCatalogFromIfood($provider);
+            $this->markProductsCatalogSynced($provider, $pushedProductIds);
         }
 
         $errno  = $pushed > 0 ? 0 : 1;
@@ -2584,6 +2850,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         $synced = 0;
+        $syncedProductIds = [];
         foreach ($items as $item) {
             $itemId       = $this->normalizeString($item['id'] ?? null);
             $externalCode = $this->normalizeString($item['externalCode'] ?? null);
@@ -2607,11 +2874,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             if ($product) {
                 $this->discoveryFoodCode($product, $itemId);
                 $synced++;
+                $syncedProductIds[] = (int) $product->getId();
             }
         }
 
         if ($synced > 0) {
             $this->entityManager->flush();
+            $this->markProductsCatalogSynced($provider, $syncedProductIds);
         }
 
         return [
