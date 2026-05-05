@@ -5236,7 +5236,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $orderId,
                 $normalizedCancellationCode !== '' ? $normalizedCancellationCode : null
             ),
-            'cancelled'
+            'cancellation_requested'
         );
 
         if ((string) ($result['errno'] ?? '') === '0' && ($normalizedReason !== '' || $normalizedCancellationCode !== '')) {
@@ -5515,6 +5515,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                             'Content-Type' => 'application/json',
                         ],
                         'json' => $this->normalizeIfoodRequestPayload($payload),
+                        'timeout' => 15,
+                        'max_duration' => 20,
                     ]
                 );
 
