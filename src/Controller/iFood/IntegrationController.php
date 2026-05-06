@@ -285,7 +285,7 @@ class IntegrationController extends AbstractController
             'preparing', 'started' => 'Preparando',
             'ready' => 'Pronto',
             'dispatching', 'dispatched' => 'Em entrega',
-            'delivery_drop_code_requested', 'delivery_drop_code_validating' => 'Pronto',
+            'delivery_drop_code_requested', 'delivery_drop_code_validating' => 'Codigo de entrega solicitado',
             'concluded', 'closed' => 'Concluido',
             'cancelled', 'canceled' => 'Cancelado',
             'cancellation_requested' => 'Cancelamento solicitado',
