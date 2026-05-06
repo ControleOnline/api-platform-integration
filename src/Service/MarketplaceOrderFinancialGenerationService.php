@@ -26,6 +26,7 @@ class MarketplaceOrderFinancialGenerationService
     private const PURPOSE_MERCHANT_DISCOUNT = 'merchant_discount';
     private const PURPOSE_PLATFORM_DISCOUNT = 'platform_discount';
     private const PURPOSE_COURIER_PAYMENT = 'courier_payment';
+    private const LEGACY_PURPOSE_CUSTOMER_TOTAL = 'customer_total';
     private const IFOOD_DOCUMENT = '14380200000121';
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
     private const FOOD99_DOCUMENT = '6012920000123';
@@ -255,7 +256,7 @@ class MarketplaceOrderFinancialGenerationService
                 continue;
             }
 
-            if ($this->isManagedGeneratedMarketplaceMetadata($metadata)) {
+            if ($this->isManagedMarketplaceMetadataPayload($metadata, $app)) {
                 continue;
             }
 
@@ -892,8 +893,15 @@ class MarketplaceOrderFinancialGenerationService
             return false;
         }
 
-        return $this->isManagedGeneratedMarketplaceMetadata($metadata)
-            && ($metadata['marketplace'] ?? null) === $app;
+        return $this->isManagedMarketplaceMetadataPayload($metadata, $app);
+    }
+
+    private function isManagedMarketplaceMetadataPayload(array $metadata, string $app): bool
+    {
+        return (
+            $this->isManagedGeneratedMarketplaceMetadata($metadata)
+            || $this->isRecognizedLegacyMarketplaceMetadata($metadata, $app)
+        ) && ($metadata['marketplace'] ?? null) === $app;
     }
 
     private function isManagedGeneratedMarketplaceMetadata(array $metadata): bool
@@ -906,6 +914,49 @@ class MarketplaceOrderFinancialGenerationService
             ],
             true
         );
+    }
+
+    private function isRecognizedLegacyMarketplaceMetadata(array $metadata, string $app): bool
+    {
+        if (($metadata['marketplace'] ?? null) !== $app) {
+            return false;
+        }
+
+        $purpose = trim((string) ($metadata['invoice_purpose'] ?? ''));
+        $financialKind = trim((string) ($metadata['financial_kind'] ?? ''));
+
+        if ($purpose === '' || $financialKind === '') {
+            return false;
+        }
+
+        return in_array($purpose, $this->getKnownMarketplaceInvoicePurposes(), true)
+            && in_array($financialKind, $this->getKnownMarketplaceFinancialKinds(), true);
+    }
+
+    private function getKnownMarketplaceInvoicePurposes(): array
+    {
+        return [
+            self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT,
+            self::PURPOSE_WEEKLY_SETTLEMENT,
+            self::PURPOSE_CUSTOMER_COLLECTION,
+            self::PURPOSE_SERVICE_FEE,
+            self::PURPOSE_SMALL_ORDER_FEE,
+            self::PURPOSE_MEAL_TOP_UP_FEE,
+            self::PURPOSE_MERCHANT_DISCOUNT,
+            self::PURPOSE_PLATFORM_DISCOUNT,
+            self::PURPOSE_COURIER_PAYMENT,
+            self::LEGACY_PURPOSE_CUSTOMER_TOTAL,
+        ];
+    }
+
+    private function getKnownMarketplaceFinancialKinds(): array
+    {
+        return [
+            'account_receivable',
+            'account_payable',
+            'marketplace_internal_offset',
+            'marketplace_customer_payment',
+        ];
     }
 
     private function resolveOrderInvoiceShare(OrderInvoice $orderInvoice, Invoice $invoice): float
