@@ -6,6 +6,7 @@ use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderInvoice;
 use ControleOnline\Service\MarketplaceOrderFinancialGenerationService;
+use Doctrine\Common\Collections\ArrayCollection;
 use PHPUnit\Framework\TestCase;
 
 class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
@@ -52,7 +53,7 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
             'getInvoice' => $invoice,
         ]);
         $order = $this->createConfiguredMock(Order::class, [
-            'getInvoice' => [$orderInvoice],
+            'getInvoice' => new ArrayCollection([$orderInvoice]),
         ]);
 
         $this->expectException(\RuntimeException::class);
