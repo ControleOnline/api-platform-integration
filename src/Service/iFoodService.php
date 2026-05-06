@@ -4500,7 +4500,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         try {
             $raw = $this->confirmOrder($orderId);
             if ($raw) {
-                $this->persistOrderActionResult(
+                $result = $this->persistOrderActionResult(
                     $order,
                     'confirm',
                     $raw,
@@ -4508,10 +4508,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ['realStatus' => 'open', 'status' => 'preparing']
                 );
                 $this->entityManager->flush();
-                self::$logger->info('iFood order auto-confirmed on entry', [
-                    'order_id' => $orderId,
-                    'local_order_id' => $order->getId(),
-                ]);
+                if ((string) ($result['errno'] ?? '') === '0') {
+                    self::$logger->info('iFood order auto-confirmed on entry', [
+                        'order_id' => $orderId,
+                        'local_order_id' => $order->getId(),
+                    ]);
+                }
             }
         } catch (\Throwable $e) {
             self::$logger->warning('iFood order auto-confirm failed', [
@@ -6146,12 +6148,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function confirmOrder(string $orderId): ?array
     {
-        $response = $this->callIfoodOrderAction($orderId, '/accept');
+        $response = $this->callIfoodOrderAction($orderId, '/confirm');
         if (!$this->shouldFallbackActionEndpoint($response)) {
             return $response;
         }
 
-        $fallbackResponse = $this->callIfoodOrderAction($orderId, '/confirm');
+        $fallbackResponse = $this->callIfoodOrderAction($orderId, '/accept');
         return $fallbackResponse ?: $response;
     }
 
