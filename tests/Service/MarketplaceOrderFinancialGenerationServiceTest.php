@@ -69,6 +69,37 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         );
     }
 
+    public function testFood99DerivedFinancialsRebuildWeeklySettlementFromStoredPayloadBreakdown(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $derivedFinancials = $this->invokePrivateMethod(
+            $service,
+            'resolveFood99DerivedFinancials',
+            [
+                'items_total' => 97.79,
+                'store_discount_total' => 32.65,
+                'store_non_delivery_discount_total' => 22.75,
+                'store_delivery_discount_total' => 9.90,
+                'store_charged_delivery_price' => 9.99,
+            ],
+            [
+                'is_paid_online' => true,
+            ],
+            [
+                'is_platform_delivery' => true,
+            ],
+        );
+
+        self::assertSame(75.04, $derivedFinancials['charge_base_amount']);
+        self::assertSame(6.68, $derivedFinancials['commission_distribution_amount']);
+        self::assertSame(2.41, $derivedFinancials['payment_processing_amount']);
+        self::assertSame(6.00, $derivedFinancials['logistics_cost_amount']);
+        self::assertSame(15.09, $derivedFinancials['platform_charges_amount']);
+        self::assertSame(50.05, $derivedFinancials['weekly_settlement_amount']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);

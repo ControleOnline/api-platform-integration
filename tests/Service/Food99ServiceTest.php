@@ -251,6 +251,43 @@ class Food99ServiceTest extends TestCase
         ];
     }
 
+    public function testPromotionFundingBreakdownSeparatesDeliveryAndNonDeliverySubsidies(): void
+    {
+        $breakdown = $this->invokePrivateMethod(
+            $this->service,
+            'buildPromotionFundingBreakdown',
+            [
+                [
+                    'promo_type' => 2,
+                    'promo_discount' => 2594,
+                    'shop_subside_price' => 2275,
+                ],
+                [
+                    'promo_type' => 3,
+                    'promo_discount' => 999,
+                    'shop_subside_price' => 990,
+                ],
+                [
+                    'promo_type' => 11,
+                    'promo_discount' => 1200,
+                    'shop_subside_price' => 0,
+                ],
+            ]
+        );
+
+        self::assertSame(
+            [
+                'store_total' => 32.65,
+                'platform_total' => 15.28,
+                'store_delivery_total' => 9.90,
+                'platform_delivery_total' => 0.09,
+                'store_non_delivery_total' => 22.75,
+                'platform_non_delivery_total' => 15.19,
+            ],
+            $breakdown
+        );
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);

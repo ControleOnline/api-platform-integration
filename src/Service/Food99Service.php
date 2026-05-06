@@ -2471,6 +2471,47 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return round($total, 2);
     }
 
+    private function buildPromotionFundingBreakdown(array $promotions): array
+    {
+        $breakdown = [
+            'store_total' => 0.0,
+            'platform_total' => 0.0,
+            'store_delivery_total' => 0.0,
+            'platform_delivery_total' => 0.0,
+            'store_non_delivery_total' => 0.0,
+            'platform_non_delivery_total' => 0.0,
+        ];
+
+        foreach ($promotions as $promotion) {
+            if (!is_array($promotion)) {
+                continue;
+            }
+
+            $promotionType = (int) ($promotion['promo_type'] ?? 0);
+            $discountAmount = $this->normalizeFood99Money($promotion['promo_discount'] ?? null);
+            $storeSubsidyAmount = $this->normalizeFood99Money($promotion['shop_subside_price'] ?? null);
+            $platformSubsidyAmount = round(max(0, $discountAmount - $storeSubsidyAmount), 2);
+
+            $breakdown['store_total'] += $storeSubsidyAmount;
+            $breakdown['platform_total'] += $platformSubsidyAmount;
+
+            if ($promotionType === 3) {
+                $breakdown['store_delivery_total'] += $storeSubsidyAmount;
+                $breakdown['platform_delivery_total'] += $platformSubsidyAmount;
+                continue;
+            }
+
+            $breakdown['store_non_delivery_total'] += $storeSubsidyAmount;
+            $breakdown['platform_non_delivery_total'] += $platformSubsidyAmount;
+        }
+
+        foreach ($breakdown as $key => $value) {
+            $breakdown[$key] = round((float) $value, 2);
+        }
+
+        return $breakdown;
+    }
+
     private function extractOrderPromotionList(array $payload): array
     {
         $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
@@ -3060,7 +3101,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $payType = $this->normalizeIncomingFood99Value($orderInfo['pay_type'] ?? $data['pay_type'] ?? null);
         $payMethod = $this->normalizeIncomingFood99Value($orderInfo['pay_method'] ?? $data['pay_method'] ?? null);
         $payChannel = $this->normalizeIncomingFood99Value($orderInfo['pay_channel'] ?? $data['pay_channel'] ?? null);
-        $storeDiscountTotal = $this->sumPromotionStoreSubsidy($promotions);
+        $promotionFundingBreakdown = $this->buildPromotionFundingBreakdown($promotions);
+        $storeDiscountTotal = $promotionFundingBreakdown['store_total'];
         $itemsDiscountTotal = $this->normalizeFood99Money($price['items_discount'] ?? null);
         $deliveryDiscountTotal = $this->normalizeFood99Money($price['delivery_discount'] ?? null);
         $couponDiscountTotal = $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null);
@@ -3087,7 +3129,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ? $explicitCustomerTotal
             : round(max(0, $subtotalBeforeDiscounts - $knownDiscountTotal), 2);
         $discountTotal = round(max(0, $subtotalBeforeDiscounts - $customerTotal), 2);
-        $platformDiscountTotal = round(max(0, $discountTotal - $storeDiscountTotal), 2);
+        $platformDiscountTotal = $promotionFundingBreakdown['platform_total'] > 0
+            ? $promotionFundingBreakdown['platform_total']
+            : round(max(0, $discountTotal - $storeDiscountTotal), 2);
         $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
         $paymentMethodLabel = $this->resolveFood99PaymentMethodLabel($payMethod);
         $paymentChannelLabel = $this->resolveFood99PaymentChannelLabel($payChannel, $payMethod, $deliveryType);
@@ -3119,6 +3163,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'discount_total' => $discountTotal,
                 'store_discount_total' => $storeDiscountTotal,
                 'platform_discount_total' => $platformDiscountTotal,
+                'store_non_delivery_discount_total' => $promotionFundingBreakdown['store_non_delivery_total'],
+                'platform_non_delivery_discount_total' => $promotionFundingBreakdown['platform_non_delivery_total'],
+                'store_delivery_discount_total' => $promotionFundingBreakdown['store_delivery_total'],
+                'platform_delivery_discount_total' => $promotionFundingBreakdown['platform_delivery_total'],
                 'promotions_total' => $promotionsTotal,
                 'items_discount_total' => $itemsDiscountTotal,
                 'delivery_discount_total' => $deliveryDiscountTotal,
