@@ -6118,6 +6118,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $payload = [];
         if ($cancellationCode !== null && $cancellationCode !== '') {
+            $payload['cancellationCode'] = $cancellationCode;
             $payload['reason'] = $cancellationCode;
         }
         return $this->callIfoodOrderAction($orderId, '/requestCancellation', $payload);
