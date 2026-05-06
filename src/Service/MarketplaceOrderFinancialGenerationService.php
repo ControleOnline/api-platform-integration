@@ -30,6 +30,8 @@ class MarketplaceOrderFinancialGenerationService
     private const PURPOSE_PLATFORM_DISCOUNT = 'platform_discount';
     private const PURPOSE_COURIER_PAYMENT = 'courier_payment';
     private const LEGACY_PURPOSE_CUSTOMER_TOTAL = 'customer_total';
+    private const LEGACY_PURPOSE_DELIVERY_FEE = 'delivery_fee';
+    private const LEGACY_PURPOSE_MARKETPLACE_FEE = 'marketplace_fee';
     private const IFOOD_DOCUMENT = '14380200000121';
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
     private const FOOD99_DOCUMENT = '6012920000123';
@@ -1041,6 +1043,8 @@ class MarketplaceOrderFinancialGenerationService
             self::PURPOSE_PLATFORM_DISCOUNT,
             self::PURPOSE_COURIER_PAYMENT,
             self::LEGACY_PURPOSE_CUSTOMER_TOTAL,
+            self::LEGACY_PURPOSE_DELIVERY_FEE,
+            self::LEGACY_PURPOSE_MARKETPLACE_FEE,
         ];
     }
 

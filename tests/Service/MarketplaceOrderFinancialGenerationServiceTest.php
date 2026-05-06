@@ -16,23 +16,28 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
             ->newInstanceWithoutConstructor();
 
-        $invoice = new Invoice();
-        $invoice->setOtherInformations([
-            Order::APP_IFOOD => [
-                'marketplace' => Order::APP_IFOOD,
-                'financial_kind' => 'account_receivable',
-                'invoice_purpose' => 'customer_total',
-            ],
-        ]);
+        foreach (
+            [
+                ['financial_kind' => 'account_receivable', 'invoice_purpose' => 'customer_total'],
+                ['financial_kind' => 'account_payable', 'invoice_purpose' => 'delivery_fee'],
+            ] as $metadata
+        ) {
+            $invoice = new Invoice();
+            $invoice->setOtherInformations([
+                Order::APP_IFOOD => array_merge([
+                    'marketplace' => Order::APP_IFOOD,
+                ], $metadata),
+            ]);
 
-        self::assertTrue(
-            $this->invokePrivateMethod(
-                $service,
-                'isManagedMarketplaceInvoice',
-                $invoice,
-                Order::APP_IFOOD,
-            ),
-        );
+            self::assertTrue(
+                $this->invokePrivateMethod(
+                    $service,
+                    'isManagedMarketplaceInvoice',
+                    $invoice,
+                    Order::APP_IFOOD,
+                ),
+            );
+        }
     }
 
     public function testSuspiciousLegacyMarketplaceMetadataStillBlocksAutomaticCleanup(): void
