@@ -757,6 +757,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
             'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
             'CANCELLATION_REQUESTED', 'ORDER_CANCELLATION_REQUESTED' => 'cancellation_requested',
+            'CANCELLATION_REQUEST_FAILED', 'ORDER_CANCELLATION_REQUEST_FAILED' => 'cancellation_request_failed',
             'HANDSHAKE_DISPUTE', 'HSD' => 'handshake_dispute',
             'HANDSHAKE_SETTLEMENT', 'HSS' => 'handshake_settlement',
             default => strtolower($normalized),
@@ -1178,6 +1179,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             : (is_array($alternativeMetadata['allowedAdditionalTimeReasons'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeReasons'] : []);
         $evidences = is_array($source['evidences'] ?? null) ? $source['evidences'] : [];
         $evidence = is_array($evidences[0] ?? null) ? $evidences[0] : [];
+        $selectedAlternative = is_array($source['selectedDisputeAlternative'] ?? null)
+            ? $source['selectedDisputeAlternative']
+            : (is_array($source['selected_dispute_alternative'] ?? null) ? $source['selected_dispute_alternative'] : []);
 
         $snapshot = [
             'handshake_event_type' => $eventCode,
@@ -1223,14 +1227,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     ?? null
             ),
             'handshake_accept_reasons' => implode(',', array_keys($acceptReasons)),
+            'handshake_alternatives_json' => $this->encodeCompactJson($alternatives),
             'handshake_alternative_id' => $this->normalizeString($alternative['id'] ?? null),
             'handshake_alternative_type' => strtoupper($this->normalizeString($alternative['type'] ?? null)),
             'handshake_alternative_amount_value' => $this->normalizeString($alternativeAmount['value'] ?? null),
             'handshake_alternative_amount_currency' => $this->normalizeString($alternativeAmount['currency'] ?? null),
             'handshake_alternative_time_minutes' => $this->normalizeString($alternativeTimes[0] ?? null),
             'handshake_alternative_reason' => strtoupper($this->normalizeString($alternativeReasons[0] ?? null)),
+            'handshake_evidences_json' => $this->encodeCompactJson($evidences),
             'handshake_evidence_url' => $this->normalizeString($evidence['url'] ?? null),
             'handshake_evidence_content_type' => $this->normalizeString($evidence['contentType'] ?? ($evidence['content_type'] ?? null)),
+            'handshake_selected_alternative_json' => $this->encodeCompactJson($selectedAlternative),
             'handshake_settlement_status' => $this->normalizeString(
                 $source['settlementStatus']
                     ?? $source['status']
@@ -1246,6 +1253,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return array_filter($snapshot, static fn($value) => $value !== null && $value !== '');
     }
 
+    private function encodeCompactJson(array $payload): string
+    {
+        if ($payload === []) {
+            return '';
+        }
+
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return is_string($encoded) ? $encoded : '';
+    }
+
     private function persistIncomingEventState(Order $order, Integration $integration, array $payload): void
     {
         $eventCode = $this->resolveEventCode($payload);
@@ -1253,13 +1270,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $eventTimestamp = $this->extractEventTimestamp($payload);
         $orderId = $this->normalizeString($payload['orderId'] ?? ($meta['order_id'] ?? null));
         $merchantId = $this->normalizeString($payload['merchantId'] ?? ($meta['shop_id'] ?? null));
+        $remoteOrderState = $this->resolveRemoteOrderStateByEventCode($eventCode);
 
         $statePayload = [
             'id' => $orderId,
             'merchant_id' => $merchantId,
             'last_event_type' => $eventCode,
             'last_event_at' => $eventTimestamp,
-            'remote_order_state' => $this->resolveRemoteOrderStateByEventCode($eventCode),
             'webhook_event_id' => $meta['event_id'],
             'webhook_event_type' => $meta['event_type'],
             'webhook_event_at' => $meta['event_at'],
@@ -1267,6 +1284,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'webhook_processed_at' => date('Y-m-d H:i:s'),
             'last_integration_id' => (string) $integration->getId(),
         ];
+
+        if (!in_array($remoteOrderState, ['handshake_dispute', 'handshake_settlement'], true)) {
+            $statePayload['remote_order_state'] = $remoteOrderState;
+        }
 
         $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
         if ($orderPayload) {
@@ -1892,14 +1913,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'handshake_expires_at' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_expires_at'),
             'handshake_timeout_action' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_timeout_action'),
             'handshake_accept_reasons' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_accept_reasons'),
+            'handshake_alternatives_json' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternatives_json'),
             'handshake_alternative_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_id'),
             'handshake_alternative_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_type'),
             'handshake_alternative_amount_value' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_value'),
             'handshake_alternative_amount_currency' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_amount_currency'),
             'handshake_alternative_time_minutes' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_time_minutes'),
             'handshake_alternative_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_alternative_reason'),
+            'handshake_evidences_json' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_evidences_json'),
             'handshake_evidence_url' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_evidence_url'),
             'handshake_evidence_content_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_evidence_content_type'),
+            'handshake_selected_alternative_json' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_selected_alternative_json'),
             'handshake_settlement_status' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_status'),
             'handshake_settlement_reason' => $this->getIfoodExtraDataValue('Order', $orderId, 'handshake_settlement_reason'),
             'last_event_type' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_event_type'),
@@ -5525,7 +5549,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $result;
     }
 
-    public function respondHandshakeDispute(Order $order, string $decision, ?string $reason = null): array
+    public function respondHandshakeDispute(Order $order, string $decision, ?string $reason = null, ?string $alternativeId = null): array
     {
         $this->init();
 
@@ -5554,9 +5578,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $payload = [];
         $normalizedReason = $this->normalizeString($reason);
         $normalizedReasonCode = strtoupper($normalizedReason);
-        if (!in_array($normalizedReasonCode, $validNegotiationReasons, true)) {
-            $normalizedReasonCode = 'UNKNOWN_ISSUE';
-        }
+        $normalizedAlternativeId = $this->normalizeString($alternativeId);
 
         if ($normalizedDecision === 'accept') {
             $acceptReasons = array_filter(array_map(
@@ -5571,17 +5593,52 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if ($normalizedDecision === 'reject') {
+            if (!in_array($normalizedReasonCode, $validNegotiationReasons, true)) {
+                return $this->buildUnavailableOrderActionResponse('Informe um motivo valido para rejeitar a negociacao iFood.');
+            }
+
             $payload['reason'] = $normalizedReasonCode;
         }
 
         if ($normalizedDecision === 'alternative') {
-            $alternativeType = strtoupper($this->normalizeString($storedState['handshake_alternative_type'] ?? null));
+            $storedAlternatives = $this->decodeOrderOtherInformationsValue($storedState['handshake_alternatives_json'] ?? null);
+            $selectedAlternative = [];
+            $selectedAlternativeId = $this->normalizeString($storedState['handshake_alternative_id'] ?? null);
+            foreach ($storedAlternatives as $alternative) {
+                if (!is_array($alternative)) {
+                    continue;
+                }
+
+                $currentAlternativeId = $this->normalizeString($alternative['id'] ?? null);
+                if ($selectedAlternative === [] || ($normalizedAlternativeId !== '' && $currentAlternativeId === $normalizedAlternativeId)) {
+                    $selectedAlternative = $alternative;
+                    $selectedAlternativeId = $currentAlternativeId !== '' ? $currentAlternativeId : $selectedAlternativeId;
+                }
+                if ($normalizedAlternativeId !== '' && $currentAlternativeId === $normalizedAlternativeId) {
+                    break;
+                }
+            }
+
+            $alternativeMetadata = is_array($selectedAlternative['metadata'] ?? null)
+                ? $selectedAlternative['metadata']
+                : [];
+            $alternativeAmount = is_array($alternativeMetadata['maxAmount'] ?? null)
+                ? $alternativeMetadata['maxAmount']
+                : (is_array($alternativeMetadata['amount'] ?? null) ? $alternativeMetadata['amount'] : []);
+            $alternativeTimes = is_array($alternativeMetadata['allowedsAdditionalTimeInMinutes'] ?? null)
+                ? $alternativeMetadata['allowedsAdditionalTimeInMinutes']
+                : (is_array($alternativeMetadata['allowedAdditionalTimeInMinutes'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeInMinutes'] : []);
+            $alternativeReasons = is_array($alternativeMetadata['allowedsAdditionalTimeReasons'] ?? null)
+                ? $alternativeMetadata['allowedsAdditionalTimeReasons']
+                : (is_array($alternativeMetadata['allowedAdditionalTimeReasons'] ?? null) ? $alternativeMetadata['allowedAdditionalTimeReasons'] : []);
+
+            $alternativeType = strtoupper($this->normalizeString($selectedAlternative['type'] ?? ($storedState['handshake_alternative_type'] ?? null)));
             $payload['type'] = $alternativeType;
             $payload['metadata'] = [];
 
             if (in_array($alternativeType, ['REFUND', 'BENEFIT'], true)) {
-                $amountValue = $this->normalizeString($storedState['handshake_alternative_amount_value'] ?? null);
-                $amountCurrency = $this->normalizeString($storedState['handshake_alternative_amount_currency'] ?? null) ?: 'BRL';
+                $amountValue = $this->normalizeString($alternativeAmount['value'] ?? ($storedState['handshake_alternative_amount_value'] ?? null));
+                $amountCurrency = $this->normalizeString($alternativeAmount['currency'] ?? ($storedState['handshake_alternative_amount_currency'] ?? null)) ?: 'BRL';
                 if ($amountValue !== '') {
                     $payload['metadata']['amount'] = [
                         'value' => $amountValue,
@@ -5591,10 +5648,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             if ($alternativeType === 'ADDITIONAL_TIME') {
-                $minutes = (int) $this->normalizeString($storedState['handshake_alternative_time_minutes'] ?? null);
-                if ($minutes > 0) {
+                $minutes = (int) $this->normalizeString($alternativeTimes[0] ?? ($storedState['handshake_alternative_time_minutes'] ?? null));
+                $timeReason = $normalizedReason !== ''
+                    ? $normalizedReason
+                    : $this->normalizeString($alternativeReasons[0] ?? ($storedState['handshake_alternative_reason'] ?? null));
+                if ($minutes > 0 && $timeReason !== '') {
                     $payload['metadata']['additionalTimeInMinutes'] = $minutes;
-                    $payload['metadata']['reason'] = $this->normalizeString($storedState['handshake_alternative_reason'] ?? null) ?: $normalizedReasonCode;
+                    $payload['metadata']['additionalTimeReason'] = $timeReason;
                 }
             }
 
@@ -5609,19 +5669,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
                 return $this->buildUnavailableOrderActionResponse('Pedido iFood sem alternativa valida para contraproposta.');
             }
+
+            if ($selectedAlternativeId === '') {
+                return $this->buildUnavailableOrderActionResponse('Pedido iFood sem identificador da alternativa para contraproposta.');
+            }
         }
 
-        $handshakeAction = strtoupper($this->normalizeString($storedState['handshake_action'] ?? null));
-        $localStatusOnSuccess = $normalizedDecision === 'accept' && $handshakeAction === 'CANCELLATION'
-            ? ['realStatus' => 'canceled', 'status' => 'canceled']
-            : null;
+        $actionPath = $normalizedDecision === 'alternative'
+            ? '/alternatives/' . rawurlencode($selectedAlternativeId)
+            : '/' . $normalizedDecision;
 
         return $this->persistOrderActionResult(
             $order,
             'handshake_' . $normalizedDecision,
-            $this->callIfoodDisputeAction($disputeId, '/' . $normalizedDecision, $payload),
-            'handshake_settlement',
-            $localStatusOnSuccess
+            $this->callIfoodDisputeAction($disputeId, $actionPath, $payload),
+            null,
+            null
         );
     }
 
@@ -5682,7 +5745,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
-    public function performDeliveredAction(Order $order): array
+    public function performDeliveredAction(Order $order, ?string $deliveryCode = null, ?string $locator = null): array
     {
         $this->init();
         $orderId = $this->resolveRemoteOrderId($order);
@@ -5702,10 +5765,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             );
 
         if ($alreadyDispatched) {
+            $normalizedDeliveryCode = $this->normalizeString($deliveryCode);
+            if ($normalizedDeliveryCode === '') {
+                return $this->buildUnavailableOrderActionResponse(
+                    'Entrega propria iFood deve ser concluida pelo link de confirmacao ou por codigo de entrega valido.'
+                );
+            }
+
             return $this->persistOrderActionResult(
                 $order,
                 'delivered',
-                ['status' => 200, 'body' => ['message' => 'ok']],
+                $this->verifyDeliveryCode($orderId, $normalizedDeliveryCode),
                 'concluded',
                 ['realStatus' => 'closed', 'status' => 'closed']
             );
@@ -5775,6 +5845,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
 
             try {
+                self::$logger->info('iFood order action request', [
+                    'order_id' => $orderId,
+                    'action' => $actionPath,
+                    'payload' => $payload,
+                ]);
+
                 $response = $this->httpClient->request(
                     'POST',
                     $endpoint,
@@ -5791,10 +5867,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
                 $statusCode = $response->getStatusCode();
                 $rawBody = $response->getContent(false);
+                $body = $this->decodeIfoodActionResponseBody((string) $rawBody);
+
+                self::$logger->info('iFood order action response', [
+                    'order_id' => $orderId,
+                    'action' => $actionPath,
+                    'status_code' => $statusCode,
+                    'response' => $body,
+                ]);
 
                 return [
                     'status' => $statusCode,
-                    'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
+                    'body' => $body,
                 ];
             } catch (\Throwable $e) {
                 self::$logger->error('iFood order action endpoint error', [
@@ -5841,6 +5925,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $endpoint = self::API_BASE_URL . '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
 
             try {
+                self::$logger->info('iFood dispute action request', [
+                    'dispute_id' => $disputeId,
+                    'action' => $actionPath,
+                    'payload' => $payload,
+                ]);
+
                 $response = $this->httpClient->request(
                     'POST',
                     $endpoint,
@@ -5850,12 +5940,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                             'Content-Type' => 'application/json',
                         ],
                         'json' => $this->normalizeIfoodRequestPayload($payload),
+                        'timeout' => 15,
+                        'max_duration' => 20,
                     ]
                 );
 
+                $statusCode = $response->getStatusCode();
+                $body = $this->decodeIfoodActionResponseBody((string) $response->getContent(false));
+
+                self::$logger->info('iFood dispute action response', [
+                    'dispute_id' => $disputeId,
+                    'action' => $actionPath,
+                    'status_code' => $statusCode,
+                    'response' => $body,
+                ]);
+
                 return [
-                    'status' => $response->getStatusCode(),
-                    'body' => $this->decodeIfoodActionResponseBody((string) $response->getContent(false)),
+                    'status' => $statusCode,
+                    'body' => $body,
                 ];
             } catch (\Throwable $e) {
                 self::$logger->error('iFood dispute action endpoint error', [
@@ -5899,6 +6001,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 return null;
             }
 
+            self::$logger->info('iFood shipping action request', [
+                'order_id' => $orderId,
+                'action' => $actionPath,
+                'payload' => $payload,
+            ]);
+
             $response = $this->httpClient->request(
                 'POST',
                 self::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
@@ -5908,15 +6016,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'Content-Type' => 'application/json',
                     ],
                     'json' => $this->normalizeIfoodRequestPayload($payload),
+                    'timeout' => 15,
+                    'max_duration' => 20,
                 ]
             );
 
             $statusCode = $response->getStatusCode();
             $rawBody = $response->getContent(false);
+            $body = $this->decodeIfoodActionResponseBody((string) $rawBody);
+
+            self::$logger->info('iFood shipping action response', [
+                'order_id' => $orderId,
+                'action' => $actionPath,
+                'status_code' => $statusCode,
+                'response' => $body,
+            ]);
 
             return [
                 'status' => $statusCode,
-                'body' => $this->decodeIfoodActionResponseBody((string) $rawBody),
+                'body' => $body,
             ];
         } catch (\Throwable $e) {
             self::$logger->error('iFood shipping action error', [
@@ -5977,12 +6095,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $flow = $this->resolveDispatchFlowForOrder($order);
 
         if ($flow === 'merchant') {
-            $shippingResponse = $this->callIfoodShippingAction($orderId, '/dispatch');
+            $payload = ['deliveredBy' => 'MERCHANT'];
+            $shippingResponse = $this->callIfoodShippingAction($orderId, '/dispatch', $payload);
             if (!$this->shouldFallbackActionEndpoint($shippingResponse)) {
                 return $shippingResponse;
             }
 
-            $orderResponse = $this->callIfoodOrderAction($orderId, '/dispatch');
+            $orderResponse = $this->callIfoodOrderAction($orderId, '/dispatch', $payload);
             return $orderResponse ?: $shippingResponse;
         }
 
@@ -6093,7 +6212,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         if ($normalizedOrderId !== '') {
             $encodedOrderId = rawurlencode($normalizedOrderId);
             $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
-            $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
         }
         $endpoints[] = self::API_BASE_URL . '/order/v1.0/cancellation/reasons';
 
@@ -6101,6 +6219,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             foreach ($endpoints as $endpoint) {
                 $response = $this->httpClient->request('GET', $endpoint, [
                     'headers' => ['Authorization' => 'Bearer ' . $token],
+                    'timeout' => 15,
+                    'max_duration' => 20,
                 ]);
                 if ($response->getStatusCode() !== 200) {
                     continue;
@@ -6164,6 +6284,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->callIfoodOrderAction($orderId, '/readyToPickup');
     }
 
+    private function verifyDeliveryCode(string $orderId, string $deliveryCode): ?array
+    {
+        return $this->callIfoodOrderAction($orderId, '/verifyDeliveryCode', [
+            'code' => $deliveryCode,
+        ]);
+    }
+
     private function deliveredOrder(string $orderId): ?array
     {
         return $this->callIfoodOrderAction($orderId, '/dispatch');
@@ -6191,7 +6318,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $cancellationCode !== '' ? $cancellationCode : null
             ),
             'ready' => $this->performReadyAction($order),
-            'delivered' => $this->performDeliveredAction($order),
+            'delivered' => $this->performDeliveredAction(
+                $order,
+                $this->normalizeString($payload['delivery_code'] ?? null) ?: null,
+                $this->normalizeString($payload['locator'] ?? null) ?: null
+            ),
             'confirm' => $this->performConfirmAction($order),
             default => null,
         };
