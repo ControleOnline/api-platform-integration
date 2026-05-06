@@ -6,6 +6,7 @@ use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderInvoice;
 use ControleOnline\Service\MarketplaceOrderFinancialGenerationService;
+use DateTime;
 use Doctrine\Common\Collections\ArrayCollection;
 use PHPUnit\Framework\TestCase;
 
@@ -103,6 +104,33 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         self::assertSame(6.00, $derivedFinancials['logistics_cost_amount']);
         self::assertSame(15.09, $derivedFinancials['platform_charges_amount']);
         self::assertSame(50.05, $derivedFinancials['weekly_settlement_amount']);
+    }
+
+    public function testWeeklyDueDateUsesNextWednesdayAfterWeekClose(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $tuesdayOrder = $this->createConfiguredMock(Order::class, [
+            'getOrderDate' => new DateTime('2026-05-05 20:29:49'),
+        ]);
+        $mondayOrder = $this->createConfiguredMock(Order::class, [
+            'getOrderDate' => new DateTime('2026-05-11 10:00:00'),
+        ]);
+
+        $tuesdayDueDate = $this->invokePrivateMethod(
+            $service,
+            'resolveWeeklyDueDate',
+            $tuesdayOrder,
+        );
+        $mondayDueDate = $this->invokePrivateMethod(
+            $service,
+            'resolveWeeklyDueDate',
+            $mondayOrder,
+        );
+
+        self::assertSame('2026-05-13', $tuesdayDueDate->format('Y-m-d'));
+        self::assertSame('2026-05-20', $mondayDueDate->format('Y-m-d'));
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

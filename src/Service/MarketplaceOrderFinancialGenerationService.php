@@ -914,11 +914,13 @@ class MarketplaceOrderFinancialGenerationService
         $reference = $this->resolveOrderReferenceDate($order);
         $dueDate = new DateTime($reference->format('Y-m-d'));
         $weekday = (int) $dueDate->format('N');
-        $daysUntilWednesday = (3 - $weekday + 7) % 7;
+        $daysUntilSunday = 7 - $weekday;
 
-        if ($daysUntilWednesday > 0) {
-            $dueDate->modify(sprintf('+%d days', $daysUntilWednesday));
+        if ($daysUntilSunday > 0) {
+            $dueDate->modify(sprintf('+%d days', $daysUntilSunday));
         }
+
+        $dueDate->modify('+3 days');
 
         return $dueDate;
     }
