@@ -5155,12 +5155,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
         }
 
-        if ($clientByDocument instanceof People) {
-            $client = $clientByDocument;
+        if ($clientByCode instanceof People) {
+            $client = $clientByCode;
         }
 
-        if (!$client instanceof People && $clientByCode instanceof People) {
-            $client = $clientByCode;
+        if (!$client instanceof People && $clientByDocument instanceof People) {
+            $client = $clientByDocument;
         }
 
         if (!$client instanceof People) {
