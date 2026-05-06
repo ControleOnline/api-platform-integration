@@ -417,7 +417,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         if (!empty($document)) {
             try {
-                $this->peopleService->addDocument($client, $document, $documentType);
+                $existingDocument = $this->peopleService->getDocument($document, $documentType);
+                if ($existingDocument && $existingDocument->getPeople()->getId() !== $client->getId()) {
+                    self::$logger->warning('iFood client document already belongs to another people record', [
+                        'client_id' => $client->getId(),
+                        'provider_id' => $provider->getId(),
+                        'document' => $document,
+                        'document_type' => $documentType,
+                        'document_people_id' => $existingDocument->getPeople()->getId(),
+                    ]);
+                } else {
+                    $this->peopleService->addDocument($client, $document, $documentType);
+                }
             } catch (\Throwable $exception) {
                 self::$logger->warning('iFood client document could not be synced', [
                     'client_id' => $client->getId(),
@@ -5111,7 +5122,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
+        $documentType = $this->resolveCustomerDocumentType($customerData, $document);
         $clientByCode = $codClienteiFood !== '' ? $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class) : null;
+        $clientByDocument = null;
         $client = null;
 
         if ($clientByCode instanceof People) {
@@ -5122,14 +5135,28 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if ($document !== null) {
-            $client = $this->peopleService->discoveryPeople($document, null, null, $customerName !== '' ? $customerName : null);
-            if ($client instanceof People) {
-                self::$logger->info('iFood client discovery matched by document', [
+            try {
+                $documentEntity = $this->peopleService->getDocument($document, $documentType);
+                $clientByDocument = $documentEntity?->getPeople();
+                if ($clientByDocument instanceof People) {
+                    self::$logger->info('iFood client discovery matched by document', [
+                        'ifood_customer_id' => $codClienteiFood,
+                        'people_id' => $clientByDocument->getId(),
+                        'document' => $document,
+                    ]);
+                }
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client document lookup failed', [
                     'ifood_customer_id' => $codClienteiFood,
-                    'people_id' => $client->getId(),
                     'document' => $document,
+                    'document_type' => $documentType,
+                    'error' => $exception->getMessage(),
                 ]);
             }
+        }
+
+        if ($clientByDocument instanceof People) {
+            $client = $clientByDocument;
         }
 
         if (!$client instanceof People && $clientByCode instanceof People) {
@@ -5137,13 +5164,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if (!$client instanceof People) {
-            $client = $this->peopleService->discoveryPeople($document, null, $phone, $customerName !== '' ? $customerName : null);
-            if ($client instanceof People) {
-                self::$logger->info('iFood client discovery resolved via standard discoveryPeople', [
+            try {
+                $client = $this->peopleService->discoveryPeople(null, null, $phone, $customerName !== '' ? $customerName : null);
+                if ($client instanceof People) {
+                    self::$logger->info('iFood client discovery resolved via standard discoveryPeople', [
+                        'ifood_customer_id' => $codClienteiFood,
+                        'people_id' => $client->getId(),
+                        'document' => $document,
+                        'used_phone' => !empty($phone),
+                    ]);
+                }
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client standard discovery failed', [
                     'ifood_customer_id' => $codClienteiFood,
-                    'people_id' => $client->getId(),
+                    'customer_name' => $customerName,
                     'document' => $document,
-                    'used_phone' => !empty($phone),
+                    'error' => $exception->getMessage(),
                 ]);
             }
         }
@@ -5183,7 +5219,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $customerName,
             $phone,
             $document,
-            $this->resolveCustomerDocumentType($customerData, $document),
+            $documentType,
             $codClienteiFood
         );
     }
