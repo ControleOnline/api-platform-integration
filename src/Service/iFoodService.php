@@ -2449,6 +2449,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'type'             => (string) ($row['type'] ?? ''),
             'category'         => $categoryId !== null ? ['id' => $categoryId, 'name' => $categoryName] : null,
             'has_required_modifiers' => $hasRequiredModifiers,
+            'modifier_groups'  => $modifierGroups,
+            'active'           => (int) ($row['product_active'] ?? 1) === 1,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
             'published_remotely' => $remoteEntry !== null,
@@ -2510,9 +2512,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'description' => trim((string) ($product['description'] ?? '')),
             'price' => round((float) ($product['price'] ?? 0), 2),
             'type' => trim((string) ($product['type'] ?? '')),
+            'active' => !array_key_exists('active', $product) || (bool) $product['active'],
             'category_id' => (int) ($product['category']['id'] ?? 0),
             'category_name' => trim((string) ($product['category']['name'] ?? '')),
             'has_required_modifiers' => !empty($product['has_required_modifiers']),
+            'modifier_groups' => $product['modifier_groups'] ?? [],
             'cover_image_url' => trim((string) ($product['cover_image_url'] ?? '')),
         ]);
     }
@@ -2937,6 +2941,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 p.description,
                 p.price,
                 p.type,
+                p.active AS product_active,
                 pf.file_id AS cover_file_id,
                 c.id   AS category_id,
                 c.name AS category_name,
@@ -2965,7 +2970,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 WHERE pf2.product_id = p.id
             )
             WHERE p.company_id = :providerId
-              AND p.active = 1
+              AND (
+                  p.active = 1
+                  OR EXISTS (
+                      SELECT 1
+                      FROM extra_data ed_product
+                      INNER JOIN extra_fields ef_product ON ef_product.id = ed_product.extra_fields_id
+                      WHERE ef_product.context = 'iFood'
+                        AND ef_product.field_name = 'code'
+                        AND LOWER(ed_product.entity_name) = 'product'
+                        AND ed_product.entity_id = p.id
+                  )
+              )
               AND p.type IN ('manufactured', 'custom', 'product')
         SQL;
 
@@ -3439,7 +3455,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
-    private function buildIfoodCatalogModifierPayload(array $product): array
+    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product): array
     {
         $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
         if (empty($modifierGroups)) {
@@ -3727,7 +3743,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'id'           => $itemUuid,
             'type'         => 'DEFAULT',
             'categoryId'   => $usedCategoryId,
-            'status'       => 'AVAILABLE',
+            'status'       => (int) ($product['product_active'] ?? 1) === 1 ? 'AVAILABLE' : 'UNAVAILABLE',
             'price'        => [
                 'value'         => (float) $product['price'],
                 'originalValue' => (float) $product['price'],
@@ -3744,7 +3760,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
-        $modifierPayload = $this->buildIfoodCatalogModifierPayload($product);
+        $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product);
         $productBody['optionGroups'] = $modifierPayload['product_option_groups'];
         $sourceImageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
         if ($sourceImageUrl) {
