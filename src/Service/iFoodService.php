@@ -34,6 +34,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
     private const SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
     private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB
+    private const CATALOG_CONCURRENT_RETRY_DELAYS_US = [500000, 1500000, 3000000, 5000000];
     private static array $authTokenCache = [];
     private static array $catalogImagePathCache = [];
     // INICIALIZAÇÃO
@@ -3723,6 +3724,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return null;
     }
 
+    private function isIfoodCatalogConcurrentModification(?int $status, ?string $body, ?string $error = null): bool
+    {
+        if ($status !== 400) {
+            return false;
+        }
+
+        $message = strtolower((string) ($body ?: $error));
+        return str_contains($message, 'concurrently modified');
+    }
+
     private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): array
     {
         $token = $this->getAccessToken();
@@ -3796,40 +3807,68 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $lastPayload = null;
 
         foreach ($attempts as $attemptIndex => $attemptPayload) {
-            $lastPayload = $attemptPayload;
-            try {
-                $response = $this->httpClient->request('PUT',
-                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
-                    [
-                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                        'json'    => $attemptPayload,
-                    ]
-                );
-                $status = $response->getStatusCode();
-                $body = substr($response->getContent(false), 0, 2000);
-                if ($status >= 200 && $status < 300) {
-                    return ['ok' => true, 'http_status' => $status, 'ifood_body' => null, 'error' => null];
+            foreach (array_merge([0], self::CATALOG_CONCURRENT_RETRY_DELAYS_US) as $retryIndex => $retryDelayUs) {
+                if ($retryDelayUs > 0) {
+                    usleep($retryDelayUs);
                 }
 
-                $lastStatus = $status;
-                $lastBody = $body;
-                if ($attemptIndex === 0 && count($attempts) > 1) {
-                    self::$logger->warning('iFood catalog v2 upsert failed with imagePath, retrying without imagePath', [
-                        'status'     => $status,
-                        'product_id' => $product['id'],
-                        'body'       => $body,
-                    ]);
-                    continue;
+                $lastPayload = $attemptPayload;
+                try {
+                    $response = $this->httpClient->request('PUT',
+                        self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
+                        [
+                            'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                            'json'    => $attemptPayload,
+                        ]
+                    );
+                    $status = $response->getStatusCode();
+                    $body = substr($response->getContent(false), 0, 2000);
+                    if ($status >= 200 && $status < 300) {
+                        return ['ok' => true, 'http_status' => $status, 'ifood_body' => null, 'error' => null];
+                    }
+
+                    $lastStatus = $status;
+                    $lastBody = $body;
+                    $lastError = null;
+                    $isConcurrentModification = $this->isIfoodCatalogConcurrentModification($status, $body);
+                    if ($isConcurrentModification && $retryIndex < count(self::CATALOG_CONCURRENT_RETRY_DELAYS_US)) {
+                        self::$logger->warning('iFood catalog v2 upsert concurrently modified, retrying same payload', [
+                            'product_id' => $product['id'],
+                            'status'     => $status,
+                            'retry'      => $retryIndex + 1,
+                        ]);
+                        continue;
+                    }
+
+                    if (!$isConcurrentModification && $attemptIndex === 0 && count($attempts) > 1) {
+                        self::$logger->warning('iFood catalog v2 upsert failed with imagePath, retrying without imagePath', [
+                            'status'     => $status,
+                            'product_id' => $product['id'],
+                            'body'       => $body,
+                        ]);
+                        continue 2;
+                    }
+                } catch (\Throwable $e) {
+                    $lastError = $e->getMessage();
+                    if ($this->isIfoodCatalogConcurrentModification($lastStatus, $lastBody, $lastError) && $retryIndex < count(self::CATALOG_CONCURRENT_RETRY_DELAYS_US)) {
+                        self::$logger->warning('iFood catalog v2 upsert concurrently modified exception, retrying same payload', [
+                            'product_id' => $product['id'],
+                            'retry'      => $retryIndex + 1,
+                            'error'      => $e->getMessage(),
+                        ]);
+                        continue;
+                    }
+
+                    if ($attemptIndex === 0 && count($attempts) > 1) {
+                        self::$logger->warning('iFood catalog v2 upsert exception with imagePath, retrying without imagePath', [
+                            'product_id' => $product['id'],
+                            'error' => $e->getMessage(),
+                        ]);
+                        continue 2;
+                    }
                 }
-            } catch (\Throwable $e) {
-                $lastError = $e->getMessage();
-                if ($attemptIndex === 0 && count($attempts) > 1) {
-                    self::$logger->warning('iFood catalog v2 upsert exception with imagePath, retrying without imagePath', [
-                        'product_id' => $product['id'],
-                        'error' => $e->getMessage(),
-                    ]);
-                    continue;
-                }
+
+                break;
             }
 
             break;
@@ -4036,7 +4075,44 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).
      * POST /merchant/v1.0/merchants/{id}/interruptions
      */
-    public function closeStore(People $provider): array
+    private function normalizeIfoodInterruptionPayload(array $payload): array
+    {
+        $description = $this->normalizeString($payload['description'] ?? null);
+        $start = $this->normalizeString($payload['start'] ?? null);
+        $end = $this->normalizeString($payload['end'] ?? null);
+
+        if ($description === '') {
+            $description = 'Loja fechada pelo gestor';
+        }
+
+        if ($start === '' || $end === '') {
+            $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+            $start = $start !== '' ? $start : $now->format(\DateTimeInterface::ATOM);
+            $end = $end !== '' ? $end : $now->modify('+7 days')->format(\DateTimeInterface::ATOM);
+        }
+
+        try {
+            $startDate = new \DateTimeImmutable($start);
+            $endDate = new \DateTimeImmutable($end);
+            if ($endDate <= $startDate) {
+                return ['error' => 'A data final da pausa deve ser maior que a data inicial.'];
+            }
+
+            if (($endDate->getTimestamp() - $startDate->getTimestamp()) > 604800) {
+                return ['error' => 'A pausa iFood nao pode ultrapassar 7 dias.'];
+            }
+        } catch (\Throwable) {
+            return ['error' => 'Datas da pausa devem estar em formato ISO 8601.'];
+        }
+
+        return [
+            'description' => mb_substr($description, 0, 255),
+            'start' => $start,
+            'end' => $end,
+        ];
+    }
+
+    public function closeStore(People $provider, array $interruptionPayload = []): array
     {
         $this->init();
         $stored     = $this->getStoredIntegrationState($provider);
@@ -4049,19 +4125,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $end = $now->modify('+7 days');
+        $interruption = $this->normalizeIfoodInterruptionPayload($interruptionPayload);
+        if (isset($interruption['error'])) {
+            return ['errno' => 10003, 'errmsg' => $interruption['error'], 'data' => null];
+        }
 
         try {
             $response   = $this->httpClient->request('POST',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => [
-                        'description' => 'Loja fechada pelo gestor',
-                        'start'       => $now->format(\DateTimeInterface::ATOM),
-                        'end'         => $end->format(\DateTimeInterface::ATOM),
-                    ],
+                    'json'    => $interruption,
                 ]);
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
@@ -4138,6 +4212,49 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'errmsg' => 'ok',
             'data'   => ['removed' => $removed, 'online' => true],
         ];
+    }
+
+    public function removeStoreInterruption(People $provider, string $interruptionId): array
+    {
+        $this->init();
+        $stored     = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
+        $interruptionId = $this->normalizeString($interruptionId);
+        if ($merchantId === '') {
+            return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
+        }
+        if ($interruptionId === '') {
+            return ['errno' => 10003, 'errmsg' => 'Pausa iFood invalida.', 'data' => null];
+        }
+        $token = $this->getAccessToken();
+        if (!$token) {
+            return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
+        }
+
+        try {
+            $response = $this->httpClient->request('DELETE',
+                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $statusCode = $response->getStatusCode();
+
+            if ($statusCode >= 200 && $statusCode < 300) {
+                return ['errno' => 0, 'errmsg' => 'ok', 'data' => ['removed' => 1, 'interruption_id' => $interruptionId]];
+            }
+
+            $content = $response->getContent(false);
+            $decoded = json_decode($content, true);
+            return [
+                'errno' => $statusCode,
+                'errmsg' => $this->normalizeString(
+                    (is_array($decoded) ? ($decoded['message'] ?? $decoded['description'] ?? null) : null)
+                    ?? 'Falha ao remover pausa iFood'
+                ),
+                'data' => null,
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood removeStoreInterruption failed', ['error' => $e->getMessage()]);
+            return ['errno' => 1, 'errmsg' => 'Falha ao remover pausa iFood', 'data' => null];
+        }
     }
 
     private function listInterruptionsRaw(string $merchantId, string $token): array

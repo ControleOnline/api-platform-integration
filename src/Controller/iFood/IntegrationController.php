@@ -1420,7 +1420,11 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $closeResult = $this->iFoodService->closeStore($provider);
+        $closeResult = $this->iFoodService->closeStore($provider, [
+            'description' => $payload['description'] ?? null,
+            'start' => $payload['start'] ?? null,
+            'end' => $payload['end'] ?? null,
+        ]);
         $result = $closeResult;
         if (($closeResult['errno'] ?? 1) === 0) {
             $statusResult = $this->iFoodService->getStoreStatus($provider);
@@ -1466,6 +1470,31 @@ class IntegrationController extends AbstractController
         return new JsonResponse(array_merge(
             $this->buildProviderIntegrationDetail($provider, false),
             ['action' => 'store_close', 'result' => $result]
+        ));
+    }
+
+    #[Route('/marketplace/integrations/ifood/store/interruptions/{interruptionId}', name: 'marketplace_integrations_ifood_store_interruption_delete', methods: ['DELETE'])]
+    public function removeStoreInterruption(Request $request, string $interruptionId): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            $payload = [];
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        $removeResult = $this->iFoodService->removeStoreInterruption($provider, $interruptionId);
+        $result = (($removeResult['errno'] ?? 1) === 0)
+            ? $this->iFoodService->getStoreStatus($provider)
+            : $removeResult;
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'store_interruption_remove', 'result' => $result]
         ));
     }
 
