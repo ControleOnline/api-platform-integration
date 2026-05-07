@@ -92,6 +92,16 @@ class IntegrationController extends AbstractController
         }
     }
 
+    private function splitStoredCsv(mixed $value): array
+    {
+        $items = array_filter(array_map(
+            static fn($item) => trim((string) $item),
+            explode(',', (string) $value)
+        ));
+
+        return array_values(array_unique($items));
+    }
+
     private function resolvePayloadSources(array $otherInformations): array
     {
         $sources = [];
@@ -275,10 +285,11 @@ class IntegrationController extends AbstractController
             'preparing', 'started' => 'Preparando',
             'ready' => 'Pronto',
             'dispatching', 'dispatched' => 'Em entrega',
-            'delivery_drop_code_requested', 'delivery_drop_code_validating' => 'Pronto',
+            'delivery_drop_code_requested', 'delivery_drop_code_validating' => 'Codigo de entrega solicitado',
             'concluded', 'closed' => 'Concluido',
             'cancelled', 'canceled' => 'Cancelado',
             'cancellation_requested' => 'Cancelamento solicitado',
+            'cancellation_request_failed' => 'Cancelamento recusado pelo iFood',
             'handshake_dispute' => 'Negociacao solicitada',
             'handshake_settlement' => 'Negociacao finalizada',
             default => 'Indefinido',
@@ -919,6 +930,31 @@ class IntegrationController extends AbstractController
         $deliveryContext = $this->resolveDeliveryContext($order, $payload, $storedState);
         $remoteState = $this->normalizeString($storedState['remote_order_state'] ?? null);
         $capabilities = $this->resolveOrderActionCapabilities($order, $storedState, $deliveryContext, $payload);
+        $handshakeEventType = strtoupper($this->normalizeString($storedState['handshake_event_type'] ?? null));
+        $lastAction = strtolower($this->normalizeString($storedState['last_action'] ?? null));
+        $hasSettledDispute = in_array($handshakeEventType, ['HANDSHAKE_SETTLEMENT', 'HSS'], true)
+            || $this->normalizeString($storedState['handshake_settlement_status'] ?? null) !== '';
+        $hasLocalDisputeResponse = $lastAction !== ''
+            && str_starts_with($lastAction, 'handshake_')
+            && !$this->hasErrnoError($storedState['last_action_errno'] ?? null);
+        $hasOpenDispute = $this->normalizeString($storedState['handshake_dispute_id'] ?? null) !== ''
+            && !$hasSettledDispute;
+        $evidenceUrl = $this->normalizeString($storedState['handshake_evidence_url'] ?? null);
+        $evidences = $this->decodeArrayValue($storedState['handshake_evidences_json'] ?? null);
+        if ($evidences === [] && $evidenceUrl !== '') {
+            $evidences = [[
+                'url' => $evidenceUrl,
+                'content_type' => $storedState['handshake_evidence_content_type'] ?? null,
+            ]];
+        }
+        $alternatives = $this->decodeArrayValue($storedState['handshake_alternatives_json'] ?? null);
+        $selectedAlternative = $this->decodeArrayValue($storedState['handshake_selected_alternative_json'] ?? null);
+        $alternativeType = strtoupper($this->normalizeString($storedState['handshake_alternative_type'] ?? null));
+        $alternativeAmountValue = $this->normalizeString($storedState['handshake_alternative_amount_value'] ?? null);
+        $alternativeTimeMinutes = (int) $this->normalizeString($storedState['handshake_alternative_time_minutes'] ?? null);
+        $alternativePayloadComplete = in_array($alternativeType, ['REFUND', 'BENEFIT'], true)
+            ? ((int) $alternativeAmountValue > 0)
+            : ($alternativeType === 'ADDITIONAL_TIME' && $alternativeTimeMinutes > 0);
         $orderComments = method_exists($order, 'getComments')
             ? $this->normalizeString($order->getComments())
             : '';
@@ -958,6 +994,7 @@ class IntegrationController extends AbstractController
                 'remote_order_state' => $remoteState,
                 'remote_order_state_label' => $this->resolveRemoteOrderStateLabel($remoteState),
                 'cancellation_requested' => $remoteState === 'cancellation_requested',
+                'cancellation_request_failed' => $remoteState === 'cancellation_request_failed',
                 'last_event_type' => $storedState['last_event_type'] ?? null,
                 'last_event_at' => $storedState['last_event_at'] ?? null,
                 'last_action' => $storedState['last_action'] ?? null,
@@ -981,23 +1018,32 @@ class IntegrationController extends AbstractController
             'payment'       => $this->buildPaymentDetail($payload, $storedState),
             'financial'     => $this->buildFinancialDetail($payload, $storedState),
             'negotiation'   => [
-                'has_open_dispute' => $remoteState === 'handshake_dispute',
+                'has_open_dispute' => $hasOpenDispute,
+                'has_local_response' => $hasLocalDisputeResponse,
+                'pending_settlement' => $hasOpenDispute && $hasLocalDisputeResponse,
                 'event_type' => $storedState['handshake_event_type'] ?? null,
                 'dispute_id' => $storedState['handshake_dispute_id'] ?? null,
+                'created_at' => $storedState['handshake_created_at'] ?? null,
                 'action' => $storedState['handshake_action'] ?? null,
                 'type' => $storedState['handshake_type'] ?? null,
                 'group' => $storedState['handshake_group'] ?? null,
                 'message' => $storedState['handshake_message'] ?? null,
                 'expires_at' => $storedState['handshake_expires_at'] ?? null,
                 'timeout_action' => $storedState['handshake_timeout_action'] ?? null,
+                'accept_reasons' => $this->splitStoredCsv($storedState['handshake_accept_reasons'] ?? null),
+                'evidences' => $evidences,
+                'alternatives' => $alternatives,
                 'alternative' => [
                     'available' => $this->normalizeString($storedState['handshake_alternative_type'] ?? null) !== '',
+                    'payload_complete' => $alternativePayloadComplete,
+                    'id' => $storedState['handshake_alternative_id'] ?? null,
                     'type' => $storedState['handshake_alternative_type'] ?? null,
                     'amount_value' => $storedState['handshake_alternative_amount_value'] ?? null,
                     'amount_currency' => $storedState['handshake_alternative_amount_currency'] ?? null,
                     'time_minutes' => $storedState['handshake_alternative_time_minutes'] ?? null,
                     'reason' => $storedState['handshake_alternative_reason'] ?? null,
                 ],
+                'selected_alternative' => $selectedAlternative,
                 'settlement_status' => $storedState['handshake_settlement_status'] ?? null,
                 'settlement_reason' => $storedState['handshake_settlement_reason'] ?? null,
             ],
@@ -1088,6 +1134,9 @@ class IntegrationController extends AbstractController
                 'delivery_arrived_at_destination',
                 'concluded',
             ], true);
+        $lastAction = strtolower($this->normalizeString($storedState['last_action'] ?? null));
+        $lastActionErrno = $this->normalizeString($storedState['last_action_errno'] ?? null);
+        $hasSyncedReadyAction = $lastAction === 'ready' && $lastActionErrno === '0';
         $isDelivering = ($realStatus === 'pending' && $statusName === 'way')
             || in_array($remoteState, [
                 'dispatching',
@@ -1109,7 +1158,7 @@ class IntegrationController extends AbstractController
             || in_array($remoteState, ['ready', 'dispatching', 'dispatched', 'order_dispatched'], true)
         );
         $canCancel = !$isTerminal;
-        $canReady = !$isTerminal && $isPreparing && !$isReadyOrBeyond;
+        $canReady = !$isTerminal && $isPreparing && !$isReadyOrBeyond && !$hasSyncedReadyAction;
         $canDelivered = !$isTerminal && $isDeliveryFlow && $isStoreDelivery && ($isDelivering || $isStoreDeliveryReady);
 
         return [
@@ -1737,10 +1786,12 @@ class IntegrationController extends AbstractController
         }
 
         $reason = $this->normalizeString($payload['reason'] ?? null);
+        $alternativeId = $this->normalizeString($payload['alternative_id'] ?? ($payload['alternativeId'] ?? null));
         $result = $this->iFoodService->respondHandshakeDispute(
             $order,
             $decision,
-            $reason !== '' ? $reason : null
+            $reason !== '' ? $reason : null,
+            $alternativeId !== '' ? $alternativeId : null
         );
         $this->manager->refresh($order);
 

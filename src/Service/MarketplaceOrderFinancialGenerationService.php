@@ -23,13 +23,22 @@ class MarketplaceOrderFinancialGenerationService
     private const PURPOSE_SERVICE_FEE = 'service_fee';
     private const PURPOSE_SMALL_ORDER_FEE = 'small_order_fee';
     private const PURPOSE_MEAL_TOP_UP_FEE = 'meal_top_up_fee';
+    private const PURPOSE_COMMISSION_DISTRIBUTION = 'commission_distribution';
+    private const PURPOSE_PAYMENT_PROCESSING = 'payment_processing';
+    private const PURPOSE_LOGISTICS_COST = 'logistics_cost';
     private const PURPOSE_MERCHANT_DISCOUNT = 'merchant_discount';
     private const PURPOSE_PLATFORM_DISCOUNT = 'platform_discount';
     private const PURPOSE_COURIER_PAYMENT = 'courier_payment';
+    private const LEGACY_PURPOSE_CUSTOMER_TOTAL = 'customer_total';
+    private const LEGACY_PURPOSE_DELIVERY_FEE = 'delivery_fee';
+    private const LEGACY_PURPOSE_MARKETPLACE_FEE = 'marketplace_fee';
     private const IFOOD_DOCUMENT = '14380200000121';
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
     private const FOOD99_DOCUMENT = '6012920000123';
     private const FOOD99_NAME = '99 Food';
+    private const FOOD99_COMMISSION_RATE = 0.089;
+    private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
+    private const FOOD99_LOGISTICS_COST_RATE = 0.60;
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -222,6 +231,9 @@ class MarketplaceOrderFinancialGenerationService
                     'service_fee_amount' => $context['service_fee_amount'],
                     'small_order_fee_amount' => $context['small_order_fee_amount'],
                     'meal_top_up_fee_amount' => $context['meal_top_up_fee_amount'],
+                    'commission_distribution_amount' => $context['commission_distribution_amount'],
+                    'payment_processing_amount' => $context['payment_processing_amount'],
+                    'logistics_cost_amount' => $context['logistics_cost_amount'],
                     'merchant_discount_amount' => $context['merchant_discount_amount'],
                     'platform_discount_amount' => $context['platform_discount_amount'],
                 ],
@@ -255,7 +267,7 @@ class MarketplaceOrderFinancialGenerationService
                 continue;
             }
 
-            if ($this->isManagedGeneratedMarketplaceMetadata($metadata)) {
+            if ($this->isManagedMarketplaceMetadataPayload($metadata, $app)) {
                 continue;
             }
 
@@ -312,6 +324,8 @@ class MarketplaceOrderFinancialGenerationService
         $pendingStatus = $this->statusService->discoveryStatus('pending', 'waiting payment', 'invoice');
         $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
 
+        $isFood99Order = $normalizedApp === strtolower(Order::APP_FOOD99);
+
         $platformDiscountAmount = $this->money(
             $financial['platform_discount_total']
                 ?? $financial['ifood_subsidy']
@@ -328,6 +342,7 @@ class MarketplaceOrderFinancialGenerationService
         $customerTotal = $this->money($financial['customer_total'] ?? 0);
         $amountPaid = $this->money($payment['amount_paid'] ?? 0);
         $shopPaidMoney = $this->money($financial['shop_paid_money'] ?? 0);
+        $storeReceivableTotal = $this->money($financial['store_receivable_total'] ?? 0);
         $deliveryFeeAmount = $this->money($financial['delivery_fee'] ?? 0);
         $collectOnDeliveryAmount = $this->money(
             $payment['collect_on_delivery_amount']
@@ -340,14 +355,30 @@ class MarketplaceOrderFinancialGenerationService
                 ?? $delivery['is_platform_delivery']
                 ?? false
         );
+        $food99DerivedFinancials = $isFood99Order
+            ? $this->resolveFood99DerivedFinancials($financial, $payment, $state)
+            : [];
+        $commissionDistributionAmount = $this->money(
+            $food99DerivedFinancials['commission_distribution_amount'] ?? 0
+        );
+        $paymentProcessingAmount = $this->money(
+            $food99DerivedFinancials['payment_processing_amount'] ?? 0
+        );
+        $logisticsCostAmount = $this->money(
+            $food99DerivedFinancials['logistics_cost_amount'] ?? 0
+        );
 
         $marketplaceGrossAmount = $shopPaidMoney > 0
             ? $shopPaidMoney
             : $this->money(($isPaidOnline ? $customerTotal : 0) + $platformDiscountAmount);
 
-        $weeklySettlementAmount = $shopPaidMoney > 0
+        $weeklySettlementAmount = $storeReceivableTotal > 0
+            ? $storeReceivableTotal
+            : ($shopPaidMoney > 0
             ? $shopPaidMoney
-            : $this->money(
+            : ($isFood99Order
+                ? $this->money($food99DerivedFinancials['weekly_settlement_amount'] ?? 0)
+                : $this->money(
                 max(
                     0,
                     $marketplaceGrossAmount
@@ -356,7 +387,7 @@ class MarketplaceOrderFinancialGenerationService
                         - $mealTopUpFeeAmount
                         - $merchantDiscountAmount
                 )
-            );
+            )));
 
         $invoicePaymentType = $this->resolveMarketplaceInvoicePaymentType(
             $order->getProvider(),
@@ -382,16 +413,22 @@ class MarketplaceOrderFinancialGenerationService
             'customer_marketplace_payment_amount' => $isPaidOnline
                 ? ($amountPaid > 0 ? $amountPaid : $customerTotal)
                 : 0.0,
-            'courier_payment_amount' => $isPlatformDelivery ? $deliveryFeeAmount : 0.0,
+            'courier_payment_amount' => $isFood99Order
+                ? 0.0
+                : ($isPlatformDelivery ? $deliveryFeeAmount : 0.0),
             'service_fee_amount' => $serviceFeeAmount,
             'small_order_fee_amount' => $smallOrderFeeAmount,
             'meal_top_up_fee_amount' => $mealTopUpFeeAmount,
+            'commission_distribution_amount' => $commissionDistributionAmount,
+            'payment_processing_amount' => $paymentProcessingAmount,
+            'logistics_cost_amount' => $logisticsCostAmount,
             'merchant_discount_amount' => $merchantDiscountAmount,
             'platform_discount_amount' => $platformDiscountAmount,
             'financial' => $financial,
             'payment' => $payment,
             'delivery' => $delivery,
             'state' => $state,
+            'food99_derived_financials' => $food99DerivedFinancials,
             'courier' => [
                 'name' => $this->text($state['rider_name'] ?? $delivery['rider_name'] ?? null),
                 'phone' => $this->text($state['rider_phone'] ?? $delivery['rider_phone'] ?? null),
@@ -435,6 +472,61 @@ class MarketplaceOrderFinancialGenerationService
 
     private function buildProviderPayables(Order $order, array $context): array
     {
+        if (($context['app'] ?? '') === Order::APP_FOOD99) {
+            return [
+                [
+                    'purpose' => self::PURPOSE_COMMISSION_DISTRIBUTION,
+                    'amount' => $context['commission_distribution_amount'] ?? 0,
+                    'description' => sprintf(
+                        'Comissao e distribuicao %s do pedido #%s',
+                        $context['marketplace_label'],
+                        (string) $order->getId()
+                    ),
+                    'payment_code' => 'commission_distribution',
+                ],
+                [
+                    'purpose' => self::PURPOSE_PAYMENT_PROCESSING,
+                    'amount' => $context['payment_processing_amount'] ?? 0,
+                    'description' => sprintf(
+                        'Taxa de processamento de pagamento %s do pedido #%s',
+                        $context['marketplace_label'],
+                        (string) $order->getId()
+                    ),
+                    'payment_code' => 'payment_processing',
+                ],
+                [
+                    'purpose' => self::PURPOSE_LOGISTICS_COST,
+                    'amount' => $context['logistics_cost_amount'] ?? 0,
+                    'description' => sprintf(
+                        'Custos logisticos %s do pedido #%s',
+                        $context['marketplace_label'],
+                        (string) $order->getId()
+                    ),
+                    'payment_code' => 'logistics_cost',
+                ],
+                [
+                    'purpose' => self::PURPOSE_SMALL_ORDER_FEE,
+                    'amount' => $context['small_order_fee_amount'],
+                    'description' => sprintf(
+                        'Taxa de pedido minimo %s do pedido #%s',
+                        $context['marketplace_label'],
+                        (string) $order->getId()
+                    ),
+                    'payment_code' => 'small_order_fee',
+                ],
+                [
+                    'purpose' => self::PURPOSE_MEAL_TOP_UP_FEE,
+                    'amount' => $context['meal_top_up_fee_amount'],
+                    'description' => sprintf(
+                        'Complemento de beneficio %s do pedido #%s',
+                        $context['marketplace_label'],
+                        (string) $order->getId()
+                    ),
+                    'payment_code' => 'meal_top_up_fee',
+                ],
+            ];
+        }
+
         return [
             [
                 'purpose' => self::PURPOSE_SERVICE_FEE,
@@ -766,7 +858,10 @@ class MarketplaceOrderFinancialGenerationService
             self::PURPOSE_PLATFORM_DISCOUNT => Invoice::TYPE_DISCOUNT,
             self::PURPOSE_SERVICE_FEE,
             self::PURPOSE_SMALL_ORDER_FEE,
-            self::PURPOSE_MEAL_TOP_UP_FEE => Invoice::TYPE_TAX,
+            self::PURPOSE_MEAL_TOP_UP_FEE,
+            self::PURPOSE_COMMISSION_DISTRIBUTION,
+            self::PURPOSE_PAYMENT_PROCESSING,
+            self::PURPOSE_LOGISTICS_COST => Invoice::TYPE_TAX,
             default => Invoice::TYPE_INVOICE,
         };
     }
@@ -819,11 +914,13 @@ class MarketplaceOrderFinancialGenerationService
         $reference = $this->resolveOrderReferenceDate($order);
         $dueDate = new DateTime($reference->format('Y-m-d'));
         $weekday = (int) $dueDate->format('N');
-        $daysUntilWednesday = (3 - $weekday + 7) % 7;
+        $daysUntilSunday = 7 - $weekday;
 
-        if ($daysUntilWednesday > 0) {
-            $dueDate->modify(sprintf('+%d days', $daysUntilWednesday));
+        if ($daysUntilSunday > 0) {
+            $dueDate->modify(sprintf('+%d days', $daysUntilSunday));
         }
+
+        $dueDate->modify('+3 days');
 
         return $dueDate;
     }
@@ -892,8 +989,15 @@ class MarketplaceOrderFinancialGenerationService
             return false;
         }
 
-        return $this->isManagedGeneratedMarketplaceMetadata($metadata)
-            && ($metadata['marketplace'] ?? null) === $app;
+        return $this->isManagedMarketplaceMetadataPayload($metadata, $app);
+    }
+
+    private function isManagedMarketplaceMetadataPayload(array $metadata, string $app): bool
+    {
+        return (
+            $this->isManagedGeneratedMarketplaceMetadata($metadata)
+            || $this->isRecognizedLegacyMarketplaceMetadata($metadata, $app)
+        ) && ($metadata['marketplace'] ?? null) === $app;
     }
 
     private function isManagedGeneratedMarketplaceMetadata(array $metadata): bool
@@ -906,6 +1010,54 @@ class MarketplaceOrderFinancialGenerationService
             ],
             true
         );
+    }
+
+    private function isRecognizedLegacyMarketplaceMetadata(array $metadata, string $app): bool
+    {
+        if (($metadata['marketplace'] ?? null) !== $app) {
+            return false;
+        }
+
+        $purpose = trim((string) ($metadata['invoice_purpose'] ?? ''));
+        $financialKind = trim((string) ($metadata['financial_kind'] ?? ''));
+
+        if ($purpose === '' || $financialKind === '') {
+            return false;
+        }
+
+        return in_array($purpose, $this->getKnownMarketplaceInvoicePurposes(), true)
+            && in_array($financialKind, $this->getKnownMarketplaceFinancialKinds(), true);
+    }
+
+    private function getKnownMarketplaceInvoicePurposes(): array
+    {
+        return [
+            self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT,
+            self::PURPOSE_WEEKLY_SETTLEMENT,
+            self::PURPOSE_CUSTOMER_COLLECTION,
+            self::PURPOSE_SERVICE_FEE,
+            self::PURPOSE_SMALL_ORDER_FEE,
+            self::PURPOSE_MEAL_TOP_UP_FEE,
+            self::PURPOSE_COMMISSION_DISTRIBUTION,
+            self::PURPOSE_PAYMENT_PROCESSING,
+            self::PURPOSE_LOGISTICS_COST,
+            self::PURPOSE_MERCHANT_DISCOUNT,
+            self::PURPOSE_PLATFORM_DISCOUNT,
+            self::PURPOSE_COURIER_PAYMENT,
+            self::LEGACY_PURPOSE_CUSTOMER_TOTAL,
+            self::LEGACY_PURPOSE_DELIVERY_FEE,
+            self::LEGACY_PURPOSE_MARKETPLACE_FEE,
+        ];
+    }
+
+    private function getKnownMarketplaceFinancialKinds(): array
+    {
+        return [
+            'account_receivable',
+            'account_payable',
+            'marketplace_internal_offset',
+            'marketplace_customer_payment',
+        ];
     }
 
     private function resolveOrderInvoiceShare(OrderInvoice $orderInvoice, Invoice $invoice): float
@@ -984,6 +1136,81 @@ class MarketplaceOrderFinancialGenerationService
     private function money(mixed $value): float
     {
         return round((float) ($value ?? 0), 2);
+    }
+
+    private function roundUpMoney(mixed $value): float
+    {
+        $normalizedValue = (float) ($value ?? 0);
+        if ($normalizedValue <= 0) {
+            return 0.0;
+        }
+
+        return ceil(($normalizedValue - 0.0000001) * 100) / 100;
+    }
+
+    private function resolveFood99DerivedFinancials(array $financial, array $payment, array $state): array
+    {
+        $itemsTotal = $this->money($financial['items_total'] ?? 0);
+        $storeDiscountTotal = $this->money(
+            $financial['store_discount_total']
+                ?? $financial['merchant_subsidy']
+                ?? 0
+        );
+        $storeDeliveryDiscountTotal = $this->money(
+            $financial['store_delivery_discount_total'] ?? 0
+        );
+        $storeNonDeliveryDiscountTotal = $this->money(
+            $financial['store_non_delivery_discount_total']
+                ?? max(0, $storeDiscountTotal - $storeDeliveryDiscountTotal)
+        );
+        $storeChargedDeliveryPrice = $this->money(
+            $financial['store_charged_delivery_price']
+                ?? $financial['delivery_fee']
+                ?? 0
+        );
+        $isPaidOnline = $this->toBool($payment['is_paid_online'] ?? false);
+        $isPlatformDelivery = $this->toBool($state['is_platform_delivery'] ?? false);
+        $commissionRate = max(
+            0.0,
+            (float) ($financial['commission_rate'] ?? self::FOOD99_COMMISSION_RATE)
+        );
+        $paymentProcessingRate = max(
+            0.0,
+            (float) ($financial['payment_processing_rate'] ?? self::FOOD99_PAYMENT_PROCESSING_RATE)
+        );
+        $logisticsCostRate = max(
+            0.0,
+            (float) ($financial['logistics_cost_rate'] ?? self::FOOD99_LOGISTICS_COST_RATE)
+        );
+        $chargeBaseAmount = $this->money(max(0, $itemsTotal - $storeNonDeliveryDiscountTotal));
+        $commissionDistributionAmount = $chargeBaseAmount > 0
+            ? $this->roundUpMoney($chargeBaseAmount * $commissionRate)
+            : 0.0;
+        $paymentProcessingAmount = $isPaidOnline && $chargeBaseAmount > 0
+            ? $this->roundUpMoney($chargeBaseAmount * $paymentProcessingRate)
+            : 0.0;
+        $logisticsCostAmount = $isPlatformDelivery && $storeChargedDeliveryPrice > 0
+            ? $this->roundUpMoney($storeChargedDeliveryPrice * $logisticsCostRate)
+            : 0.0;
+        $platformChargesAmount = $this->money(
+            $commissionDistributionAmount
+                + $paymentProcessingAmount
+                + $logisticsCostAmount
+        );
+        $weeklySettlementAmount = $this->money(
+            max(0, $itemsTotal - $storeDiscountTotal - $platformChargesAmount)
+        );
+
+        return [
+            'charge_base_amount' => $chargeBaseAmount,
+            'commission_distribution_amount' => $commissionDistributionAmount,
+            'payment_processing_amount' => $paymentProcessingAmount,
+            'logistics_cost_amount' => $logisticsCostAmount,
+            'platform_charges_amount' => $platformChargesAmount,
+            'weekly_settlement_amount' => $weeklySettlementAmount,
+            'store_delivery_discount_amount' => $storeDeliveryDiscountTotal,
+            'store_non_delivery_discount_amount' => $storeNonDeliveryDiscountTotal,
+        ];
     }
 
     private function text(mixed $value): string
