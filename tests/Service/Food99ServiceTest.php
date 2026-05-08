@@ -3,11 +3,14 @@
 namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\Order;
+use ControleOnline\Entity\Product;
+use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Queue;
 use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -286,6 +289,35 @@ class Food99ServiceTest extends TestCase
             ],
             $breakdown
         );
+    }
+
+    public function testIncomingProductGroupUsesContentNameWhenFood99OmitsGroupId(): void
+    {
+        $parentProduct = $this->createMock(Product::class);
+        $product = $this->createMock(Product::class);
+        $productGroup = $this->createMock(ProductGroup::class);
+        $productGroupService = $this->createMock(ProductGroupService::class);
+
+        $productGroupService
+            ->expects(self::once())
+            ->method('discoveryProductGroup')
+            ->with($parentProduct, 'Esolha o tempero da sua Batata')
+            ->willReturn($productGroup);
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'productGroupService', $productGroupService);
+
+        $resolvedGroup = $this->invokePrivateMethod(
+            $this->service,
+            'resolveIncomingProductGroup',
+            $parentProduct,
+            $product,
+            [
+                'app_content_id' => '',
+                'content_name' => 'Esolha o tempero da sua Batata',
+            ]
+        );
+
+        self::assertSame($productGroup, $resolvedGroup);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

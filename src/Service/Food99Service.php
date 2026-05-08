@@ -7077,19 +7077,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
                 $product = $this->discoveryProduct($order, $item, $parentProduct, $productType);
 
-                $productGroup = null;
-
-                if ($parentProduct && !empty($item['app_content_id'])) {
-                    $resolvedGroupName = $this->resolveModifierGroupName(
-                        $item['app_content_id'],
-                        $item['content_name'] ?? ''
-                    );
-
-                    $productGroup = $this->productGroupService->discoveryProductGroup(
-                        $parentProduct,
-                        $resolvedGroupName
-                    );
-                }
+                $productGroup = $this->resolveIncomingProductGroup($parentProduct, $product, $item);
 
                 $orderProduct = $this->orderProductService->addOrderProduct(
                     $order,
@@ -7153,16 +7141,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $this->entityManager->flush();
         }
 
-        if ($parentProduct && !empty($item['app_content_id'])) {
-            $resolvedGroupName = $this->resolveModifierGroupName(
-                $item['app_content_id'],
-                $item['content_name'] ?? ''
-            );
-
-            $group = $this->productGroupService->discoveryProductGroup(
-                $parentProduct,
-                $resolvedGroupName
-            );
+        if ($parentProduct && $this->hasIncomingProductGroupReference($item)) {
+            $group = $this->resolveIncomingProductGroup($parentProduct, $product, $item);
 
             $exists = $this->entityManager
                 ->getRepository(ProductGroupProduct::class)
@@ -7172,7 +7152,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     'productGroup' => $group
                 ]);
 
-            if (!$exists) {
+            if ($group instanceof ProductGroup && !$exists) {
                 $pgp = new ProductGroupProduct();
                 $pgp->setProduct($parentProduct);
                 $pgp->setProductChild($product);
@@ -7189,6 +7169,54 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->persistLocalFoodCodeByEntity('Product', (int) $product->getId(), (string) $code);
 
         return $product;
+    }
+
+    private function resolveIncomingProductGroup(?Product $parentProduct, Product $product, array $item): ?ProductGroup
+    {
+        if (!$parentProduct instanceof Product) {
+            return null;
+        }
+
+        if ($this->hasIncomingProductGroupReference($item)) {
+            $resolvedGroupName = $this->resolveModifierGroupName(
+                $item['app_content_id'] ?? '',
+                $item['content_name'] ?? ''
+            );
+
+            return $this->productGroupService->discoveryProductGroup(
+                $parentProduct,
+                $resolvedGroupName
+            );
+        }
+
+        $catalogLink = $this->findProductGroupProductLink($parentProduct, $product);
+
+        return $catalogLink?->getProductGroup();
+    }
+
+    private function hasIncomingProductGroupReference(array $item): bool
+    {
+        return trim((string) ($item['app_content_id'] ?? '')) !== ''
+            || trim((string) ($item['content_name'] ?? '')) !== '';
+    }
+
+    private function findProductGroupProductLink(Product $parentProduct, Product $product): ?ProductGroupProduct
+    {
+        $repository = $this->entityManager->getRepository(ProductGroupProduct::class);
+        $link = $repository->findOneBy([
+            'product' => $parentProduct,
+            'productChild' => $product,
+            'active' => true,
+        ]) ?: $repository->findOneBy([
+            'product' => $parentProduct,
+            'productChild' => $product,
+        ]);
+
+        if (!$link instanceof ProductGroupProduct || !$link->getProductGroup() instanceof ProductGroup) {
+            return null;
+        }
+
+        return $link;
     }
 
     private function discoveryClient(array $address, ?People $provider = null): ?People
