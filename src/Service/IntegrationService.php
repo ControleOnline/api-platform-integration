@@ -14,10 +14,15 @@ use ControleOnline\Service\StatusService;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Throwable;
 
 
 class IntegrationService
 {
+    private const MAX_RETRIES = 3;
+    private const RETRY_DELAY_MS = 60000;
+
     private $lock;
     public function __construct(
         private EntityManagerInterface $manager,
@@ -53,30 +58,56 @@ class IntegrationService
             return;
         }
 
-        $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
-        $method = 'integrate';
-        $handled = false;
-        $result = null;
-        if ($this->container->has($serviceName)) {
-            $service = $this->container->get($serviceName);
-            if (method_exists($service, $method)) {
-                $handled = true;
-                $result = $service->$method($integration);
+        try {
+            $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+            $method = 'integrate';
+            $handled = false;
+            $result = null;
+            if ($this->container->has($serviceName)) {
+                $service = $this->container->get($serviceName);
+                if (method_exists($service, $method)) {
+                    $handled = true;
+                    $result = $service->$method($integration);
+                }
             }
+
+            if ($handled && $this->shouldGenerateMarketplaceFinancial($integration, $result)) {
+                $this->container
+                    ->get(MarketplaceOrderFinancialGenerationService::class)
+                    ->generate($result);
+            }
+
+            if (!$handled) {
+                $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+            } else {
+                $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
+            }
+
+            $this->manager->persist($integration);
+            $this->manager->flush();
+        } catch (Throwable $exception) {
+            $this->handleRetryableFailure($integration);
+        }
+    }
+
+    private function handleRetryableFailure(Integration $integration): void
+    {
+        $integration->incrementRetry();
+
+        if ($integration->getRetry() <= self::MAX_RETRIES) {
+            $integration->setStatus($this->statusService->discoveryStatus('open', 'open', 'integration'));
+            $this->manager->persist($integration);
+            $this->manager->flush();
+
+            $this->bus->dispatch(
+                new SendIntegrationMessage($integration->getId()),
+                [new DelayStamp(self::RETRY_DELAY_MS * $integration->getRetry())]
+            );
+
+            return;
         }
 
-        if ($handled && $this->shouldGenerateMarketplaceFinancial($integration, $result)) {
-            $this->container
-                ->get(MarketplaceOrderFinancialGenerationService::class)
-                ->generate($result);
-        }
-
-        if (!$handled) {
-            $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
-        } else {
-            $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
-        }
-
+        $integration->setStatus($this->statusService->discoveryStatus('pending', 'error', 'integration'));
         $this->manager->persist($integration);
         $this->manager->flush();
     }

@@ -80,6 +80,7 @@ class TenantIntegrationCommand extends DefaultCommand
                     $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
                     $integration = $this->entityManager->find(Integration::class, $integration->getId());
                     if ($integration) {
+                        $integration->incrementRetry();
                         $integration->setStatus($statusError);
                         $this->entityManager->persist($integration);
                         $this->entityManager->flush();

@@ -6640,6 +6640,17 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         try {
             $exists = $this->findExistingIntegratedOrder($orderId, $orderCode, $allowCodeFallback);
             if ($exists instanceof Order) {
+                if ($this->shouldSkipExistingOrderNewRetry($exists)) {
+                    self::$logger->info('Food99 existing order is terminal; orderNew retry closed without confirmation', $this->buildLogContext(null, $json, [
+                        'local_order_id' => $exists->getId(),
+                        'order_code' => $orderCode,
+                    ]));
+
+                    return null;
+                }
+
+                $this->retryExistingOrderConfirmationIfNeeded($exists, $orderId);
+
                 self::$logger->info('Food99 order already integrated, skipping duplicate creation', $this->buildLogContext(null, $json, [
                     'local_order_id' => $exists->getId(),
                     'dedupe_by' => $orderId !== '' ? 'order_id' : 'order_code',
@@ -6720,7 +6731,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $this->addPayments($order, $data);
 
-            $this->confirmOrder($order, $orderId, $provider);
+            $confirmResult = $this->confirmOrder($order, $orderId, $provider);
+            $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
             $this->printOrder($order);
 
             return $order;
@@ -6803,6 +6815,44 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'data' => [],
             ]);
         }
+    }
+
+    private function shouldSkipExistingOrderNewRetry(Order $order): bool
+    {
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return true;
+        }
+
+        $state = $this->getStoredOrderIntegrationState($order);
+        return $this->isTerminalRemoteOrderState($state['remote_order_state'] ?? null);
+    }
+
+    private function retryExistingOrderConfirmationIfNeeded(Order $order, string $orderId): void
+    {
+        $state = $this->getStoredOrderIntegrationState($order);
+        if ($this->isSuccessfulErrno($state['confirm_errno'] ?? null)) {
+            return;
+        }
+
+        $confirmResult = $this->confirmOrder($order, $orderId, $order->getProvider());
+        $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
+    }
+
+    private function throwIfConfirmationShouldRetry(array $confirmResult, string $orderId, Order $order): void
+    {
+        if ($this->isSuccessfulErrno($confirmResult['errno'] ?? null)) {
+            return;
+        }
+
+        if ($this->isTerminalLocalOrderStatus($order)) {
+            return;
+        }
+
+        throw new \RuntimeException(sprintf(
+            'Food99 order confirmation failed for remote order %s: %s',
+            $orderId,
+            trim((string) ($confirmResult['errmsg'] ?? 'unknown error'))
+        ));
     }
 
     /**

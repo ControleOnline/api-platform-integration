@@ -51,6 +51,10 @@ class Integration
     #[Groups(['integration:read', 'integration:write'])]
     private string $queueName = '';
 
+    #[ORM\Column(type: 'integer', options: ['default' => 0])]
+    #[Groups(['integration:read', 'integration:write'])]
+    private int $retry = 0;
+
     #[ORM\ManyToOne(targetEntity: Device::class)]
     #[ORM\JoinColumn(name: 'device_id', referencedColumnName: 'id', nullable: true)]
     #[Groups(['integration:read', 'integration:write'])]
@@ -112,6 +116,23 @@ class Integration
     public function setQueueName(string $queueName): self
     {
         $this->queueName = $queueName;
+        return $this;
+    }
+
+    public function getRetry(): int
+    {
+        return $this->retry;
+    }
+
+    public function setRetry(int $retry): self
+    {
+        $this->retry = max(0, $retry);
+        return $this;
+    }
+
+    public function incrementRetry(): self
+    {
+        $this->retry++;
         return $this;
     }
 
