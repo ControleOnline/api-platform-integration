@@ -98,13 +98,17 @@ class iFoodController extends AbstractController
             $eventPayload = $event;
             $eventPayload['__webhook'] = $meta;
 
-            $encodedPayload = json_encode($eventPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $encodedPayload = json_encode(
+                $eventPayload,
+                JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+            );
             if ($encodedPayload === false) {
-                self::$logger->warning('iFood webhook payload re-encode failed, using raw body fallback', [
+                self::$logger->warning('iFood webhook payload re-encode failed', [
                     'event_id' => $meta['event_id'],
                     'json_error' => json_last_error_msg(),
                 ]);
-                $encodedPayload = $rawInput;
+
+                return new Response('Invalid payload encoding', Response::HTTP_BAD_REQUEST);
             }
 
             $integrationService->addIntegrationWithHeaders(
