@@ -86,13 +86,17 @@ class WebhookController extends AbstractController
         }
 
         $payload['__webhook'] = $meta;
-        $encodedPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $encodedPayload = json_encode(
+            $payload,
+            JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+        );
         if ($encodedPayload === false) {
-            self::$logger->warning('Food99 webhook payload re-encoding failed, keeping original payload', [
+            self::$logger->warning('Food99 webhook payload re-encoding failed', [
                 'event_id' => $meta['event_id'],
                 'json_error' => json_last_error_msg(),
             ]);
-            $encodedPayload = $rawInput;
+
+            return new Response('Invalid payload encoding', Response::HTTP_BAD_REQUEST);
         }
 
         $integrationService->addIntegrationWithHeaders(
