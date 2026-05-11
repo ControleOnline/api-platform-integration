@@ -2164,16 +2164,16 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return null;
     }
 
-    private function resolveOrderClient(People $provider, array $address, string $orderId): People
+    private function resolveOrderClient(People $provider, array $address, array $payload, string $orderId): People
     {
-        $client = $this->discoveryClient($address, $provider);
+        $client = $this->discoveryClient($address, $payload, $provider);
         if ($client instanceof People) {
             $this->peopleService->discoveryLink($provider, $client, 'client');
             return $client;
         }
 
         $fallbackName = $this->resolveFood99CustomerName($address);
-        $clientCode = $this->resolveFood99RemoteClientId($address);
+        $clientCode = $this->resolveFood99RemoteClientId($address, $payload);
         $phone = $this->resolveFood99ClientPhone($address);
 
         self::$logger->warning('Food99 order received without a mapped customer; using fallback customer resolution', [
@@ -2601,14 +2601,95 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $fallback;
     }
 
-    private function resolveFood99RemoteClientId(array $address): string
+    private function resolveFood99RemoteClientId(array $address, array $payload = []): string
     {
-        $clientId = $this->normalizeIncomingFood99Value($address['uid'] ?? null);
-        if ($clientId === '0') {
-            return '';
+        foreach ($this->buildFood99ClientLookupPayloads($address, $payload) as $candidatePayload) {
+            $clientId = $this->searchPayloadValueByKeys($candidatePayload, [
+                'uid',
+                'id',
+                'customer_id',
+                'customerId',
+                'client_id',
+                'clientId',
+                'customer_uid',
+                'customerUid',
+                'client_uid',
+                'clientUid',
+                'user_id',
+                'userId',
+                'code',
+            ]);
+
+            $normalizedClientId = $this->normalizeIncomingFood99Value($clientId);
+            if ($normalizedClientId !== '' && $normalizedClientId !== '0') {
+                return $normalizedClientId;
+            }
         }
 
-        return $clientId;
+        return '';
+    }
+
+    private function buildFood99ClientLookupPayloads(array $address, array $payload): array
+    {
+        $candidatePayloads = [];
+
+        if (!empty($address)) {
+            $candidatePayloads[] = $address;
+        }
+
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+
+        foreach ([$payload, $data, $orderInfo] as $parentPayload) {
+            if (!is_array($parentPayload) || $parentPayload === []) {
+                continue;
+            }
+
+            foreach ($this->extractFood99CustomerPayloads($parentPayload) as $candidatePayload) {
+                $candidatePayloads[] = $candidatePayload;
+            }
+        }
+
+        return $candidatePayloads;
+    }
+
+    private function extractFood99CustomerPayloads(array $payload): array
+    {
+        $customerKeys = [
+            'customer',
+            'customer_info',
+            'customerInfo',
+            'customer_data',
+            'customerData',
+            'buyer',
+            'consumer',
+            'receiver',
+            'recipient',
+            'client',
+            'client_info',
+            'clientInfo',
+            'user',
+            'user_info',
+            'userInfo',
+        ];
+
+        $candidatePayloads = [];
+
+        foreach ($payload as $key => $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            if (in_array($key, $customerKeys, true)) {
+                $candidatePayloads[] = $value;
+            }
+
+            foreach ($this->extractFood99CustomerPayloads($value) as $nestedPayload) {
+                $candidatePayloads[] = $nestedPayload;
+            }
+        }
+
+        return $candidatePayloads;
     }
 
     private function resolveFood99ClientPhone(array $address): array
@@ -6678,7 +6759,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 }
             }
 
-            $client = $this->resolveOrderClient($provider, $receiveAddress, $orderId);
+            $client = $this->resolveOrderClient($provider, $receiveAddress, $json, $orderId);
             $status = $this->statusService->discoveryStatus('open', 'open', 'order');
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
@@ -7219,10 +7300,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $link;
     }
 
-    private function discoveryClient(array $address, ?People $provider = null): ?People
+    private function discoveryClient(array $address, array $payload = [], ?People $provider = null): ?People
     {
         $resolvedName = $this->resolveFood99CustomerName($address, '');
-        $remoteClientId = $this->resolveFood99RemoteClientId($address);
+        $remoteClientId = $this->resolveFood99RemoteClientId($address, $payload);
 
         if ($remoteClientId !== '') {
             $client = $this->extraDataService->getEntityByExtraData(

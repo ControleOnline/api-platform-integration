@@ -5,11 +5,14 @@ namespace ControleOnline\Integration\Tests\Service;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
+use ControleOnline\Entity\People;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Queue;
 use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\ExtraDataService;
+use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -318,6 +321,65 @@ class Food99ServiceTest extends TestCase
         );
 
         self::assertSame($productGroup, $resolvedGroup);
+    }
+
+    public function testResolveFood99RemoteClientIdFindsNestedCustomerClientId(): void
+    {
+        $remoteClientId = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99RemoteClientId',
+            ['name' => 'Cliente'],
+            [
+                'data' => [
+                    'order_info' => [
+                        'customer' => [
+                            'client_id' => 'client-123',
+                        ],
+                    ],
+                ],
+            ]
+        );
+
+        self::assertSame('client-123', $remoteClientId);
+    }
+
+    public function testDiscoveryClientReusesExistingPeopleByNestedClientId(): void
+    {
+        $existingClient = $this->createConfiguredMock(People::class, [
+            'getId' => 1234,
+        ]);
+
+        $extraDataService = $this->createMock(ExtraDataService::class);
+        $extraDataService
+            ->expects(self::once())
+            ->method('getEntityByExtraData')
+            ->with(Order::APP_FOOD99, 'code', 'client-123', People::class)
+            ->willReturn($existingClient);
+
+        $peopleService = $this->createMock(PeopleService::class);
+        $peopleService
+            ->expects(self::never())
+            ->method('discoveryPeople');
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'extraDataService', $extraDataService);
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'peopleService', $peopleService);
+
+        $resolvedClient = $this->invokePrivateMethod(
+            $this->service,
+            'discoveryClient',
+            ['name' => 'Cliente', 'phone' => '11999999999'],
+            [
+                'data' => [
+                    'order_info' => [
+                        'customer' => [
+                            'client_id' => 'client-123',
+                        ],
+                    ],
+                ],
+            ]
+        );
+
+        self::assertSame($existingClient, $resolvedClient);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
