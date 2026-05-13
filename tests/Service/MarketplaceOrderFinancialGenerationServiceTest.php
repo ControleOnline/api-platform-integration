@@ -101,11 +101,11 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
 
         self::assertSame(75.04, $derivedFinancials['charge_base_amount']);
         self::assertSame(6.68, $derivedFinancials['commission_distribution_amount']);
-        self::assertSame(2.41, $derivedFinancials['payment_processing_amount']);
+        self::assertSame(2.40, $derivedFinancials['payment_processing_amount']);
         self::assertSame(2.03, $derivedFinancials['service_fee_amount']);
         self::assertSame(8.89, $derivedFinancials['logistics_cost_amount']);
-        self::assertSame(20.01, $derivedFinancials['platform_charges_amount']);
-        self::assertSame(45.13, $derivedFinancials['weekly_settlement_amount']);
+        self::assertSame(20.00, $derivedFinancials['platform_charges_amount']);
+        self::assertSame(45.14, $derivedFinancials['weekly_settlement_amount']);
     }
 
     public function testWeeklyDueDateUsesNextWednesdayAfterWeekClose(): void

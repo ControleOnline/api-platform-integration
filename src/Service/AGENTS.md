@@ -17,6 +17,7 @@
 - Em `Food99`, o vencimento da invoice semanal segue o fechamento de segunda a domingo e cai na quarta-feira seguinte.
 - Em `Food99`, pedidos `canceled`/`cancelled` nao devem recriar financeiro; o backfill deve apenas limpar invoices gerenciadas legadas daquele pedido.
 - Em `Food99`, o weekly settlement deve considerar `service_fee` do payload bruto e a taxa logistica calibrada da integracao, nao a heuristica antiga de 60% com piso de R$ 4,50.
+- Em `Food99`, os componentes monetarios calculados da taxa devem usar arredondamento normal em centavos; nao usar `ceil` para inflar commission/processing/logistics em centavos.
 
 ## iFoodService.php
 - A carteira operacional da integracao deve ser `iFood`.

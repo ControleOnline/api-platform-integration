@@ -23,6 +23,7 @@
 - Em `Food99`, pedidos novos do webhook `orderNew` devem gerar esse financeiro automaticamente no pipeline de integracao. O endpoint manual de invoices fica como backfill para pedidos legados.
 - Em `Food99`, pedidos com status terminal `canceled`/`cancelled` devem ser tratados como sem geracao financeira, mas a limpeza das invoices gerenciadas do proprio pedido continua obrigatoria.
 - Em `Food99`, o repasse semanal deve abater `service_fee` do payload bruto e usar a taxa logistica calibrada pela integracao antes de fechar a invoice semanal.
+- Em `Food99`, os componentes de fee calculados pela integracao devem ser arredondados normalmente em centavos; nao usar `ceil` para as taxas calculadas.
 
 ## iFood - negociacao e cancelamento
 - `HANDSHAKE_DISPUTE` nao cancela o pedido sozinho. Ele abre uma disputa que precisa ficar visivel para decisao humana ate chegar `HANDSHAKE_SETTLEMENT` ou ate uma resposta local bem-sucedida.

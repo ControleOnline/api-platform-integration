@@ -1186,12 +1186,7 @@ class MarketplaceOrderFinancialGenerationService
 
     private function roundUpMoney(mixed $value): float
     {
-        $normalizedValue = (float) ($value ?? 0);
-        if ($normalizedValue <= 0) {
-            return 0.0;
-        }
-
-        return ceil(($normalizedValue - 0.0000001) * 100) / 100;
+        return round((float) ($value ?? 0), 2);
     }
 
     private function resolveFood99DerivedFinancials(array $financial, array $payment, array $state): array
