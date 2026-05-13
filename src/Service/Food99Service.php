@@ -7025,11 +7025,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $customerPaymentType,
                 $customerPaymentTypeData
             );
-            $this->walletService->discoverWalletPaymentType(
-                $receivableWallet,
-                $customerPaymentType,
-                $customerPaymentTypeData['paymentCode'] ?? null
-            );
             $settlementPaymentType = $this->resolveFood99SettlementPaymentType($order->getProvider(), $providerWallet);
 
             self::$logger->info('Food99 addPayments', [
