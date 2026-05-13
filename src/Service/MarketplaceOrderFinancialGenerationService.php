@@ -52,6 +52,46 @@ class MarketplaceOrderFinancialGenerationService
         private iFoodService $iFoodService,
     ) {}
 
+    public function buildStoreClosingSummary(
+        People $provider,
+        string $app,
+        ?DateTimeInterface $referenceDate = null
+    ): array {
+        $normalizedApp = strtolower(trim($app));
+        $marketplaceApp = $normalizedApp === strtolower(Order::APP_FOOD99)
+            ? Order::APP_FOOD99
+            : Order::APP_IFOOD;
+        $marketplacePeople = $this->resolveMarketplacePeople($marketplaceApp);
+        $walletName = $this->resolveMarketplaceWalletName($marketplaceApp);
+        $providerWallet = $this->walletService->discoverWallet($provider, $walletName);
+        $marketplaceWallet = $this->walletService->discoverWallet($marketplacePeople, $walletName);
+        $reference = $referenceDate instanceof DateTimeInterface
+            ? new DateTime($referenceDate->format('Y-m-d'))
+            : new DateTime('now');
+        $weeklyDueDate = $this->resolveWeeklyDueDateFromReference($reference);
+        $dailySales = $this->resolveMarketplaceDailySales($provider, $marketplaceApp, $reference);
+        $weeklyInvoice = $this->findWeeklySettlementInvoiceForSummary(
+            $provider,
+            $marketplacePeople,
+            $providerWallet,
+            $marketplaceWallet,
+            $weeklyDueDate,
+            $marketplaceApp
+        );
+
+        return [
+            'app' => $marketplaceApp,
+            'marketplace_label' => $walletName,
+            'provider_name' => $provider->getAlias() ?: $provider->getName() ?: '',
+            'daily_sales_amount' => $dailySales['total_amount'],
+            'daily_sales_orders' => $dailySales['order_count'],
+            'weekly_due_date' => $weeklyDueDate->format('Y-m-d'),
+            'weekly_settlement_amount' => $weeklyInvoice instanceof Invoice
+                ? $this->money($weeklyInvoice->getPrice())
+                : 0.0,
+        ];
+    }
+
     public function generate(Order $order): array
     {
         $financialOrder = $this->orderService->resolveFinancialOrder($order);
@@ -958,6 +998,11 @@ class MarketplaceOrderFinancialGenerationService
     private function resolveWeeklyDueDate(Order $order): DateTime
     {
         $reference = $this->resolveOrderReferenceDate($order);
+        return $this->resolveWeeklyDueDateFromReference($reference);
+    }
+
+    private function resolveWeeklyDueDateFromReference(DateTimeInterface $reference): DateTime
+    {
         $dueDate = new DateTime($reference->format('Y-m-d'));
         $weekday = (int) $dueDate->format('N');
         $daysUntilSunday = 7 - $weekday;
@@ -969,6 +1014,101 @@ class MarketplaceOrderFinancialGenerationService
         $dueDate->modify('+3 days');
 
         return $dueDate;
+    }
+
+    private function resolveMarketplaceDailySales(
+        People $provider,
+        string $app,
+        DateTimeInterface $referenceDate
+    ): array {
+        $startDate = new DateTime($referenceDate->format('Y-m-d 00:00:00'));
+        $endDate = (clone $startDate)->modify('+1 day');
+        $normalizedApp = $app;
+
+        $queryBuilder = $this->entityManager->createQueryBuilder();
+        $result = $queryBuilder
+            ->select('COALESCE(SUM(o.price), 0) AS totalAmount', 'COUNT(o.id) AS orderCount')
+            ->from(Order::class, 'o')
+            ->innerJoin('o.status', 's')
+            ->where('o.provider = :provider')
+            ->andWhere('o.app = :app')
+            ->andWhere('o.orderDate >= :startDate')
+            ->andWhere('o.orderDate < :endDate')
+            ->andWhere('LOWER(s.realStatus) NOT IN (:excludedStatuses)')
+            ->setParameter('provider', $provider)
+            ->setParameter('app', $normalizedApp)
+            ->setParameter('startDate', $startDate)
+            ->setParameter('endDate', $endDate)
+            ->setParameter('excludedStatuses', ['canceled', 'cancelled'])
+            ->getQuery()
+            ->getSingleResult();
+
+        return [
+            'total_amount' => $this->money($result['totalAmount'] ?? 0),
+            'order_count' => (int) ($result['orderCount'] ?? 0),
+        ];
+    }
+
+    private function resolveMarketplacePeople(string $app): People
+    {
+        if ($app === Order::APP_FOOD99) {
+            return $this->peopleService->discoveryPeople(
+                self::FOOD99_DOCUMENT,
+                null,
+                [],
+                self::FOOD99_NAME,
+                'J'
+            );
+        }
+
+        return $this->peopleService->discoveryPeople(
+            self::IFOOD_DOCUMENT,
+            null,
+            [],
+            self::IFOOD_NAME,
+            'J'
+        );
+    }
+
+    private function resolveMarketplaceWalletName(string $app): string
+    {
+        return $app === Order::APP_FOOD99 ? self::FOOD99_NAME : Order::APP_IFOOD;
+    }
+
+    private function findWeeklySettlementInvoiceForSummary(
+        People $provider,
+        People $marketplacePeople,
+        Wallet $providerWallet,
+        Wallet $marketplaceWallet,
+        DateTime $weeklyDueDate,
+        string $app
+    ): ?Invoice {
+        $candidates = $this->entityManager->getRepository(Invoice::class)->findBy([
+            'payer' => $marketplacePeople,
+            'receiver' => $provider,
+            'sourceWallet' => $marketplaceWallet,
+            'destinationWallet' => $providerWallet,
+            'dueDate' => $weeklyDueDate,
+        ]);
+
+        foreach ($candidates as $candidate) {
+            if (!$candidate instanceof Invoice) {
+                continue;
+            }
+
+            $metadata = $this->readMarketplaceMetadata($candidate, $app);
+            if (!$this->isManagedGeneratedMarketplaceMetadata($metadata)) {
+                continue;
+            }
+
+            if (($metadata['invoice_purpose'] ?? null) !== self::PURPOSE_WEEKLY_SETTLEMENT) {
+                continue;
+            }
+
+            return $candidate;
+        }
+
+        return null;
     }
 
     private function resolveOrderReferenceDate(Order $order): DateTime

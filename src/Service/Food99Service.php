@@ -4672,8 +4672,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $providerName = 'Loja';
         }
 
-        $this->broadcastCompanyWebsocketEvents($provider, [[
-            'store' => 'marketplace',
+        $events = [[
+            'store' => 'orders',
             'event' => $currentOnline ? 'store.opened' : 'store.closed',
             'company' => $provider->getId(),
             'provider' => $provider->getId(),
@@ -4688,7 +4688,27 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ),
             'sentAt' => date(DATE_ATOM),
             'alertSound' => true,
-        ]]);
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
     private function resolveFood99WebhookOnlineState(array $data): ?bool

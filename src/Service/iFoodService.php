@@ -4241,8 +4241,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $providerName = 'Loja';
         }
 
-        $this->broadcastCompanyWebsocketEvents($provider, [[
-            'store' => 'marketplace',
+        $events = [[
+            'store' => 'orders',
             'event' => $currentOnline ? 'store.opened' : 'store.closed',
             'company' => $provider->getId(),
             'provider' => $provider->getId(),
@@ -4259,7 +4259,27 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ),
             'sentAt' => date(DATE_ATOM),
             'alertSound' => true,
-        ]]);
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
     /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).

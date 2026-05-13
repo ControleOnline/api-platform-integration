@@ -47,7 +47,10 @@ class DefaultFoodService
         protected InvoiceService $invoiceService,
         protected WalletService $walletService,
         protected OrderProductService $orderProductService,
-        protected ProductGroupService $productGroupService
+        protected ProductGroupService $productGroupService,
+        protected IntegrationService $integrationService,
+        protected WhatsAppService $whatsAppService,
+        protected MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService
     ) {}
 
 
@@ -100,6 +103,99 @@ class DefaultFoodService
 
             $sentDevices[$deviceId] = true;
             $this->websocketClient->push($device, $payload);
+        }
+    }
+
+    protected function sendStoreClosingNotifications(
+        People $company,
+        string $app,
+        ?DateTime $referenceDate = null
+    ): array {
+        $summary = $this->marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
+            $company,
+            $app,
+            $referenceDate
+        );
+
+        $this->sendStoreClosingWhatsAppNotifications($company, $summary);
+
+        return $summary;
+    }
+
+    protected function buildStoreClosingMessage(array $summary, string $statusLabel): string
+    {
+        $providerName = trim((string) ($summary['provider_name'] ?? ''));
+        $marketplaceLabel = trim((string) ($summary['marketplace_label'] ?? ''));
+        $dailySales = number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.');
+        $weeklySettlement = number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.');
+        $weeklyDueDate = trim((string) ($summary['weekly_due_date'] ?? ''));
+        $weeklyDueDateLabel = '';
+        if ($weeklyDueDate !== '') {
+            $parsedWeeklyDueDate = DateTime::createFromFormat('Y-m-d', $weeklyDueDate);
+            $weeklyDueDateLabel = $parsedWeeklyDueDate instanceof DateTime
+                ? $parsedWeeklyDueDate->format('d/m/Y')
+                : $weeklyDueDate;
+        }
+
+        $message = "*🔔 FECHAMENTO DE LOJA*\n";
+        $message .= trim(sprintf(
+            "%s %s\n",
+            $providerName !== '' ? $providerName : 'Loja',
+            $statusLabel !== '' ? $statusLabel : 'fechada'
+        ));
+
+        if ($marketplaceLabel !== '') {
+            $message .= "Marketplace: {$marketplaceLabel}\n";
+        }
+
+        $message .= "Vendido hoje: R$ {$dailySales}\n";
+        $message .= "Fatura da semana: R$ {$weeklySettlement}\n";
+
+        if ($weeklyDueDateLabel !== '') {
+            $message .= "Vencimento: {$weeklyDueDateLabel}\n";
+        }
+
+        return trim($message);
+    }
+
+    protected function sendStoreClosingWhatsAppNotifications(
+        People $company,
+        array $summary,
+        string $statusLabel = 'foi fechada'
+    ): void {
+        $numbers = $this->configService->getConfig($company, 'store-close-notifications', true);
+
+        if (!is_array($numbers) || $numbers === []) {
+            return;
+        }
+
+        $connection = $this->whatsAppService->searchConnectionFromPeople($company, 'support', true);
+        if (!$connection) {
+            return;
+        }
+
+        $phone = $connection->getPhone();
+        $origin = $phone->getDdi() . $phone->getDdd() . $phone->getPhone();
+        $message = $this->buildStoreClosingMessage($summary, $statusLabel);
+
+        foreach ($numbers as $number) {
+            $destination = trim((string) $number);
+            if ($destination === '') {
+                continue;
+            }
+
+            $payload = json_encode([
+                'action' => 'sendMessage',
+                'origin' => $origin,
+                'destination' => $destination,
+                'message' => $message,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            if ($payload === false) {
+                continue;
+            }
+
+            $this->integrationService->addIntegration($payload, 'WhatsApp', null, null, $company);
         }
     }
 
