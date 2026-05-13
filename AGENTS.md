@@ -15,6 +15,7 @@
 - Se nao houver `uid` nem correspondencia exata de legado, o sistema deve criar ou manter o cliente sem codigo, sem tentar derivar outro identificador.
 - Geracao financeira de marketplace deve explicitar `payer`, `receiver`, `wallet`, `paymentType` e `description` em cada invoice gerada a partir do resumo da integracao.
 - Pagamento online do cliente ao marketplace deve virar invoice explicita com `payer = cliente` e `receiver = marketplace`.
+- Os canais de pagamento do cliente devem permanecer nas invoices; a wallet operacional do `99 Food` nao deve receber espelho desses canais.
 - Ajustes e descontos que ja nascem compensados dentro do repasse do marketplace, sem cobranca separada para a loja, devem ser modelados como fluxo interno do marketplace com `payer = marketplace` e `receiver = marketplace`.
 - Recebimentos vindos de marketplace para `Food99` e `iFood` devem ser agrupados em uma invoice semanal unica, com vencimento na quarta-feira e vinculacao por `order_invoice` para todos os pedidos incluidos no repasse.
 - Em `Food99`, a invoice de repasse/cobranca deve usar `receiver = 99 Food`, nunca `iFood` ou estado compartilhado do fluxo legado.

@@ -388,6 +388,65 @@ class Food99ServiceTest extends TestCase
         self::assertSame($food99People, $resolvedPeople);
     }
 
+    public function testResolveFood99ProviderPaymentTypeKeepsInvoiceTypeOffWalletWhenNoWalletIsProvided(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 123,
+        ]);
+        $paymentType = $this->createConfiguredMock(PaymentType::class, [
+            'getPaymentType' => 'PIX',
+        ]);
+        $paymentTypeRepository = $this->createMock(\Doctrine\ORM\EntityRepository::class);
+        $paymentTypeRepository
+            ->expects(self::once())
+            ->method('findOneBy')
+            ->with([
+                'people' => $provider,
+                'paymentType' => 'PIX',
+            ])
+            ->willReturn(null);
+
+        $walletService = $this->createMock(\ControleOnline\Service\WalletService::class);
+        $walletService
+            ->expects(self::once())
+            ->method('discoverPaymentType')
+            ->with(
+                $provider,
+                [
+                    'paymentType' => 'PIX',
+                    'frequency' => 'single',
+                    'installments' => 'single',
+                ]
+            )
+            ->willReturn($paymentType);
+        $walletService
+            ->expects(self::never())
+            ->method('discoverWalletPaymentType');
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(PaymentType::class)
+            ->willReturn($paymentTypeRepository);
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'walletService', $walletService);
+
+        $resolvedPaymentType = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99ProviderPaymentType',
+            $provider,
+            [
+                'paymentType' => 'PIX',
+                'aliases' => [],
+                'frequency' => 'single',
+                'installments' => 'single',
+                'paymentCode' => '212',
+            ]
+        );
+
+        self::assertSame($paymentType, $resolvedPaymentType);
+    }
+
     public function testFood99WeeklyDueDateUsesNextWednesdayAfterWeekClose(): void
     {
         $tuesdayOrder = $this->createConfiguredMock(Order::class, [
