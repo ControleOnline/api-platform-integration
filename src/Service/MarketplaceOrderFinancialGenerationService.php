@@ -39,6 +39,7 @@ class MarketplaceOrderFinancialGenerationService
     private const FOOD99_COMMISSION_RATE = 0.089;
     private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
     private const FOOD99_LOGISTICS_COST_RATE = 0.60;
+    private const FOOD99_MIN_LOGISTICS_COST = 4.50;
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -1235,7 +1236,10 @@ class MarketplaceOrderFinancialGenerationService
             ? $this->roundUpMoney($chargeBaseAmount * $paymentProcessingRate)
             : 0.0;
         $logisticsCostAmount = $isPlatformDelivery && $storeChargedDeliveryPrice > 0
-            ? $this->roundUpMoney($storeChargedDeliveryPrice * $logisticsCostRate)
+            ? max(
+                $this->roundUpMoney($storeChargedDeliveryPrice * $logisticsCostRate),
+                self::FOOD99_MIN_LOGISTICS_COST
+            )
             : 0.0;
         $platformChargesAmount = $this->money(
             $commissionDistributionAmount
