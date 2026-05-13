@@ -1214,6 +1214,7 @@ class MarketplaceOrderFinancialGenerationService
                 ?? $financial['delivery_fee']
                 ?? 0
         );
+        $serviceFeeAmount = $this->money($financial['service_fee'] ?? 0);
         $isPaidOnline = $this->toBool($payment['is_paid_online'] ?? false);
         $isPlatformDelivery = $this->toBool($state['is_platform_delivery'] ?? false);
         $commissionRate = max(
