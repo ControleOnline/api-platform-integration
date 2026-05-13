@@ -16,7 +16,7 @@
 - Em `Food99`, o receiver da invoice de repasse/cobranca precisa ser sempre `99 Food`, obtido diretamente do cadastro da marca, sem reaproveitar `iFood` nem estado estatico compartilhado.
 - Em `Food99`, o vencimento da invoice semanal segue o fechamento de segunda a domingo e cai na quarta-feira seguinte.
 - Em `Food99`, pedidos `canceled`/`cancelled` nao devem recriar financeiro; o backfill deve apenas limpar invoices gerenciadas legadas daquele pedido.
-- Em `Food99`, o weekly settlement nao deve considerar `service_fee` do payload bruto; ele fica apenas como dado do snapshot. A calibracao atual vem da reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e comissao efetiva em torno de `8,9%`.
+- Em `Food99`, o weekly settlement deve considerar `service_fee` do payload bruto e as taxas calibradas da integracao. A calibracao atual vem da reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e comissao efetiva em torno de `7,9%`.
 - Em `Food99`, os componentes monetarios calculados da taxa devem usar arredondamento normal em centavos; nao usar `ceil` para inflar commission/processing/logistics em centavos.
 
 ## iFoodService.php
