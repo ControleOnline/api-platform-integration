@@ -133,6 +133,52 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         self::assertSame('2026-05-20', $mondayDueDate->format('Y-m-d'));
     }
 
+    public function testFood99CanceledOrdersAreSkippedFromFinancialGeneration(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $canceledStatus = $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+            'getRealStatus' => 'canceled',
+        ]);
+        $food99Order = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_FOOD99,
+            'getStatus' => $canceledStatus,
+        ]);
+        $nonCanceledOrder = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_FOOD99,
+            'getStatus' => $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+                'getRealStatus' => 'closed',
+            ]),
+        ]);
+        $otherAppOrder = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_IFOOD,
+            'getStatus' => $canceledStatus,
+        ]);
+
+        self::assertTrue(
+            $this->invokePrivateMethod(
+                $service,
+                'shouldSkipFood99FinancialGeneration',
+                $food99Order,
+            ),
+        );
+        self::assertFalse(
+            $this->invokePrivateMethod(
+                $service,
+                'shouldSkipFood99FinancialGeneration',
+                $nonCanceledOrder,
+            ),
+        );
+        self::assertFalse(
+            $this->invokePrivateMethod(
+                $service,
+                'shouldSkipFood99FinancialGeneration',
+                $otherAppOrder,
+            ),
+        );
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);

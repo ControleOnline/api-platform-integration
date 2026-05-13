@@ -54,11 +54,45 @@ class MarketplaceOrderFinancialGenerationService
     public function generate(Order $order): array
     {
         $financialOrder = $this->orderService->resolveFinancialOrder($order);
-        $context = $this->buildContext($financialOrder);
         $connection = $this->entityManager->getConnection();
         $connection->beginTransaction();
 
         try {
+            if ($this->shouldSkipFood99FinancialGeneration($financialOrder)) {
+                $app = Order::APP_FOOD99;
+                $removedInvoices = [];
+
+                $this->assertNoLegacyMarketplaceInvoices($financialOrder, $app);
+                $removedInvoices = $this->purgeManagedMarketplaceInvoices($financialOrder, $app);
+                $this->entityManager->flush();
+                $connection->commit();
+
+                return [
+                    'order_id' => $financialOrder->getId(),
+                    'app' => $app,
+                    'wallet' => self::FOOD99_NAME,
+                    'due_date' => $this->resolveWeeklyDueDate($financialOrder)->format('Y-m-d'),
+                    'removed_invoice_ids' => $removedInvoices,
+                    'invoices' => [],
+                    'summary' => [
+                        'weekly_settlement_amount' => 0.0,
+                        'customer_collection_amount' => 0.0,
+                        'customer_marketplace_payment_amount' => 0.0,
+                        'courier_payment_amount' => 0.0,
+                        'service_fee_amount' => 0.0,
+                        'small_order_fee_amount' => 0.0,
+                        'meal_top_up_fee_amount' => 0.0,
+                        'commission_distribution_amount' => 0.0,
+                        'payment_processing_amount' => 0.0,
+                        'logistics_cost_amount' => 0.0,
+                        'merchant_discount_amount' => 0.0,
+                        'platform_discount_amount' => 0.0,
+                    ],
+                    'warnings' => ['Pedido cancelado; financeiro do marketplace nao foi gerado.'],
+                ];
+            }
+
+            $context = $this->buildContext($financialOrder);
             $this->assertNoLegacyMarketplaceInvoices($financialOrder, $context['app']);
             $removedInvoices = $this->purgeManagedMarketplaceInvoices($financialOrder, $context['app']);
             $this->entityManager->flush();
@@ -246,6 +280,17 @@ class MarketplaceOrderFinancialGenerationService
 
             throw $exception;
         }
+    }
+
+    private function shouldSkipFood99FinancialGeneration(Order $order): bool
+    {
+        if (strtolower(trim((string) $order->getApp())) !== strtolower(Order::APP_FOOD99)) {
+            return false;
+        }
+
+        $realStatus = strtolower(trim((string) $order->getStatus()?->getRealStatus()));
+
+        return in_array($realStatus, ['canceled', 'cancelled'], true);
     }
 
     private function assertNoLegacyMarketplaceInvoices(Order $order, string $app): void
