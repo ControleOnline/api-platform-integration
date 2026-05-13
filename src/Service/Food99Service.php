@@ -83,7 +83,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         self::$app = self::APP_CONTEXT;
         self::$logger = $this->loggerService->getLogger(self::$app);
-        self::$foodPeople = $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
 
     private function buildLogContext(?Integration $integration = null, array $json = [], array $extra = []): array
@@ -3120,6 +3119,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         Status $status,
         Wallet $providerWallet,
         Wallet $food99Wallet,
+        People $food99People,
+        DateTime $dueDate,
         string $purpose,
         array $metadata = []
     ): ?Invoice {
@@ -3131,10 +3132,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $invoice = $this->invoiceService->createInvoice(
             $order,
             $order->getProvider(),
-            self::$foodPeople,
+            $food99People,
             $normalizedAmount,
             $status,
-            new DateTime(),
+            $dueDate,
             $providerWallet,
             $food99Wallet
         );
@@ -3153,6 +3154,38 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         );
 
         return $invoice;
+    }
+
+    private function resolveFood99MarketplacePeople(): People
+    {
+        return $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
+    }
+
+    private function resolveOrderReferenceDate(Order $order): DateTime
+    {
+        $orderDate = $order->getOrderDate();
+
+        if ($orderDate instanceof \DateTimeInterface) {
+            return new DateTime($orderDate->format('Y-m-d'));
+        }
+
+        return new DateTime('now');
+    }
+
+    private function resolveFood99WeeklyDueDate(Order $order): DateTime
+    {
+        $reference = $this->resolveOrderReferenceDate($order);
+        $dueDate = new DateTime($reference->format('Y-m-d'));
+        $weekday = (int) $dueDate->format('N');
+        $daysUntilSunday = 7 - $weekday;
+
+        if ($daysUntilSunday > 0) {
+            $dueDate->modify(sprintf('+%d days', $daysUntilSunday));
+        }
+
+        $dueDate->modify('+3 days');
+
+        return $dueDate;
     }
 
     public function getOrderHomologationSnapshot(Order $order): array
@@ -6937,7 +6970,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     }
 
     /**
-     * Cria invoices para o pedido 99Food seguindo o mesmo padrão do iFood:
+     * Cria invoices para o pedido 99Food seguindo a regra de fechamento semanal:
      * 1. Invoice de recebimento (valor pago pelo cliente)
      * 2. Invoice de taxa da plataforma (diferença entre valor do cliente e repasse ao restaurante)
      * 3. Invoice de taxa de entrega (apenas quando a 99 plataforma realiza a entrega)
@@ -6974,7 +7007,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $shopPaidMoney = $this->normalizeFood99Money($price['shop_paid_money'] ?? null);
 
             $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
-            $food99Wallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
+            $food99People = $this->resolveFood99MarketplacePeople();
+            $food99Wallet = $this->walletService->discoverWallet($food99People, self::$app);
             $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
             $customerPaymentTypeData = $this->resolveFood99InvoicePaymentTypeData(
                 $payType,
@@ -7012,6 +7046,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'pay_method' => $payMethod,
                 'pay_channel' => $payChannel,
             ]);
+
+            $weeklyDueDate = $this->resolveFood99WeeklyDueDate($order);
 
             // 1. Invoice de recebimento: valor pago pelo cliente ao restaurante
             if ($customerTotal > 0) {
@@ -7065,6 +7101,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                         $paidStatus,
                         $providerWallet,
                         $food99Wallet,
+                        $food99People,
+                        $weeklyDueDate,
                         $purpose,
                         [
                             'component_value' => $componentValue,
@@ -7085,9 +7123,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                         $paidStatus,
                         $providerWallet,
                         $food99Wallet,
+                        $food99People,
+                        $weeklyDueDate,
                         'marketplace_fee',
                         [
-                            'component_value' => $remainingPlatformFee,
+                        'component_value' => $remainingPlatformFee,
                             'pay_type' => $payType,
                             'pay_method' => $payMethod,
                             'pay_channel' => $payChannel,
@@ -7105,6 +7145,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                     $paidStatus,
                     $providerWallet,
                     $food99Wallet,
+                    $food99People,
+                    $weeklyDueDate,
                     'delivery_fee',
                     [
                         'component_value' => $deliveryFee,

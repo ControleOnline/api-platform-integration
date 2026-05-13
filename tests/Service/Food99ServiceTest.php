@@ -6,12 +6,16 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\People;
+use ControleOnline\Entity\Invoice;
+use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Queue;
 use ControleOnline\Entity\OrderProductQueue;
+use ControleOnline\Entity\Wallet;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\ExtraDataService;
+use ControleOnline\Service\InvoiceService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
@@ -355,6 +359,124 @@ class Food99ServiceTest extends TestCase
         );
 
         self::assertSame($existingClient, $resolvedClient);
+    }
+
+    public function testResolveFood99MarketplacePeopleIgnoresSharedLegacyFoodPeopleState(): void
+    {
+        $legacyFoodPeople = $this->createConfiguredMock(People::class, [
+            'getId' => 9001,
+        ]);
+        $food99People = $this->createConfiguredMock(People::class, [
+            'getId' => 9900,
+        ]);
+
+        $peopleService = $this->createMock(PeopleService::class);
+        $peopleService
+            ->expects(self::once())
+            ->method('discoveryPeople')
+            ->with('6012920000123', null, null, '99 Food', 'J')
+            ->willReturn($food99People);
+
+        $this->setStaticProperty(DefaultFoodService::class, 'foodPeople', $legacyFoodPeople);
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'peopleService', $peopleService);
+
+        $resolvedPeople = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99MarketplacePeople'
+        );
+
+        self::assertSame($food99People, $resolvedPeople);
+    }
+
+    public function testFood99WeeklyDueDateUsesNextWednesdayAfterWeekClose(): void
+    {
+        $tuesdayOrder = $this->createConfiguredMock(Order::class, [
+            'getOrderDate' => new \DateTime('2026-05-05 20:29:49'),
+        ]);
+        $mondayOrder = $this->createConfiguredMock(Order::class, [
+            'getOrderDate' => new \DateTime('2026-05-11 10:00:00'),
+        ]);
+
+        $tuesdayDueDate = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WeeklyDueDate',
+            $tuesdayOrder
+        );
+        $mondayDueDate = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WeeklyDueDate',
+            $mondayOrder
+        );
+
+        self::assertSame('2026-05-13', $tuesdayDueDate->format('Y-m-d'));
+        self::assertSame('2026-05-20', $mondayDueDate->format('Y-m-d'));
+    }
+
+    public function testFood99PayableInvoiceUsesMarketplacePeopleAndWeeklyDueDate(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 123,
+        ]);
+        $order = $this->createConfiguredMock(Order::class, [
+            'getProvider' => $provider,
+        ]);
+        $paymentType = $this->createMock(PaymentType::class);
+        $status = $this->createMock(Status::class);
+        $providerWallet = $this->createMock(Wallet::class);
+        $food99Wallet = $this->createMock(Wallet::class);
+        $food99People = $this->createConfiguredMock(People::class, [
+            'getId' => 9900,
+        ]);
+        $dueDate = new \DateTime('2026-05-13');
+        $invoice = new Invoice();
+
+        $invoiceService = $this->createMock(InvoiceService::class);
+        $invoiceService
+            ->expects(self::once())
+            ->method('createInvoice')
+            ->with(
+                $order,
+                $provider,
+                $food99People,
+                12.34,
+                $status,
+                $dueDate,
+                $providerWallet,
+                $food99Wallet
+            )
+            ->willReturn($invoice);
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'invoiceService', $invoiceService);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->with($invoice);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('flush');
+
+        $result = $this->invokePrivateMethod(
+            $this->service,
+            'createFood99PayableInvoice',
+            $order,
+            $paymentType,
+            12.34,
+            $status,
+            $providerWallet,
+            $food99Wallet,
+            $food99People,
+            $dueDate,
+            'delivery_fee',
+            ['component_value' => 12.34]
+        );
+
+        self::assertSame($invoice, $result);
+        self::assertSame($status, $invoice->getStatus());
+        self::assertSame($providerWallet, $invoice->getSourceWallet());
+        self::assertSame($food99Wallet, $invoice->getDestinationWallet());
+        self::assertSame('2026-05-13', $invoice->getDueDate()->format('Y-m-d'));
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

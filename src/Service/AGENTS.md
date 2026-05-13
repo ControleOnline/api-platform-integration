@@ -12,6 +12,8 @@
 - O pagamento do motoboy em pedidos de entrega pela plataforma deve ser modelado com `payer = 99 Food` e `receiver = motoboy`, criando a pessoa do entregador no sistema quando houver identificacao suficiente.
 - Descontos subsidiados pela loja e pela plataforma que ja chegam compensados no repasse devem aparecer como ajustes internos do marketplace, com `payer = 99 Food` e `receiver = 99 Food`, sem criar conta separada da loja por esse desconto.
 - O valor que a loja recebe do marketplace deve entrar na invoice semanal unica, com vencimento na quarta-feira. Taxas cobradas da loja ficam em invoices especificas; descontos ja liquidados dentro do repasse seguem a regra de ajuste interno acima.
+- Em `Food99`, o receiver da invoice de repasse/cobranca precisa ser sempre `99 Food`, obtido diretamente do cadastro da marca, sem reaproveitar `iFood` nem estado estatico compartilhado.
+- Em `Food99`, o vencimento da invoice semanal segue o fechamento de segunda a domingo e cai na quarta-feira seguinte.
 
 ## iFoodService.php
 - A carteira operacional da integracao deve ser `iFood`.
