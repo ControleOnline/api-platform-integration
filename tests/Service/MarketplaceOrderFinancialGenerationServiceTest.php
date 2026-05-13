@@ -100,12 +100,44 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         );
 
         self::assertSame(75.04, $derivedFinancials['charge_base_amount']);
-        self::assertSame(5.93, $derivedFinancials['commission_distribution_amount']);
+        self::assertSame(6.68, $derivedFinancials['commission_distribution_amount']);
         self::assertSame(2.40, $derivedFinancials['payment_processing_amount']);
         self::assertSame(2.03, $derivedFinancials['service_fee_amount']);
         self::assertSame(5.99, $derivedFinancials['logistics_cost_amount']);
-        self::assertSame(16.35, $derivedFinancials['platform_charges_amount']);
-        self::assertSame(48.79, $derivedFinancials['weekly_settlement_amount']);
+        self::assertSame(15.07, $derivedFinancials['platform_charges_amount']);
+        self::assertSame(50.07, $derivedFinancials['weekly_settlement_amount']);
+    }
+
+    public function testFood99WeeklySettlementIgnoresServiceFeeInPortalWitnessOrder(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $derivedFinancials = $this->invokePrivateMethod(
+            $service,
+            'resolveFood99DerivedFinancials',
+            [
+                'items_total' => 10.00,
+                'store_discount_total' => 0.00,
+                'store_non_delivery_discount_total' => 0.00,
+                'store_delivery_discount_total' => 0.00,
+                'service_fee' => 0.99,
+                'store_charged_delivery_price' => 3.99,
+            ],
+            [
+                'is_paid_online' => true,
+            ],
+            [
+                'is_platform_delivery' => true,
+            ],
+        );
+
+        self::assertSame(0.89, $derivedFinancials['commission_distribution_amount']);
+        self::assertSame(0.32, $derivedFinancials['payment_processing_amount']);
+        self::assertSame(0.99, $derivedFinancials['service_fee_amount']);
+        self::assertSame(4.50, $derivedFinancials['logistics_cost_amount']);
+        self::assertSame(5.71, $derivedFinancials['platform_charges_amount']);
+        self::assertSame(4.29, $derivedFinancials['weekly_settlement_amount']);
     }
 
     public function testWeeklyDueDateUsesNextWednesdayAfterWeekClose(): void
