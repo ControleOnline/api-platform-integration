@@ -22,7 +22,7 @@
 - Em `Food99`, pedidos de segunda a domingo entram na mesma invoice semanal, com vencimento na quarta-feira seguinte ao fechamento.
 - Em `Food99`, pedidos novos do webhook `orderNew` devem gerar esse financeiro automaticamente no pipeline de integracao. O endpoint manual de invoices fica como backfill para pedidos legados.
 - Em `Food99`, pedidos com status terminal `canceled`/`cancelled` devem ser tratados como sem geracao financeira, mas a limpeza das invoices gerenciadas do proprio pedido continua obrigatoria.
-- Em `Food99`, o repasse semanal deve abater `service_fee` do payload bruto e usar a taxa logistica calibrada pela integracao antes de fechar a invoice semanal.
+- Em `Food99`, o repasse semanal deve abater `service_fee` do payload bruto e usar a taxa logistica calibrada pela integracao antes de fechar a invoice semanal. A calibracao vigente e `commission=7.9%`, `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50`.
 - Em `Food99`, os componentes de fee calculados pela integracao devem ser arredondados normalmente em centavos; nao usar `ceil` para as taxas calculadas.
 
 ## iFood - negociacao e cancelamento

@@ -36,10 +36,10 @@ class MarketplaceOrderFinancialGenerationService
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
     private const FOOD99_DOCUMENT = '6012920000123';
     private const FOOD99_NAME = '99 Food';
-    private const FOOD99_COMMISSION_RATE = 0.089;
+    private const FOOD99_COMMISSION_RATE = 0.079;
     private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
-    private const FOOD99_LOGISTICS_COST_RATE = 0.8895;
-    private const FOOD99_MIN_LOGISTICS_COST = 4.46;
+    private const FOOD99_LOGISTICS_COST_RATE = 0.60;
+    private const FOOD99_MIN_LOGISTICS_COST = 4.50;
 
     public function __construct(
         private EntityManagerInterface $entityManager,
