@@ -3,6 +3,10 @@
 
 ## Food99Service.php
 - A carteira operacional da integracao deve ser `99 Food`, mesmo quando o app canonico continuar sendo `Food99`.
+- O vinculo do cliente com o 99 deve usar apenas `receive_address.uid` como identificador remoto oficial.
+- Nao tentar recuperar `Food99.code` por telefone, e-mail, nome parcial ou outros heuristics.
+- Se o webhook legarado nao trouxer `uid`, o service pode tentar `nome + endereco completo` apenas para reconciliacao exata e unica de registros antigos.
+- Quando nao houver `uid` nem match exato de legado, o service deve seguir sem código e nao criar identificador falso.
 - Pedidos novos do evento `orderNew` devem gerar o financeiro automaticamente no proprio pipeline de integracao. O endpoint manual de invoices serve apenas para backfill/legado.
 - Quando o pedido for pago no app, precisa existir uma invoice explicita do fluxo `cliente -> 99 Food`.
 - O pagamento do motoboy em pedidos de entrega pela plataforma deve ser modelado com `payer = 99 Food` e `receiver = motoboy`, criando a pessoa do entregador no sistema quando houver identificacao suficiente.

@@ -10,6 +10,9 @@
 - `integration` deve traduzir e orquestrar comunicacao externa, nao se tornar dono da regra interna.
 - Integracoes de marketplace devem escutar o fluxo principal do pedido via `onEntityChanged`/`order_action`, sem criar endpoints ou atalhos paralelos para trocar status.
 - Use o nome canonico `Food99` ao identificar a integracao no backend.
+- Em `Food99`, o codigo remoto oficial do cliente vem somente de `receive_address.uid`; nao usar telefone, e-mail ou outros campos para inventar vinculo.
+- Registros legados sem `uid` podem ser reconciliados por `nome + endereco completo` somente quando a correspondencia for exata e unica no banco.
+- Se nao houver `uid` nem correspondencia exata de legado, o sistema deve criar ou manter o cliente sem codigo, sem tentar derivar outro identificador.
 - Geracao financeira de marketplace deve explicitar `payer`, `receiver`, `wallet`, `paymentType` e `description` em cada invoice gerada a partir do resumo da integracao.
 - Pagamento online do cliente ao marketplace deve virar invoice explicita com `payer = cliente` e `receiver = marketplace`.
 - Ajustes e descontos que ja nascem compensados dentro do repasse do marketplace, sem cobranca separada para a loja, devem ser modelados como fluxo interno do marketplace com `payer = marketplace` e `receiver = marketplace`.
