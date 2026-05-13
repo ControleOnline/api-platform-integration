@@ -1244,6 +1244,7 @@ class MarketplaceOrderFinancialGenerationService
         $platformChargesAmount = $this->money(
             $commissionDistributionAmount
                 + $paymentProcessingAmount
+                + $serviceFeeAmount
                 + $logisticsCostAmount
         );
         $weeklySettlementAmount = $this->money(
@@ -1254,6 +1255,7 @@ class MarketplaceOrderFinancialGenerationService
             'charge_base_amount' => $chargeBaseAmount,
             'commission_distribution_amount' => $commissionDistributionAmount,
             'payment_processing_amount' => $paymentProcessingAmount,
+            'service_fee_amount' => $serviceFeeAmount,
             'logistics_cost_amount' => $logisticsCostAmount,
             'platform_charges_amount' => $platformChargesAmount,
             'weekly_settlement_amount' => $weeklySettlementAmount,
