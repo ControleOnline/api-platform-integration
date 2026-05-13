@@ -231,6 +231,31 @@ class Food99ServiceTest extends TestCase
         );
     }
 
+    public function testFood99WebhookOnlineStateUsesBizStatusAsPrimarySignal(): void
+    {
+        $resolvedState = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WebhookOnlineState',
+            [
+                'biz_status' => 1,
+                'online' => false,
+            ]
+        );
+
+        self::assertTrue($resolvedState);
+
+        $resolvedState = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WebhookOnlineState',
+            [
+                'biz_status' => 2,
+                'online' => true,
+            ]
+        );
+
+        self::assertFalse($resolvedState);
+    }
+
     #[DataProvider('deliveryStatusNumericMappingProvider')]
     public function testNumericDeliveryStatusMapsToExpectedRemoteState(string $deliveryStatus, string $expectedRemoteState): void
     {

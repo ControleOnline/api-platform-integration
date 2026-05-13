@@ -4653,7 +4653,55 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return;
         }
 
+        $previousState = $this->getStoredIntegrationState($provider);
+        $previousOnline = (bool) ($previousState['online'] ?? false);
+        $currentOnline = $this->resolveFood99WebhookOnlineState($data);
+
         $this->persistProviderStoreState($provider, $data);
+
+        if ($currentOnline === null) {
+            return;
+        }
+
+        if ($previousOnline === $currentOnline) {
+            return;
+        }
+
+        $providerName = trim((string) ($provider->getName() ?? ''));
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, [[
+            'store' => 'marketplace',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]]);
+    }
+
+    private function resolveFood99WebhookOnlineState(array $data): ?bool
+    {
+        if (array_key_exists('biz_status', $data) && is_numeric($data['biz_status'])) {
+            return (int) $data['biz_status'] === 1;
+        }
+
+        if (array_key_exists('online', $data)) {
+            return filter_var($data['online'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+        }
+
+        return null;
     }
 
     public function listProvidersWithFood99Binding(int $limit = 100): array

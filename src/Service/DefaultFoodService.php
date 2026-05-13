@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Service\AddressService;
+use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -66,6 +67,39 @@ class DefaultFoodService
                 'app' => $order->getApp(),
                 'error' => $exception->getMessage(),
             ]);
+        }
+    }
+
+    protected function broadcastCompanyWebsocketEvents(People $company, array $events): void
+    {
+        $deviceConfigs = $this->entityManager->getRepository(DeviceConfig::class)->findBy([
+            'people' => $company,
+        ]);
+
+        if (empty($deviceConfigs)) {
+            return;
+        }
+
+        $payload = json_encode($events, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            return;
+        }
+
+        $sentDevices = [];
+        foreach ($deviceConfigs as $deviceConfig) {
+            if (!$deviceConfig instanceof DeviceConfig) {
+                continue;
+            }
+
+            $device = $deviceConfig->getDevice();
+            $deviceId = $device->getId();
+
+            if (isset($sentDevices[$deviceId])) {
+                continue;
+            }
+
+            $sentDevices[$deviceId] = true;
+            $this->websocketClient->push($device, $payload);
         }
     }
 

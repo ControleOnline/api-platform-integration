@@ -62,6 +62,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
+        if ($this->isStoreStatusWebhookEvent($event, $eventCode)) {
+            $this->syncStoreStatusWebhook($event, $integration);
+            return null;
+        }
+
         $orderId = $this->normalizeString($event['orderId'] ?? null);
         if ($orderId === '') {
             self::$logger->warning('iFood event ignored because orderId is missing', $this->buildLogContext($integration, $event, [
@@ -4070,6 +4075,191 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             self::$logger->error('iFood getStoreStatus failed', ['error' => $e->getMessage()]);
             return ['errno' => 1, 'errmsg' => 'Falha ao consultar status da loja iFood', 'data' => null];
         }
+    }
+
+    private function isStoreStatusWebhookEvent(array $event, string $eventCode): bool
+    {
+        $merchantId = $this->resolveWebhookMerchantId($event);
+        if ($merchantId === '') {
+            return false;
+        }
+
+        if ($this->normalizeString($event['orderId'] ?? null) !== '') {
+            return false;
+        }
+
+        $status = $this->resolveWebhookMerchantStatus($event);
+        if ($status !== null) {
+            return true;
+        }
+
+        $normalizedEventCode = strtoupper($this->normalizeString($eventCode));
+        return in_array($normalizedEventCode, [
+            'STORE_STATUS_CHANGED',
+            'MERCHANT_STATUS_CHANGED',
+            'MERCHANT_STATUS_UPDATE',
+            'MERCHANT_ONLINE',
+            'MERCHANT_OFFLINE',
+            'AVAILABLE',
+            'UNAVAILABLE',
+            'ONLINE',
+            'OFFLINE',
+            'OPEN',
+            'CLOSED',
+            'INACTIVE',
+        ], true);
+    }
+
+    private function resolveWebhookMerchantId(array $event): string
+    {
+        return $this->normalizeString(
+            $event['merchantId']
+                ?? $event['merchant_id']
+                ?? $event['merchantID']
+                ?? ($event['merchant']['id'] ?? null)
+                ?? ($event['merchant']['merchantId'] ?? null)
+                ?? ($event['merchant']['merchant_id'] ?? null)
+                ?? null
+        );
+    }
+
+    private function resolveWebhookMerchantStatus(array $event): ?string
+    {
+        $candidates = [
+            $event['merchantStatus'] ?? null,
+            $event['merchant_status'] ?? null,
+            $event['status'] ?? null,
+            $event['state'] ?? null,
+            $event['merchant']['status'] ?? null,
+            $event['merchant']['merchantStatus'] ?? null,
+            $event['merchant']['merchant_status'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $normalized = strtoupper($this->normalizeString($candidate));
+            if ($normalized === '') {
+                continue;
+            }
+
+            if (in_array($normalized, ['AVAILABLE', 'UNAVAILABLE', 'ONLINE', 'OFFLINE', 'OPEN', 'CLOSED', 'INACTIVE'], true)) {
+                return $normalized;
+            }
+
+            if (is_bool($candidate)) {
+                return $candidate ? 'AVAILABLE' : 'UNAVAILABLE';
+            }
+
+            if (is_numeric($candidate)) {
+                return (int) $candidate === 1 ? 'AVAILABLE' : 'UNAVAILABLE';
+            }
+        }
+
+        $eventCode = strtoupper($this->normalizeString(
+            $event['fullCode']
+                ?? $event['code']
+                ?? $event['type']
+                ?? $event['eventType']
+                ?? null
+        ));
+
+        if (in_array($eventCode, ['AVAILABLE', 'ONLINE', 'OPEN'], true)) {
+            return 'AVAILABLE';
+        }
+
+        if (in_array($eventCode, ['UNAVAILABLE', 'OFFLINE', 'CLOSED', 'INACTIVE'], true)) {
+            return 'UNAVAILABLE';
+        }
+
+        if ($eventCode !== '' && str_contains($eventCode, 'OPEN')) {
+            return 'AVAILABLE';
+        }
+
+        if ($eventCode !== '' && str_contains($eventCode, 'CLOSE')) {
+            return 'UNAVAILABLE';
+        }
+
+        return null;
+    }
+
+    private function syncStoreStatusWebhook(array $event, ?Integration $integration = null): void
+    {
+        $merchantId = $this->resolveWebhookMerchantId($event);
+        if ($merchantId === '') {
+            self::$logger->warning('iFood store status webhook ignored because merchantId is missing', [
+                'integration_id' => $integration?->getId(),
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
+        if (!$provider instanceof People && ctype_digit($merchantId)) {
+            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
+        }
+
+        if (!$provider instanceof People) {
+            self::$logger->warning('iFood store status webhook ignored because provider was not found', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $merchantStatus = $this->resolveWebhookMerchantStatus($event);
+        if ($merchantStatus === null) {
+            self::$logger->warning('iFood store status webhook ignored because status could not be resolved', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $previousState = $this->getStoredIntegrationState($provider);
+        $previousOnline = (bool) ($previousState['online'] ?? false);
+        $currentOnline = in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true);
+
+        $this->persistProviderIntegrationState($provider, [
+            'merchant_status' => $merchantStatus,
+            'remote_connected' => '1',
+            'online' => $currentOnline ? '1' : '0',
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+
+        if ($previousOnline === $currentOnline) {
+            return;
+        }
+
+        $providerName = '';
+        if (method_exists($provider, 'getName')) {
+            $providerName = trim((string) $provider->getName());
+        }
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, [[
+            'store' => 'marketplace',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'merchantId' => $merchantId,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'merchantStatus' => $merchantStatus,
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]]);
     }
 
     /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).
