@@ -113,25 +113,18 @@ class Food99ServiceTest extends TestCase
         );
     }
 
-    public function testArrivingRemoteStateAppliesPendingWayStatus(): void
+    public function testArrivingRemoteStateDoesNotChangeLocalStatus(): void
     {
         $currentStatus = $this->createConfiguredMock(Status::class, [
             'getRealStatus' => 'open',
         ]);
-        $nextStatus = $this->createMock(Status::class);
         $order = $this->createMock(Order::class);
 
         $order->method('getStatus')->willReturn($currentStatus);
-        $order->expects(self::once())->method('setStatus')->with($nextStatus);
-
-        $this->statusService
-            ->expects(self::once())
-            ->method('discoveryStatus')
-            ->with('pending', 'way', 'order')
-            ->willReturn($nextStatus);
+        $order->expects(self::never())->method('setStatus');
 
         $this->entityManager
-            ->expects(self::once())
+            ->expects(self::never())
             ->method('persist')
             ->with($order);
 
@@ -323,27 +316,18 @@ class Food99ServiceTest extends TestCase
         self::assertSame($productGroup, $resolvedGroup);
     }
 
-    public function testResolveFood99RemoteClientIdFindsNestedCustomerClientId(): void
+    public function testResolveFood99RemoteClientIdUsesReceiveAddressUidOnly(): void
     {
         $remoteClientId = $this->invokePrivateMethod(
             $this->service,
             'resolveFood99RemoteClientId',
-            ['name' => 'Cliente'],
-            [
-                'data' => [
-                    'order_info' => [
-                        'customer' => [
-                            'client_id' => 'client-123',
-                        ],
-                    ],
-                ],
-            ]
+            ['name' => 'Cliente', 'uid' => 'client-123']
         );
 
         self::assertSame('client-123', $remoteClientId);
     }
 
-    public function testDiscoveryClientReusesExistingPeopleByNestedClientId(): void
+    public function testDiscoveryClientReusesExistingPeopleByReceiveAddressUid(): void
     {
         $existingClient = $this->createConfiguredMock(People::class, [
             'getId' => 1234,
@@ -367,16 +351,7 @@ class Food99ServiceTest extends TestCase
         $resolvedClient = $this->invokePrivateMethod(
             $this->service,
             'discoveryClient',
-            ['name' => 'Cliente', 'phone' => '11999999999'],
-            [
-                'data' => [
-                    'order_info' => [
-                        'customer' => [
-                            'client_id' => 'client-123',
-                        ],
-                    ],
-                ],
-            ]
+            ['name' => 'Cliente', 'uid' => 'client-123']
         );
 
         self::assertSame($existingClient, $resolvedClient);

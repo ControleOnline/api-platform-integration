@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -2174,9 +2175,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $fallbackName = $this->resolveFood99CustomerName($address);
         $clientCode = $this->resolveFood99RemoteClientId($address, $payload);
-        $phone = $this->resolveFood99ClientPhone($address);
 
-        self::$logger->warning('Food99 order received without a mapped customer; using fallback customer resolution', [
+        if ($fallbackName !== '') {
+            $client = $this->findFood99ClientByAddressAndName($address, $fallbackName);
+            if ($client instanceof People) {
+                self::$logger->info('Food99 customer matched by exact name and address after missing remote code', [
+                    'order_id' => $orderId,
+                    'client_id' => $client->getId(),
+                    'client_code' => $clientCode,
+                    'address_keys' => array_keys($address),
+                ]);
+
+                $this->syncFood99ClientData($client, $provider, $address, $clientCode);
+                $this->peopleService->discoveryLink($provider, $client, 'client');
+
+                return $client;
+            }
+        }
+
+        self::$logger->warning('Food99 order received without an exact mapped customer code; creating a fresh customer record after exact name/address lookup failed', [
             'order_id' => $orderId,
             'client_code' => $clientCode,
             'address_keys' => array_keys($address),
@@ -2185,8 +2202,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $client = $this->peopleService->discoveryPeople(
             null,
             null,
-            $phone,
-            $fallbackName,
+            [],
+            $fallbackName !== '' ? $fallbackName : 'Cliente Food99',
             'F'
         );
 
@@ -2603,27 +2620,10 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function resolveFood99RemoteClientId(array $address, array $payload = []): string
     {
-        foreach ($this->buildFood99ClientLookupPayloads($address, $payload) as $candidatePayload) {
-            $clientId = $this->searchPayloadValueByKeys($candidatePayload, [
-                'uid',
-                'id',
-                'customer_id',
-                'customerId',
-                'client_id',
-                'clientId',
-                'customer_uid',
-                'customerUid',
-                'client_uid',
-                'clientUid',
-                'user_id',
-                'userId',
-                'code',
-            ]);
-
-            $normalizedClientId = $this->normalizeIncomingFood99Value($clientId);
-            if ($normalizedClientId !== '' && $normalizedClientId !== '0') {
-                return $normalizedClientId;
-            }
+        $clientId = $this->searchPayloadValueByKeys($address, ['uid']);
+        $normalizedClientId = $this->normalizeIncomingFood99Value($clientId);
+        if ($normalizedClientId !== '' && $normalizedClientId !== '0') {
+            return $normalizedClientId;
         }
 
         return '';
@@ -7302,44 +7302,86 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function discoveryClient(array $address, array $payload = [], ?People $provider = null): ?People
     {
-        $resolvedName = $this->resolveFood99CustomerName($address, '');
         $remoteClientId = $this->resolveFood99RemoteClientId($address, $payload);
 
-        if ($remoteClientId !== '') {
-            $client = $this->extraDataService->getEntityByExtraData(
-                self::APP_CONTEXT,
-                'code',
-                $remoteClientId,
-                People::class
-            );
-
-            if ($client instanceof People) {
-                return $provider instanceof People
-                    ? $this->syncFood99ClientData($client, $provider, $address, $remoteClientId)
-                    : $client;
-            }
-        }
-
-        $phone = $this->resolveFood99ClientPhone($address);
-        if (empty($phone) && $resolvedName === '') {
+        if ($remoteClientId === '') {
             return null;
         }
 
-        $client = $this->peopleService->discoveryPeople(
-            null,
-            null,
-            $phone,
-            $resolvedName !== '' ? $resolvedName : 'Cliente Food99',
-            'F'
+        $client = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $remoteClientId,
+            People::class
         );
 
-        if (!$client instanceof People) {
+        if ($client instanceof People) {
+            return $provider instanceof People
+                ? $this->syncFood99ClientData($client, $provider, $address, $remoteClientId)
+                : $client;
+        }
+
+        return null;
+    }
+
+    private function findFood99ClientByAddressAndName(array $address, string $resolvedName): ?People
+    {
+        $normalizedName = strtolower(trim($resolvedName));
+        if ($normalizedName === '') {
             return null;
         }
 
-        return $provider instanceof People
-            ? $this->syncFood99ClientData($client, $provider, $address, $remoteClientId)
-            : $client;
+        $streetNumber = $address['street_number'] ?? $address['house_number'] ?? null;
+        $streetNumber = is_numeric($streetNumber) ? (int) $streetNumber : null;
+
+        $city = trim((string) ($address['city'] ?? ''));
+        $state = trim((string) ($address['state'] ?? ''));
+        $countryCode = strtoupper(trim((string) ($address['country_code'] ?? '')));
+        $district = trim((string) ($address['district'] ?? ''));
+        $street = trim((string) ($address['street_name'] ?? ''));
+
+        if ($city === '' || $state === '' || $countryCode === '' || $district === '' || $street === '' || $streetNumber === null) {
+            return null;
+        }
+
+        $matchedAddresses = $this->entityManager->getRepository(Address::class)
+            ->createQueryBuilder('a')
+            ->innerJoin('a.people', 'p')
+            ->innerJoin('a.street', 's')
+            ->innerJoin('s.district', 'd')
+            ->innerJoin('d.city', 'c')
+            ->innerJoin('c.state', 'e')
+            ->innerJoin('e.country', 'u')
+            ->andWhere('LOWER(TRIM(p.name)) = :name')
+            ->andWhere('u.countrycode = :countryCode')
+            ->andWhere('(e.uf = :state OR e.state = :state)')
+            ->andWhere('c.city = :city')
+            ->andWhere('d.district = :district')
+            ->andWhere('s.street = :street')
+            ->andWhere('a.number = :number')
+            ->setParameter('name', $normalizedName)
+            ->setParameter('countryCode', $countryCode)
+            ->setParameter('state', $state)
+            ->setParameter('city', $city)
+            ->setParameter('district', $district)
+            ->setParameter('street', $street)
+            ->setParameter('number', $streetNumber)
+            ->getQuery()
+            ->getResult();
+
+        if (!is_array($matchedAddresses) || empty($matchedAddresses)) {
+            return null;
+        }
+
+        foreach ($matchedAddresses as $matchedAddress) {
+            if (!$matchedAddress instanceof Address || !$matchedAddress->getPeople() instanceof People) {
+                continue;
+            }
+
+            return $matchedAddress->getPeople();
+        }
+
+        return null;
     }
 
     private function addAddress(Order $order, array $address)
