@@ -20,6 +20,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 
 class DefaultFoodService
@@ -50,7 +51,7 @@ class DefaultFoodService
         protected ProductGroupService $productGroupService,
         protected IntegrationService $integrationService,
         protected WhatsAppService $whatsAppService,
-        protected MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService
+        protected ContainerInterface $container
     ) {}
 
 
@@ -111,7 +112,9 @@ class DefaultFoodService
         string $app,
         ?DateTime $referenceDate = null
     ): array {
-        $summary = $this->marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
+        /** @var MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService */
+        $marketplaceOrderFinancialGenerationService = $this->container->get(MarketplaceOrderFinancialGenerationService::class);
+        $summary = $marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
             $company,
             $app,
             $referenceDate
