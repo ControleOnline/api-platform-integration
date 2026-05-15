@@ -28,6 +28,7 @@ class UberService
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerService $loggerService,
         private readonly RequestPayloadService $requestPayloadService,
+        private readonly ConfigService $configService,
     ) {
         self::$logger = $this->loggerService->getLogger(self::APP_CONTEXT);
     }
@@ -118,7 +119,7 @@ class UberService
         }
 
         $pickupLocation = $this->buildLocationPayload($pickupAddress);
-        $pickupStore = $this->resolvePickupStore($pickupLocation, $uberState);
+        $pickupStore = $this->resolvePickupStore($pickupLocation, $uberState, $provider);
         if (isset($pickupStore['errno']) && (int) $pickupStore['errno'] !== 0) {
             return $pickupStore;
         }
@@ -152,7 +153,8 @@ class UberService
             $pickupStoreId,
             $dropoffPayload,
             $pickupInstructions,
-            $orderSummary
+            $orderSummary,
+            $provider
         );
         if (($estimateResponse['status'] ?? 0) < 200 || ($estimateResponse['status'] ?? 0) >= 300) {
             return [
@@ -187,7 +189,8 @@ class UberService
             $dropoffInstructions,
             $dropoffContact,
             $items,
-            $orderSummary
+            $orderSummary,
+            $provider
         );
         if (($deliveryResponse['status'] ?? 0) < 200 || ($deliveryResponse['status'] ?? 0) >= 300) {
             return [
@@ -309,9 +312,9 @@ class UberService
         return $address instanceof Address ? $address : null;
     }
 
-    private function resolvePickupStore(?array $pickupLocation, array $uberState): array
+    private function resolvePickupStore(?array $pickupLocation, array $uberState, ?People $provider = null): array
     {
-        $configuredStoreId = $this->resolveConfiguredStoreId();
+        $configuredStoreId = $this->resolveConfiguredStoreId($provider);
         if ($configuredStoreId !== '') {
             return [
                 'store_id' => $configuredStoreId,
@@ -338,7 +341,7 @@ class UberService
             ];
         }
 
-        $response = $this->requestDeliverableStores($pickupLocation);
+        $response = $this->requestDeliverableStores($pickupLocation, $provider);
         if (($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300) {
             return [
                 'errno' => $response['status'] ?? 500,
@@ -374,9 +377,9 @@ class UberService
         ];
     }
 
-    private function requestDeliverableStores(array $pickupLocation): array
+    private function requestDeliverableStores(array $pickupLocation, ?People $provider = null): array
     {
-        $token = $this->getAccessToken();
+        $token = $this->getAccessToken($provider);
         if ($token === null) {
             return [
                 'status' => 500,
@@ -428,9 +431,10 @@ class UberService
         string $storeId,
         array $dropoffAddress,
         ?string $pickupInstructions = null,
-        ?array $orderSummary = null
+        ?array $orderSummary = null,
+        ?People $provider = null
     ): array {
-        $token = $this->getAccessToken();
+        $token = $this->getAccessToken($provider);
         if ($token === null) {
             return [
                 'status' => 500,
@@ -489,9 +493,10 @@ class UberService
         ?string $dropoffInstructions,
         array $dropoffContact,
         array $items,
-        array $orderSummary
+        array $orderSummary,
+        ?People $provider = null
     ): array {
-        $token = $this->getAccessToken();
+        $token = $this->getAccessToken($provider);
         if ($token === null) {
             return [
                 'status' => 500,
@@ -552,10 +557,10 @@ class UberService
         }
     }
 
-    private function getAccessToken(): ?string
+    private function getAccessToken(?People $provider = null): ?string
     {
-        $clientId = $this->resolveClientId();
-        $clientSecret = $this->resolveClientSecret();
+        $clientId = $this->resolveClientId($provider);
+        $clientSecret = $this->resolveClientSecret($provider);
 
         if ($clientId === '' || $clientSecret === '') {
             return null;
@@ -611,43 +616,58 @@ class UberService
         }
     }
 
-    private function resolveClientId(): string
+    private function resolveClientId(?People $provider = null): string
     {
-        return trim((string) (
-            $_ENV['UBER_CLIENT_ID']
-            ?? $_SERVER['UBER_CLIENT_ID']
-            ?? getenv('UBER_CLIENT_ID')
-            ?? $_ENV['OAUTH_UBER_APP_ID']
-            ?? $_SERVER['OAUTH_UBER_APP_ID']
-            ?? getenv('OAUTH_UBER_APP_ID')
-            ?? ''
-        ));
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_UBER_APP_ID'],
+            ['UBER_CLIENT_ID', 'OAUTH_UBER_APP_ID']
+        );
     }
 
-    private function resolveClientSecret(): string
+    private function resolveClientSecret(?People $provider = null): string
     {
-        return trim((string) (
-            $_ENV['UBER_CLIENT_SECRET']
-            ?? $_SERVER['UBER_CLIENT_SECRET']
-            ?? getenv('UBER_CLIENT_SECRET')
-            ?? $_ENV['OAUTH_UBER_CLIENT_SECRET']
-            ?? $_SERVER['OAUTH_UBER_CLIENT_SECRET']
-            ?? getenv('OAUTH_UBER_CLIENT_SECRET')
-            ?? ''
-        ));
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_UBER_CLIENT_SECRET'],
+            ['UBER_CLIENT_SECRET', 'OAUTH_UBER_CLIENT_SECRET']
+        );
     }
 
-    private function resolveConfiguredStoreId(): string
+    private function resolveConfiguredStoreId(?People $provider = null): string
     {
-        return trim((string) (
-            $_ENV['UBER_STORE_ID']
-            ?? $_SERVER['UBER_STORE_ID']
-            ?? getenv('UBER_STORE_ID')
-            ?? $_ENV['OAUTH_UBER_STORE_ID']
-            ?? $_SERVER['OAUTH_UBER_STORE_ID']
-            ?? getenv('OAUTH_UBER_STORE_ID')
-            ?? ''
-        ));
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_UBER_STORE_ID'],
+            ['UBER_STORE_ID', 'OAUTH_UBER_STORE_ID']
+        );
+    }
+
+    private function resolveConfiguredValue(?People $provider, array $configKeys, array $environmentKeys): string
+    {
+        if ($provider instanceof People) {
+            foreach ($configKeys as $configKey) {
+                $value = trim((string) ($this->configService->getConfig($provider, $configKey) ?? ''));
+                if ($value !== '') {
+                    return $value;
+                }
+            }
+        }
+
+        foreach ($environmentKeys as $environmentKey) {
+            $value = trim((string) (
+                $_ENV[$environmentKey]
+                ?? $_SERVER[$environmentKey]
+                ?? getenv($environmentKey)
+                ?? ''
+            ));
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
     }
 
     private function resolvePickupAddressLocation(Address $address): ?array

@@ -5,6 +5,7 @@ namespace ControleOnline\Controller\Food99;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\CompanyIntegrationStatusService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\LoggerService;
@@ -30,6 +31,7 @@ class IntegrationController extends AbstractController
         private PeopleService $peopleService,
         private Food99Service $food99Service,
         private iFoodService $iFoodService,
+        private CompanyIntegrationStatusService $companyIntegrationStatusService,
         private RequestPayloadService $requestPayloadService,
     ) {
         self::$logger = $loggerService->getLogger('Food99');
@@ -1170,6 +1172,7 @@ class IntegrationController extends AbstractController
         $products = $this->food99Service->listSelectableMenuProducts($provider);
         $storedState = $this->food99Service->getStoredIntegrationState($provider);
         $ifoodState = $this->iFoodService->getStoredIntegrationState($provider);
+        $companyIntegrations = $this->companyIntegrationStatusService->listCompanyIntegrations($provider);
         $publishedProductCount = count(array_filter(
             $products['products'] ?? [],
             static fn(array $product) => !empty($product['food99_published'])
@@ -1232,6 +1235,7 @@ class IntegrationController extends AbstractController
                     ] : null,
                     'store_error' => null,
                 ],
+                ...$companyIntegrations,
             ],
         ]);
     }
