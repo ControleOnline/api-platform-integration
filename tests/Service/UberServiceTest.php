@@ -49,67 +49,56 @@ class UberServiceTest extends TestCase
         self::assertSame(-46.63, $payload['location']['longitude']);
     }
 
-    public function testResolveUberCredentialsPreferCompanyConfigOverEnvironmentFallback(): void
+    public function testResolveUberCredentialsUseEnvironmentValues(): void
     {
         $provider = $this->createMock(People::class);
         $service = $this->createService(
             new MockHttpClient(),
             $this->createConfigService([
-                'OAUTH_UBER_APP_ID' => 'company-app-id',
-                'OAUTH_UBER_CLIENT_SECRET' => 'company-secret',
                 'OAUTH_UBER_STORE_ID' => 'company-store-id',
             ])
         );
 
         $previousEnv = $this->setEnvironmentValues([
-            'UBER_CLIENT_ID' => 'env-client-id',
             'OAUTH_UBER_APP_ID' => 'env-app-id',
-            'UBER_CLIENT_SECRET' => 'env-client-secret',
             'OAUTH_UBER_CLIENT_SECRET' => 'env-secret',
-            'UBER_STORE_ID' => 'env-store-id',
-            'OAUTH_UBER_STORE_ID' => 'env-store-alias',
         ]);
 
         try {
-            self::assertSame('company-app-id', $this->invokePrivateMethod($service, 'resolveClientId', $provider));
-            self::assertSame('company-secret', $this->invokePrivateMethod($service, 'resolveClientSecret', $provider));
+            self::assertSame('env-app-id', $this->invokePrivateMethod($service, 'resolveClientId', $provider));
+            self::assertSame('env-secret', $this->invokePrivateMethod($service, 'resolveClientSecret', $provider));
             self::assertSame('company-store-id', $this->invokePrivateMethod($service, 'resolveConfiguredStoreId', $provider));
         } finally {
             $this->restoreEnvironmentValues($previousEnv);
         }
     }
 
-    public function testResolveUberCredentialsFallBackToEnvironmentWhenCompanyConfigIsMissing(): void
+    public function testResolveUberStoreIdDoesNotFallBackToEnvironment(): void
     {
         $provider = $this->createMock(People::class);
         $service = $this->createService(
             new MockHttpClient(),
             $this->createConfigService([
-                'OAUTH_UBER_APP_ID' => '',
-                'OAUTH_UBER_CLIENT_SECRET' => '',
                 'OAUTH_UBER_STORE_ID' => '',
             ])
         );
 
         $previousEnv = $this->setEnvironmentValues([
-            'UBER_CLIENT_ID' => 'env-client-id',
             'OAUTH_UBER_APP_ID' => 'env-app-id',
-            'UBER_CLIENT_SECRET' => 'env-client-secret',
             'OAUTH_UBER_CLIENT_SECRET' => 'env-secret',
-            'UBER_STORE_ID' => 'env-store-id',
             'OAUTH_UBER_STORE_ID' => 'env-store-alias',
         ]);
 
         try {
-            self::assertSame('env-client-id', $this->invokePrivateMethod($service, 'resolveClientId', $provider));
-            self::assertSame('env-client-secret', $this->invokePrivateMethod($service, 'resolveClientSecret', $provider));
-            self::assertSame('env-store-id', $this->invokePrivateMethod($service, 'resolveConfiguredStoreId', $provider));
+            self::assertSame('env-app-id', $this->invokePrivateMethod($service, 'resolveClientId', $provider));
+            self::assertSame('env-secret', $this->invokePrivateMethod($service, 'resolveClientSecret', $provider));
+            self::assertSame('', $this->invokePrivateMethod($service, 'resolveConfiguredStoreId', $provider));
         } finally {
             $this->restoreEnvironmentValues($previousEnv);
         }
     }
 
-    public function testGetAccessTokenUsesCompanyConfigValuesInOAuthRequest(): void
+    public function testGetAccessTokenUsesEnvironmentValuesInOAuthRequest(): void
     {
         $provider = $this->createMock(People::class);
         $capturedRequest = null;
@@ -129,21 +118,161 @@ class UberServiceTest extends TestCase
         $service = $this->createService(
             $httpClient,
             $this->createConfigService([
-                'OAUTH_UBER_APP_ID' => 'company-app-id',
-                'OAUTH_UBER_CLIENT_SECRET' => 'company-secret',
                 'OAUTH_UBER_STORE_ID' => 'company-store-id',
             ])
         );
 
-        $token = $this->invokePrivateMethod($service, 'getAccessToken', $provider);
+        $previousEnv = $this->setEnvironmentValues([
+            'OAUTH_UBER_APP_ID' => 'env-app-id',
+            'OAUTH_UBER_CLIENT_SECRET' => 'env-secret',
+        ]);
 
-        self::assertSame('token-123', $token);
-        self::assertIsArray($capturedRequest);
-        parse_str((string) ($capturedRequest['options']['body'] ?? ''), $parsedBody);
-        self::assertSame('company-app-id', $parsedBody['client_id'] ?? null);
-        self::assertSame('company-secret', $parsedBody['client_secret'] ?? null);
-        self::assertSame('client_credentials', $parsedBody['grant_type'] ?? null);
-        self::assertSame('eats.deliveries', $parsedBody['scope'] ?? null);
+        try {
+            $token = $this->invokePrivateMethod($service, 'getAccessToken', $provider);
+
+            self::assertSame('token-123', $token);
+            self::assertIsArray($capturedRequest);
+            parse_str((string) ($capturedRequest['options']['body'] ?? ''), $parsedBody);
+            self::assertSame('env-app-id', $parsedBody['client_id'] ?? null);
+            self::assertSame('env-secret', $parsedBody['client_secret'] ?? null);
+            self::assertSame('client_credentials', $parsedBody['grant_type'] ?? null);
+            self::assertSame('eats.deliveries', $parsedBody['scope'] ?? null);
+        } finally {
+            $this->restoreEnvironmentValues($previousEnv);
+        }
+    }
+
+    public function testConnectStoreViaOAuthSelectsNearestStoreAndPersistsStoreId(): void
+    {
+        $provider = $this->createMock(People::class);
+        $provider->method('getId')->willReturn(123);
+        $provider->method('getAddress')->willReturn([$this->address()]);
+
+        $persistedConfig = null;
+        $configService = $this->createMock(ConfigService::class);
+        $configService->method('getConfig')->willReturnCallback(
+            static function (People $people, string $key, bool $json = false) {
+                return match ($key) {
+                    'OAUTH_UBER_STORE_ID' => '',
+                    default => null,
+                };
+            }
+        );
+        $configService->method('discoveryConfig')->willReturnCallback(
+            static function (People $people, string $key, bool $create = true) use (&$persistedConfig) {
+                $persistedConfig = new Config();
+                $persistedConfig->setPeople($people);
+                $persistedConfig->setConfigKey($key);
+
+                return $persistedConfig;
+            }
+        );
+
+        $persistedValues = [];
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())
+            ->method('persist')
+            ->with(self::callback(static function ($entity) use (&$persistedValues): bool {
+                if (!$entity instanceof Config) {
+                    return false;
+                }
+
+                $persistedValues['configKey'] = $entity->getConfigKey();
+                $persistedValues['configValue'] = $entity->getConfigValue();
+
+                return true;
+            }));
+        $entityManager->expects(self::once())->method('flush');
+
+        $requests = [];
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requests) {
+            $requests[] = compact('method', 'url', 'options');
+
+            return match (count($requests)) {
+                1 => new MockResponse(
+                    json_encode([
+                        'access_token' => 'user-token',
+                        'expires_in' => 3600,
+                    ], JSON_THROW_ON_ERROR),
+                    ['http_code' => 200]
+                ),
+                2 => new MockResponse(
+                    json_encode([
+                        'next_key' => null,
+                        'stores' => [
+                            [
+                                'store_id' => 'near-store-id',
+                                'name' => 'Near Store',
+                                'status' => 'active',
+                                'location' => [
+                                    'latitude' => -23.5501,
+                                    'longitude' => -46.6298,
+                                ],
+                            ],
+                            [
+                                'store_id' => 'far-store-id',
+                                'name' => 'Far Store',
+                                'status' => 'active',
+                                'location' => [
+                                    'latitude' => -22.9000,
+                                    'longitude' => -43.2000,
+                                ],
+                            ],
+                        ],
+                    ], JSON_THROW_ON_ERROR),
+                    ['http_code' => 200]
+                ),
+                3 => new MockResponse('', ['http_code' => 204]),
+                default => new MockResponse('', ['http_code' => 500]),
+            };
+        });
+
+        $loggerService = $this->createMock(LoggerService::class);
+        $loggerService->method('getLogger')->willReturn(new NullLogger());
+
+        $service = new UberService(
+            $entityManager,
+            $httpClient,
+            $loggerService,
+            $this->createStub(RequestPayloadService::class),
+            $configService
+        );
+
+        $previousEnv = $this->setEnvironmentValues([
+            'OAUTH_UBER_APP_ID' => 'env-app-id',
+            'OAUTH_UBER_CLIENT_SECRET' => 'env-secret',
+        ]);
+
+        try {
+            $result = $service->connectStoreViaOAuth($provider, 'auth-code-123', 'https://frontend.example/uber-integration-page');
+
+            self::assertSame(0, $result['errno']);
+            self::assertSame('near-store-id', $result['data']['store_id'] ?? null);
+            self::assertSame('OAUTH_UBER_STORE_ID', $persistedValues['configKey'] ?? null);
+            self::assertSame('near-store-id', $persistedValues['configValue'] ?? null);
+
+            self::assertCount(3, $requests);
+            self::assertSame('POST', $requests[0]['method']);
+            self::assertStringContainsString('auth.uber.com/oauth/v2/token', $requests[0]['url']);
+
+            parse_str((string) ($requests[0]['options']['body'] ?? ''), $tokenBody);
+            self::assertSame('env-app-id', $tokenBody['client_id'] ?? null);
+            self::assertSame('env-secret', $tokenBody['client_secret'] ?? null);
+            self::assertSame('authorization_code', $tokenBody['grant_type'] ?? null);
+            self::assertSame('https://frontend.example/uber-integration-page', $tokenBody['redirect_uri'] ?? null);
+            self::assertSame('auth-code-123', $tokenBody['code'] ?? null);
+
+            self::assertSame('GET', $requests[1]['method']);
+            self::assertStringContainsString('/v1/eats/stores', $requests[1]['url']);
+            self::assertSame('Bearer user-token', $requests[1]['options']['headers']['Authorization'] ?? null);
+
+            self::assertSame('POST', $requests[2]['method']);
+            self::assertStringContainsString('/v1/eats/stores/near-store-id/pos_data', $requests[2]['url']);
+            self::assertSame('Bearer user-token', $requests[2]['options']['headers']['Authorization'] ?? null);
+            self::assertSame('123', $requests[2]['options']['json']['integrator_store_id'] ?? null);
+        } finally {
+            $this->restoreEnvironmentValues($previousEnv);
+        }
     }
 
     private function createService(MockHttpClient $httpClient, ConfigService $configService): UberService
