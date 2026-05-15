@@ -18,8 +18,6 @@ class CompanyIntegrationStatusServiceTest extends TestCase
         $configService->method('getConfig')->willReturnCallback(
             static function (People $people, string $key, bool $json = false) {
                 return match ($key) {
-                    'OAUTH_UBER_APP_ID' => 'uber-app-id',
-                    'OAUTH_UBER_CLIENT_SECRET' => 'uber-secret',
                     'OAUTH_UBER_STORE_ID' => 'uber-store-id',
                     'asaas-key' => 'asaas-key',
                     'asaas-receiver-pix-key' => '',
