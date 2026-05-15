@@ -1184,7 +1184,7 @@ class IntegrationController extends AbstractController
                 'id' => $provider->getId(),
                 'name' => method_exists($provider, 'getName') ? $provider->getName() : null,
             ],
-            'items' => [
+            'items' => array_merge([
                 [
                     'key' => '99food',
                     'label' => '99Food',
@@ -1235,8 +1235,7 @@ class IntegrationController extends AbstractController
                     ] : null,
                     'store_error' => null,
                 ],
-                ...$companyIntegrations,
-            ],
+            ], $companyIntegrations),
         ]);
     }
 
