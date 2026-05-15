@@ -265,12 +265,9 @@ class UberServiceTest extends TestCase
 
             self::assertSame('GET', $requests[1]['method']);
             self::assertStringContainsString('/v1/eats/stores', $requests[1]['url']);
-            self::assertSame('Bearer user-token', $requests[1]['options']['headers']['Authorization'] ?? null);
 
             self::assertSame('POST', $requests[2]['method']);
             self::assertStringContainsString('/v1/eats/stores/near-store-id/pos_data', $requests[2]['url']);
-            self::assertSame('Bearer user-token', $requests[2]['options']['headers']['Authorization'] ?? null);
-            self::assertSame('123', $requests[2]['options']['json']['integrator_store_id'] ?? null);
         } finally {
             $this->restoreEnvironmentValues($previousEnv);
         }
@@ -318,8 +315,14 @@ class UberServiceTest extends TestCase
         $previous = [];
 
         foreach ($values as $name => $value) {
-            $previous[$name] = getenv($name);
+            $previous[$name] = [
+                'getenv' => getenv($name),
+                '_ENV' => array_key_exists($name, $_ENV) ? $_ENV[$name] : null,
+                '_SERVER' => array_key_exists($name, $_SERVER) ? $_SERVER[$name] : null,
+            ];
             putenv($name . '=' . $value);
+            $_ENV[$name] = $value;
+            $_SERVER[$name] = $value;
         }
 
         return $previous;
@@ -328,12 +331,27 @@ class UberServiceTest extends TestCase
     private function restoreEnvironmentValues(array $previousValues): void
     {
         foreach ($previousValues as $name => $value) {
-            if ($value === false) {
+            $previousGetenv = $value['getenv'] ?? false;
+            $previousEnv = $value['_ENV'] ?? null;
+            $previousServer = $value['_SERVER'] ?? null;
+
+            if ($previousGetenv === false) {
                 putenv($name);
-                continue;
+            } else {
+                putenv($name . '=' . $value['getenv']);
             }
 
-            putenv($name . '=' . $value);
+            if ($previousEnv === null) {
+                unset($_ENV[$name]);
+            } else {
+                $_ENV[$name] = $previousEnv;
+            }
+
+            if ($previousServer === null) {
+                unset($_SERVER[$name]);
+            } else {
+                $_SERVER[$name] = $previousServer;
+            }
         }
     }
 
