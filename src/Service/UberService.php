@@ -16,8 +16,11 @@ class UberService
 {
     private const APP_CONTEXT = 'Uber';
     private const API_BASE_URL = 'https://api.uber.com';
+    private const AUTHORIZATION_URL = 'https://auth.uber.com/oauth/v2/authorize';
     private const AUTH_URL = 'https://auth.uber.com/oauth/v2/token';
+    private const STORE_LIST_URL = 'https://api.uber.com/v1/eats/stores';
     private const TOKEN_SCOPE = 'eats.deliveries';
+    private const POS_PROVISIONING_SCOPE = 'eats.pos_provisioning';
     private const CURRENCY_CODE = 'BRL';
 
     private static ?array $authTokenCache = null;
@@ -249,6 +252,99 @@ class UberService
                 'status' => $deliveryStatus !== '' ? $deliveryStatus : 'requested',
                 'estimate' => $estimateBody,
                 'delivery' => $deliveryBody,
+            ],
+        ];
+    }
+
+    public function buildAuthorizationUrl(string $redirectUri, string $state): array
+    {
+        $clientId = $this->resolveClientId();
+        if ($clientId === '') {
+            throw new \RuntimeException('Uber app_id nao configurado.');
+        }
+
+        $authorizationUrl = self::AUTHORIZATION_URL . '?' . http_build_query([
+            'client_id' => $clientId,
+            'response_type' => 'code',
+            'redirect_uri' => $redirectUri,
+            'scope' => self::POS_PROVISIONING_SCOPE,
+            'state' => $state,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        return [
+            'authorization_url' => $authorizationUrl,
+            'url' => $authorizationUrl,
+            'auth_url' => $authorizationUrl,
+            'redirect_uri' => $redirectUri,
+        ];
+    }
+
+    public function connectStoreViaOAuth(People $provider, string $authorizationCode, string $redirectUri): array
+    {
+        $authorizationCode = trim($authorizationCode);
+        if ($authorizationCode === '') {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Codigo OAuth do Uber nao informado.',
+            ];
+        }
+
+        $token = $this->exchangeAuthorizationCodeForToken($authorizationCode, $redirectUri);
+        if ($token === null) {
+            return [
+                'errno' => 500,
+                'errmsg' => 'Token OAuth do Uber indisponivel.',
+            ];
+        }
+
+        $storesResponse = $this->listAuthorizedStores($token);
+        if (($storesResponse['status'] ?? 0) < 200 || ($storesResponse['status'] ?? 0) >= 300) {
+            return [
+                'errno' => $storesResponse['status'] ?? 500,
+                'errmsg' => 'Falha ao listar stores do Uber.',
+                'stores' => $storesResponse,
+            ];
+        }
+
+        $storesBody = is_array($storesResponse['body'] ?? null) ? $storesResponse['body'] : [];
+        $stores = is_array($storesBody['stores'] ?? null) ? $storesBody['stores'] : [];
+        $selectedStore = $this->selectAuthorizationStore($stores, $provider);
+        if (!is_array($selectedStore)) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Nenhuma store do Uber foi encontrada para a conta autorizada.',
+                'stores' => $stores,
+            ];
+        }
+
+        $storeId = trim((string) ($selectedStore['store_id'] ?? ''));
+        if ($storeId === '') {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Store do Uber sem identificador valido.',
+                'stores' => $stores,
+            ];
+        }
+
+        $activationResponse = $this->activateStore($storeId, $token, $provider);
+        if (($activationResponse['status'] ?? 0) < 200 || ($activationResponse['status'] ?? 0) >= 300) {
+            return [
+                'errno' => $activationResponse['status'] ?? 500,
+                'errmsg' => 'Falha ao ativar a store do Uber.',
+                'store_id' => $storeId,
+                'activation' => $activationResponse,
+            ];
+        }
+
+        $this->persistConfiguredStoreId($provider, $storeId);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'store_id' => $storeId,
+                'store_name' => $selectedStore['name'] ?? null,
+                'stores_count' => count($stores),
             ],
         ];
     }
@@ -567,10 +663,67 @@ class UberService
         }
 
         $cacheKey = $clientId . '|' . $clientSecret;
-        $cached = self::$authTokenCache[$cacheKey] ?? null;
-        $expiresAt = is_array($cached) ? (int) ($cached['expires_at'] ?? 0) : 0;
-        if (is_array($cached) && !empty($cached['access_token']) && $expiresAt > (time() + 60)) {
-            return (string) $cached['access_token'];
+        return $this->requestOAuthToken([
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+            'grant_type' => 'client_credentials',
+            'scope' => self::TOKEN_SCOPE,
+        ], $cacheKey);
+    }
+
+    private function resolveClientId(?People $provider = null): string
+    {
+        return $this->resolveEnvironmentValue([
+            'OAUTH_UBER_APP_ID',
+            'UBER_CLIENT_ID',
+        ]);
+    }
+
+    private function resolveClientSecret(?People $provider = null): string
+    {
+        return $this->resolveEnvironmentValue([
+            'OAUTH_UBER_CLIENT_SECRET',
+            'UBER_CLIENT_SECRET',
+        ]);
+    }
+
+    private function resolveConfiguredStoreId(?People $provider = null): string
+    {
+        if (!$provider instanceof People) {
+            return '';
+        }
+
+        $value = trim((string) ($this->configService->getConfig($provider, 'OAUTH_UBER_STORE_ID') ?? ''));
+
+        return $value !== '' ? $value : '';
+    }
+
+    private function resolveEnvironmentValue(array $environmentKeys): string
+    {
+        foreach ($environmentKeys as $environmentKey) {
+            $value = trim((string) (
+                $_ENV[$environmentKey]
+                ?? $_SERVER[$environmentKey]
+                ?? getenv($environmentKey)
+                ?? ''
+            ));
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function requestOAuthToken(array $formFields, ?string $cacheKey = null): ?string
+    {
+        if ($cacheKey !== null) {
+            $cached = self::$authTokenCache[$cacheKey] ?? null;
+            $expiresAt = is_array($cached) ? (int) ($cached['expires_at'] ?? 0) : 0;
+            if (is_array($cached) && !empty($cached['access_token']) && $expiresAt > (time() + 60)) {
+                return (string) $cached['access_token'];
+            }
         }
 
         try {
@@ -579,12 +732,7 @@ class UberService
                     'Content-Type' => 'application/x-www-form-urlencoded',
                     'Accept' => 'application/json',
                 ],
-                'body' => http_build_query([
-                    'client_id' => $clientId,
-                    'client_secret' => $clientSecret,
-                    'grant_type' => 'client_credentials',
-                    'scope' => self::TOKEN_SCOPE,
-                ], '', '&', PHP_QUERY_RFC3986),
+                'body' => http_build_query($formFields, '', '&', PHP_QUERY_RFC3986),
                 'timeout' => 20,
                 'max_duration' => 30,
             ]);
@@ -601,10 +749,12 @@ class UberService
                 return null;
             }
 
-            self::$authTokenCache[$cacheKey] = [
-                'access_token' => $token,
-                'expires_at' => time() + max(60, $expiresIn),
-            ];
+            if ($cacheKey !== null) {
+                self::$authTokenCache[$cacheKey] = [
+                    'access_token' => $token,
+                    'expires_at' => time() + max(60, $expiresIn),
+                ];
+            }
 
             return $token;
         } catch (\Throwable $exception) {
@@ -616,58 +766,212 @@ class UberService
         }
     }
 
-    private function resolveClientId(?People $provider = null): string
+    private function exchangeAuthorizationCodeForToken(string $authorizationCode, string $redirectUri): ?string
     {
-        return $this->resolveConfiguredValue(
-            $provider,
-            ['OAUTH_UBER_APP_ID'],
-            ['UBER_CLIENT_ID', 'OAUTH_UBER_APP_ID']
-        );
+        $clientId = $this->resolveClientId();
+        $clientSecret = $this->resolveClientSecret();
+
+        if ($clientId === '' || $clientSecret === '') {
+            return null;
+        }
+
+        return $this->requestOAuthToken([
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+            'grant_type' => 'authorization_code',
+            'redirect_uri' => $redirectUri,
+            'code' => $authorizationCode,
+        ]);
     }
 
-    private function resolveClientSecret(?People $provider = null): string
+    private function listAuthorizedStores(string $token): array
     {
-        return $this->resolveConfiguredValue(
-            $provider,
-            ['OAUTH_UBER_CLIENT_SECRET'],
-            ['UBER_CLIENT_SECRET', 'OAUTH_UBER_CLIENT_SECRET']
-        );
+        $stores = [];
+        $startKey = null;
+        $pageCount = 0;
+
+        try {
+            do {
+                $query = ['limit' => 100];
+                if (is_string($startKey) && trim($startKey) !== '') {
+                    $query['start_key'] = $startKey;
+                }
+
+                $response = $this->httpClient->request('GET', self::STORE_LIST_URL, [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                        'Accept' => 'application/json',
+                        'Accept-Encoding' => 'gzip',
+                    ],
+                    'query' => $query,
+                    'timeout' => 20,
+                    'max_duration' => 30,
+                ]);
+
+                $statusCode = $response->getStatusCode();
+                if ($statusCode < 200 || $statusCode >= 300) {
+                    return [
+                        'status' => $statusCode,
+                        'body' => $this->decodeResponseBody((string) $response->getContent(false)),
+                    ];
+                }
+
+                $body = $this->decodeResponseBody((string) $response->getContent(false));
+                $pageStores = is_array($body['stores'] ?? null) ? $body['stores'] : [];
+                $stores = array_merge($stores, $pageStores);
+                $startKey = trim((string) ($body['next_key'] ?? ''));
+                $pageCount++;
+            } while ($startKey !== '' && $pageCount < 10 && count($stores) < 1000);
+        } catch (\Throwable $exception) {
+            self::$logger?->error('Uber store listing failed', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return [
+                'status' => 500,
+                'body' => ['message' => $exception->getMessage()],
+            ];
+        }
+
+        return [
+            'status' => 200,
+            'body' => [
+                'stores' => $stores,
+                'next_key' => $startKey,
+            ],
+        ];
     }
 
-    private function resolveConfiguredStoreId(?People $provider = null): string
+    private function selectAuthorizationStore(array $stores, ?People $provider = null): ?array
     {
-        return $this->resolveConfiguredValue(
-            $provider,
-            ['OAUTH_UBER_STORE_ID'],
-            ['UBER_STORE_ID', 'OAUTH_UBER_STORE_ID']
-        );
-    }
+        $normalizedStores = array_values(array_filter($stores, static function (mixed $store): bool {
+            return is_array($store) && trim((string) ($store['store_id'] ?? '')) !== '';
+        }));
 
-    private function resolveConfiguredValue(?People $provider, array $configKeys, array $environmentKeys): string
-    {
-        if ($provider instanceof People) {
-            foreach ($configKeys as $configKey) {
-                $value = trim((string) ($this->configService->getConfig($provider, $configKey) ?? ''));
-                if ($value !== '') {
-                    return $value;
+        if ($normalizedStores === []) {
+            return null;
+        }
+
+        $providerLocation = $this->resolveAuthorizationProviderLocation($provider);
+        if ($providerLocation !== null) {
+            $bestStore = null;
+            $bestDistance = null;
+
+            foreach ($normalizedStores as $store) {
+                $storeLocation = is_array($store['location'] ?? null) ? $store['location'] : [];
+                $distance = $this->calculateDistanceKm(
+                    $providerLocation['latitude'],
+                    $providerLocation['longitude'],
+                    $this->normalizeCoordinate($storeLocation['latitude'] ?? null),
+                    $this->normalizeCoordinate($storeLocation['longitude'] ?? null)
+                );
+
+                if ($distance === null) {
+                    continue;
+                }
+
+                if ($bestDistance === null || $distance < $bestDistance) {
+                    $bestDistance = $distance;
+                    $bestStore = $store;
                 }
             }
-        }
 
-        foreach ($environmentKeys as $environmentKey) {
-            $value = trim((string) (
-                $_ENV[$environmentKey]
-                ?? $_SERVER[$environmentKey]
-                ?? getenv($environmentKey)
-                ?? ''
-            ));
-
-            if ($value !== '') {
-                return $value;
+            if (is_array($bestStore)) {
+                return $bestStore;
             }
         }
 
-        return '';
+        foreach ($normalizedStores as $store) {
+            $status = strtolower(trim((string) ($store['status'] ?? '')));
+            if ($status === 'active') {
+                return $store;
+            }
+        }
+
+        return $normalizedStores[0] ?? null;
+    }
+
+    private function resolveAuthorizationProviderLocation(?People $provider = null): ?array
+    {
+        $address = $this->resolvePeoplePrimaryAddress($provider);
+        if (!$address instanceof Address) {
+            return null;
+        }
+
+        return $this->resolvePickupAddressLocation($address);
+    }
+
+    private function activateStore(string $storeId, string $token, ?People $provider = null): array
+    {
+        $payload = [];
+        if ($provider instanceof People) {
+            $payload['integrator_store_id'] = (string) $provider->getId();
+        }
+
+        try {
+            $response = $this->httpClient->request('POST', self::STORE_LIST_URL . '/' . rawurlencode($storeId) . '/pos_data', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $token,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'json' => $this->cleanupPayload($payload),
+                'timeout' => 20,
+                'max_duration' => 30,
+            ]);
+
+            return [
+                'status' => $response->getStatusCode(),
+                'body' => $this->decodeResponseBody((string) $response->getContent(false)),
+            ];
+        } catch (\Throwable $exception) {
+            self::$logger?->error('Uber store activation failed', [
+                'store_id' => $storeId,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return [
+                'status' => 500,
+                'body' => ['message' => $exception->getMessage()],
+            ];
+        }
+    }
+
+    private function persistConfiguredStoreId(People $provider, string $storeId): void
+    {
+        $config = $this->configService->discoveryConfig($provider, 'OAUTH_UBER_STORE_ID');
+        if (!$config) {
+            return;
+        }
+
+        $config->setConfigValue($storeId);
+        $this->entityManager->persist($config);
+        $this->entityManager->flush();
+    }
+
+    private function calculateDistanceKm(
+        ?float $lat1,
+        ?float $lon1,
+        ?float $lat2,
+        ?float $lon2
+    ): ?float {
+        if ($lat1 === null || $lon1 === null || $lat2 === null || $lon2 === null) {
+            return null;
+        }
+
+        $earthRadiusKm = 6371.0;
+        $latFrom = deg2rad($lat1);
+        $lonFrom = deg2rad($lon1);
+        $latTo = deg2rad($lat2);
+        $lonTo = deg2rad($lon2);
+
+        $latDelta = $latTo - $latFrom;
+        $lonDelta = $lonTo - $lonFrom;
+
+        $a = sin($latDelta / 2) ** 2 + cos($latFrom) * cos($latTo) * sin($lonDelta / 2) ** 2;
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return $earthRadiusKm * $c;
     }
 
     private function resolvePickupAddressLocation(Address $address): ?array

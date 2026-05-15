@@ -18,8 +18,6 @@ class CompanyIntegrationStatusService
                 'uber',
                 'Uber',
                 [
-                    'OAUTH_UBER_APP_ID',
-                    'OAUTH_UBER_CLIENT_SECRET',
                     'OAUTH_UBER_STORE_ID',
                 ],
                 $provider
