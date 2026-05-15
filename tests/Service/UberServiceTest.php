@@ -6,6 +6,7 @@ use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Cep;
 use ControleOnline\Entity\City;
 use ControleOnline\Entity\District;
+use ControleOnline\Entity\Config;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\State;
 use ControleOnline\Entity\Street;
