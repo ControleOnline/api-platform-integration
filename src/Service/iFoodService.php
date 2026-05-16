@@ -3935,6 +3935,321 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    public function quoteDelivery(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Pedido sem provider vinculado.');
+        }
+
+        $sourceOrder = $this->resolveIfoodQuoteSourceOrder($order);
+        $stored = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Loja iFood nao conectada.');
+        }
+
+        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
+        if (!$dropoffAddress instanceof Address) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
+        }
+
+        $coordinates = $this->buildIfoodAddressCoordinatesPayload($dropoffAddress);
+        if ($coordinates === []) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Endereco de entrega sem coordenadas validas.');
+        }
+
+        $query = [
+            'latitude' => $coordinates['latitude'],
+            'longitude' => $coordinates['longitude'],
+        ];
+        $response = $this->callIfoodShippingMerchantAction(
+            $merchantId,
+            'GET',
+            '/deliveryAvailabilities',
+            $query
+        );
+        if (!$response || ($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300) {
+            $statusCode = (int) ($response['status'] ?? 500);
+            $quoteState = $this->resolveIfoodQuoteStateFromStatus($statusCode);
+            $message = $this->normalizeString(
+                $response['body']['message'] ?? $response['body']['error'] ?? $response['body']['description'] ?? 'Falha ao consultar cotacao do iFood.'
+            );
+
+            return $this->persistIfoodQuoteFailure($order, $quoteState, $message, [
+                'merchant_id' => $merchantId,
+                'quote_response' => $response['body'] ?? [],
+                'quote_status' => $statusCode,
+            ]);
+        }
+
+        $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+        $quoteId = $this->normalizeString($body['id'] ?? $body['quoteId'] ?? $body['quote_id'] ?? null);
+        if ($quoteId === '') {
+            return $this->persistIfoodQuoteFailure($order, 'error', 'iFood nao retornou identificador da cotacao.', [
+                'merchant_id' => $merchantId,
+                'quote_response' => $body,
+            ]);
+        }
+
+        $quotePrice = $this->normalizeIfoodMoneyValue(
+            $body['quote']['netValue']
+                ?? $body['quote']['net_value']
+                ?? $body['netValue']
+                ?? $body['net_value']
+                ?? null
+        );
+        if ($quotePrice === null || $quotePrice <= 0) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'iFood nao retornou valor de cotacao valido.', [
+                'merchant_id' => $merchantId,
+                'quote_response' => $body,
+            ]);
+        }
+        $deliveryTime = $this->normalizeIfoodQuoteEta($body);
+        $quoteRequestedAt = date('Y-m-d H:i:s');
+        $logisticsState = [
+            'flow' => 'quote',
+            'provider_key' => 'ifood',
+            'provider_label' => 'iFood',
+            'quote_state' => 'ready',
+            'quote_id' => $quoteId,
+            'quote_requested_at' => $quoteRequestedAt,
+            'quote_updated_at' => $quoteRequestedAt,
+            'price' => $quotePrice,
+            'eta' => $deliveryTime,
+            'merchant_id' => $merchantId,
+            'quote_response' => $body,
+            'delivery_response' => null,
+            'tracking_url' => null,
+        ];
+        $ifoodState = array_merge($this->getStoredIfoodQuoteState($order), [
+            'quote_state' => 'ready',
+            'quote_id' => $quoteId,
+            'quote_requested_at' => $quoteRequestedAt,
+            'quote_updated_at' => $quoteRequestedAt,
+            'quote_response' => $body,
+            'quote_message' => null,
+            'merchant_id' => $merchantId,
+        ]);
+        $this->persistIfoodQuoteState($order, $ifoodState, $logisticsState);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'quote_id' => $quoteId,
+                'price' => $quotePrice,
+                'eta' => $deliveryTime,
+                'quote' => $body,
+            ],
+        ];
+    }
+
+    public function requestDeliveryFromQuote(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return [
+                'errno' => 400,
+                'errmsg' => 'Pedido sem provider vinculado.',
+            ];
+        }
+
+        $sourceOrder = $this->resolveIfoodQuoteSourceOrder($order);
+        $stored = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($stored['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Loja iFood nao conectada.',
+            ];
+        }
+
+        $logisticsState = $this->getStoredIfoodQuoteState($order);
+        $quoteState = $this->normalizeString($logisticsState['quote_state'] ?? '');
+        if (!in_array($quoteState, ['ready', 'selected', 'requested'], true)) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Cotacao iFood nao esta pronta para solicitacao.',
+            ];
+        }
+
+        $quoteResponse = is_array($logisticsState['quote_response'] ?? null) ? $logisticsState['quote_response'] : [];
+        $quoteId = $this->normalizeString($logisticsState['quote_id'] ?? $quoteResponse['id'] ?? null);
+        if ($quoteId === '') {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Cotacao iFood sem identificador valido.',
+            ];
+        }
+
+        if ($this->normalizeString($logisticsState['remote_order_id'] ?? null) !== '') {
+            return [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'already_requested' => true,
+                'data' => [
+                    'order_id' => $order->getId(),
+                    'remote_order_id' => $logisticsState['remote_order_id'],
+                    'tracking_url' => $logisticsState['tracking_url'] ?? null,
+                ],
+            ];
+        }
+
+        $pickupAddress = $this->resolveIfoodQuotePickupAddress($order, $sourceOrder);
+        if (!$pickupAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de coleta valido.',
+            ];
+        }
+
+        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
+        if (!$dropoffAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de entrega valido.',
+            ];
+        }
+
+        $customerPayload = $this->buildIfoodQuoteCustomerPayload($sourceOrder);
+        $deliveryPayload = $this->buildIfoodQuoteDeliveryPayload(
+            $dropoffAddress,
+            $quoteId,
+            $quoteResponse,
+            $logisticsState
+        );
+        $itemsPayload = $this->buildIfoodQuoteItemsPayload($sourceOrder);
+        if ($itemsPayload === []) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem itens para criar entrega no iFood.',
+            ];
+        }
+
+        $requestPayload = [
+            'customer' => $customerPayload,
+            'delivery' => $deliveryPayload,
+            'items' => $itemsPayload,
+            'metadata' => [
+                'mainOrderId' => $sourceOrder->getId(),
+                'quoteOrderId' => $order->getId(),
+                'providerKey' => 'ifood',
+            ],
+        ];
+
+        $response = $this->callIfoodShippingMerchantAction(
+            $merchantId,
+            'POST',
+            '/orders',
+            [],
+            $requestPayload
+        );
+        if (!$response || ($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300) {
+            $statusCode = (int) ($response['status'] ?? 500);
+            $quoteState = $this->resolveIfoodQuoteStateFromStatus($statusCode);
+            $message = $this->normalizeString(
+                $response['body']['message'] ?? $response['body']['error'] ?? $response['body']['description'] ?? 'Falha ao criar entrega no iFood.'
+            );
+
+            $this->persistIfoodQuoteState(
+                $order,
+                array_merge($logisticsState, [
+                    'quote_state' => $quoteState,
+                    'quote_message' => $message,
+                    'quote_updated_at' => date('Y-m-d H:i:s'),
+                    'delivery_response' => $response['body'] ?? [],
+                ]),
+                [
+                    'flow' => 'quote',
+                    'provider_key' => 'ifood',
+                    'provider_label' => 'iFood',
+                    'quote_state' => $quoteState,
+                    'quote_id' => $quoteId,
+                    'quote_message' => $message,
+                    'quote_updated_at' => date('Y-m-d H:i:s'),
+                    'quote_response' => $quoteResponse,
+                    'delivery_response' => $response['body'] ?? [],
+                ]
+            );
+
+            return [
+                'errno' => $statusCode,
+                'errmsg' => $message,
+                'quote' => $quoteResponse,
+                'request' => $response,
+            ];
+        }
+
+        $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+        $remoteOrderId = $this->normalizeString($body['id'] ?? $body['orderId'] ?? null);
+        $trackingUrl = $this->normalizeString($body['trackingUrl'] ?? $body['tracking_url'] ?? null);
+        $selectedAt = date('Y-m-d H:i:s');
+        $deliveryTime = $this->normalizeIfoodQuoteEta($quoteResponse);
+        $quotePrice = $this->normalizeIfoodMoneyValue(
+            $quoteResponse['quote']['netValue']
+                ?? $quoteResponse['quote']['net_value']
+                ?? $quoteResponse['netValue']
+                ?? $quoteResponse['net_value']
+                ?? null
+        );
+        if ($quotePrice === null || $quotePrice <= 0) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', 'iFood nao retornou valor de cotacao valido.', [
+                'merchant_id' => $merchantId,
+                'quote_response' => $quoteResponse,
+            ]);
+        }
+
+        $ifoodState = array_merge($logisticsState, [
+            'quote_state' => 'selected',
+            'selected_at' => $selectedAt,
+            'requested_at' => $selectedAt,
+            'remote_order_id' => $remoteOrderId !== '' ? $remoteOrderId : null,
+            'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+            'delivery_response' => $body,
+            'quote_updated_at' => $selectedAt,
+            'price' => $quotePrice,
+            'eta' => $deliveryTime,
+        ]);
+        $this->persistIfoodQuoteState(
+            $order,
+            array_merge($this->getStoredIfoodQuoteState($order), $ifoodState),
+            [
+                'flow' => 'quote',
+                'provider_key' => 'ifood',
+                'provider_label' => 'iFood',
+                'quote_state' => 'selected',
+                'quote_id' => $quoteId,
+                'selected_at' => $selectedAt,
+                'requested_at' => $selectedAt,
+                'remote_order_id' => $remoteOrderId !== '' ? $remoteOrderId : null,
+                'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+                'delivery_response' => $body,
+                'quote_response' => $quoteResponse,
+                'price' => $quotePrice,
+                'eta' => $deliveryTime,
+                'merchant_id' => $merchantId,
+            ]
+        );
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'remote_order_id' => $remoteOrderId !== '' ? $remoteOrderId : null,
+                'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+                'quote_id' => $quoteId,
+                'delivery' => $body,
+            ],
+        ];
+    }
+
     public function connectStore(People $provider, string $merchantId, ?array $merchant = null): array
     {
         $this->init();
@@ -5111,6 +5426,384 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'street_number_raw' => $rawStreetNumber,
             'complement' => $complement,
         ];
+    }
+
+    private function resolveIfoodQuoteSourceOrder(Order $order): Order
+    {
+        $mainOrder = $order->getMainOrder();
+        if ($mainOrder instanceof Order) {
+            return $mainOrder;
+        }
+
+        $mainOrderId = $order->getMainOrderId();
+        if ($mainOrderId) {
+            $resolved = $this->entityManager->getRepository(Order::class)->find((int) $mainOrderId);
+            if ($resolved instanceof Order) {
+                return $resolved;
+            }
+        }
+
+        return $order;
+    }
+
+    private function resolveIfoodQuotePickupAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $pickupAddress = $order->getAddressOrigin();
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
+
+        $pickupAddress = $sourceOrder->getAddressOrigin();
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
+
+        $provider = $sourceOrder->getProvider();
+        if ($provider instanceof People) {
+            foreach ($provider->getAddress() as $address) {
+                if ($address instanceof Address) {
+                    return $address;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveIfoodQuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $dropoffAddress = $order->getAddressDestination();
+        if ($dropoffAddress instanceof Address) {
+            return $dropoffAddress;
+        }
+
+        $dropoffAddress = $sourceOrder->getAddressDestination();
+
+        return $dropoffAddress instanceof Address ? $dropoffAddress : null;
+    }
+
+    private function buildIfoodAddressCoordinatesPayload(Address $address): array
+    {
+        $latitude = $address->getLatitude();
+        $longitude = $address->getLongitude();
+
+        if (!is_numeric($latitude) || !is_numeric($longitude)) {
+            return [];
+        }
+
+        return [
+            'latitude' => (float) $latitude,
+            'longitude' => (float) $longitude,
+        ];
+    }
+
+    private function buildIfoodShippingAddressPayload(Address $address): array
+    {
+        $street = $address->getStreet();
+        $district = $street?->getDistrict();
+        $city = $district?->getCity();
+        $state = $city?->getState();
+        $cep = $street?->getCep();
+        $streetNumberPayload = $this->resolveIfoodStreetNumberPayload([
+            'streetNumber' => $address->getNumber(),
+            'complement' => $address->getComplement(),
+        ]);
+        $coordinates = $this->buildIfoodAddressCoordinatesPayload($address);
+
+        $payload = [
+            'postalCode' => preg_replace('/\D+/', '', (string) ($cep?->getCep() ?? '')) ?: null,
+            'streetNumber' => $streetNumberPayload['street_number'] ?? $address->getNumber(),
+            'streetName' => $this->truncateIfoodText($street?->getStreet() ?? '', 50),
+            'complement' => $this->truncateIfoodText($streetNumberPayload['complement'] ?? $address->getComplement() ?? '', 50),
+            'reference' => $this->truncateIfoodText($address->getLocator() ?: $address->getNickname() ?: '', 70),
+            'neighborhood' => $this->truncateIfoodText($district?->getDistrict() ?? '', 50),
+            'city' => $this->truncateIfoodText($city?->getCity() ?? '', 50),
+            'state' => $this->truncateIfoodText(
+                $state?->getUf() ?: $state?->getState() ?: '',
+                2
+            ),
+            'country' => 'BR',
+        ];
+
+        if ($coordinates !== []) {
+            $payload['coordinates'] = $coordinates;
+        }
+
+        return array_filter($payload, static fn(mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    private function buildIfoodQuoteCustomerPayload(Order $order): array
+    {
+        $person = $order->getDeliveryContact();
+        if (!$person instanceof People) {
+            $person = $order->getClient();
+        }
+
+        $name = $this->resolveIfoodPeopleDisplayName($person);
+        if ($name === '') {
+            $name = 'Cliente';
+        }
+
+        $phone = $this->resolveIfoodPeoplePhone($person);
+        if ($phone === null) {
+            return [
+                'name' => $this->truncateIfoodText($name, 50),
+                'phone' => [
+                    'type' => 'STORE',
+                ],
+            ];
+        }
+
+        return [
+            'name' => $this->truncateIfoodText($name, 50),
+            'phone' => [
+                'type' => 'CUSTOMER',
+                'countryCode' => $phone['countryCode'],
+                'areaCode' => $phone['areaCode'],
+                'number' => $phone['number'],
+            ],
+        ];
+    }
+
+    private function buildIfoodQuoteDeliveryPayload(
+        Address $dropoffAddress,
+        string $quoteId,
+        array $quoteResponse,
+        array $logisticsState
+    ): array {
+        $deliveryTime = is_array($quoteResponse['deliveryTime'] ?? null)
+            ? $quoteResponse['deliveryTime']
+            : [];
+        $preparationTime = (int) (
+            $deliveryTime['min']
+                ?? $deliveryTime['preparationTime']
+                ?? $logisticsState['preparation_time']
+                ?? 0
+        );
+        $merchantFee = $this->normalizeIfoodMoneyValue(
+            $quoteResponse['quote']['netValue']
+                ?? $quoteResponse['quote']['net_value']
+                ?? $quoteResponse['netValue']
+                ?? $quoteResponse['net_value']
+                ?? $logisticsState['price']
+                ?? null
+        );
+
+        return [
+            'merchantFee' => $merchantFee,
+            'preparationTime' => max(0, $preparationTime),
+            'quoteId' => $quoteId,
+            'deliveryAddress' => $this->buildIfoodShippingAddressPayload($dropoffAddress),
+        ];
+    }
+
+    private function buildIfoodQuoteItemsPayload(Order $order): array
+    {
+        $items = [];
+        foreach ($order->getOrderProducts() as $orderProduct) {
+            if (!$orderProduct instanceof OrderProduct) {
+                continue;
+            }
+
+            if ($orderProduct->getOrderProduct() instanceof OrderProduct) {
+                continue;
+            }
+
+            $product = $orderProduct->getProduct();
+            $name = $this->truncateIfoodText(
+                trim((string) ($product?->getProduct() ?? '')),
+                50
+            );
+            if ($name === '') {
+                $name = 'Item ' . ($orderProduct->getId() ?? 0);
+            }
+
+            $quantity = max(1, (int) round((float) $orderProduct->getQuantity()));
+            $unitPrice = round((float) $orderProduct->getPrice(), 2);
+            $price = round($unitPrice * $quantity, 2);
+            $externalCode = trim((string) ($product?->getId() ?? $orderProduct->getId() ?? ''));
+
+            $items[] = [
+                'id' => $this->generateStableUuidFromSeed('ifood:shipping:item:' . $order->getId() . ':' . ($orderProduct->getId() ?? 0)),
+                'name' => $name,
+                'externalCode' => $externalCode !== '' ? $externalCode : $this->generateStableUuidFromSeed('ifood:shipping:external:' . $order->getId() . ':' . ($orderProduct->getId() ?? 0)),
+                'quantity' => $quantity,
+                'unitPrice' => $unitPrice,
+                'price' => $price,
+                'optionsPrice' => 0,
+                'totalPrice' => $price,
+            ];
+        }
+
+        return $items;
+    }
+
+    private function persistIfoodQuoteState(Order $order, array $storedState, array $logisticsState): void
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            $otherInformations = [];
+        }
+
+        $otherInformations[self::APP_CONTEXT] = $storedState;
+        $otherInformations['logistics'] = $logisticsState;
+
+        $order->setOtherInformations($otherInformations);
+        $order->setAlterDate(new DateTime('now'));
+        if (isset($logisticsState['price']) && is_numeric($logisticsState['price'])) {
+            $order->setPrice((float) $logisticsState['price']);
+        }
+
+        $this->entityManager->persist($order);
+        $this->entityManager->flush();
+    }
+
+    private function persistIfoodQuoteFailure(Order $order, string $quoteState, string $message, array $extraState = []): array
+    {
+        $now = date('Y-m-d H:i:s');
+        $storedState = array_merge($this->getStoredIfoodQuoteState($order), $extraState, [
+            'quote_state' => $quoteState,
+            'quote_message' => $message,
+            'quote_requested_at' => $this->normalizeString($extraState['quote_requested_at'] ?? null) ?: $now,
+            'quote_updated_at' => $now,
+            'price' => null,
+            'tracking_url' => null,
+            'delivery_response' => $extraState['delivery_response'] ?? null,
+        ]);
+        $this->persistIfoodQuoteState($order, $storedState, array_merge([
+            'flow' => 'quote',
+            'provider_key' => 'ifood',
+            'provider_label' => 'iFood',
+            'quote_state' => $quoteState,
+            'quote_message' => $message,
+            'quote_requested_at' => $storedState['quote_requested_at'],
+            'quote_updated_at' => $now,
+            'price' => null,
+            'tracking_url' => null,
+        ], $extraState));
+
+        return [
+            'errno' => $extraState['quote_status'] ?? 422,
+            'errmsg' => $message,
+            'data' => [
+                'order_id' => $order->getId(),
+                'quote_state' => $quoteState,
+                'quote_message' => $message,
+            ],
+        ];
+    }
+
+    private function getStoredIfoodQuoteState(Order $order): array
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            return [];
+        }
+
+        $logistics = $otherInformations['logistics'] ?? [];
+
+        return is_array($logistics) ? $logistics : [];
+    }
+
+    private function resolveIfoodQuoteStateFromStatus(int $statusCode): string
+    {
+        return in_array($statusCode, [400, 401, 403, 404, 409, 422], true) ? 'unavailable' : 'error';
+    }
+
+    private function normalizeIfoodMoneyValue(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        return round((float) $value, 2);
+    }
+
+    private function normalizeIfoodQuoteEta(array $quoteResponse): ?string
+    {
+        $deliveryTime = is_array($quoteResponse['deliveryTime'] ?? null)
+            ? $quoteResponse['deliveryTime']
+            : [];
+        $min = isset($deliveryTime['min']) ? (int) $deliveryTime['min'] : 0;
+        $max = isset($deliveryTime['max']) ? (int) $deliveryTime['max'] : 0;
+
+        if ($min <= 0 && $max <= 0) {
+            return null;
+        }
+
+        if ($min > 0 && $max > 0) {
+            return sprintf('%d - %d min', (int) ceil($min / 60), (int) ceil($max / 60));
+        }
+
+        $value = $min > 0 ? $min : $max;
+
+        return sprintf('%d min', (int) ceil($value / 60));
+    }
+
+    private function resolveIfoodPeopleDisplayName(?People $people): string
+    {
+        if (!$people instanceof People) {
+            return '';
+        }
+
+        $name = trim((string) ($people->getAlias() ?: $people->getName() ?: ''));
+
+        return $this->truncateIfoodText($name, 50);
+    }
+
+    private function resolveIfoodPeoplePhone(?People $people): ?array
+    {
+        if (!$people instanceof People) {
+            return null;
+        }
+
+        foreach ($people->getPhone() as $phone) {
+            if (!$phone instanceof Phone) {
+                continue;
+            }
+
+            $countryCode = $this->normalizeDigits((string) $phone->getDdi());
+            $areaCode = $this->normalizeDigits((string) $phone->getDdd());
+            $number = $this->normalizeDigits((string) $phone->getPhone());
+
+            if ($number === '') {
+                continue;
+            }
+
+            return [
+                'countryCode' => $countryCode !== '' ? $countryCode : '55',
+                'areaCode' => $areaCode !== '' ? $areaCode : '00',
+                'number' => $number,
+            ];
+        }
+
+        return null;
+    }
+
+    private function truncateIfoodText(string $value, int $limit): string
+    {
+        $normalized = trim($value);
+        if ($normalized === '' || $limit <= 0) {
+            return $normalized;
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($normalized, 0, $limit);
+        }
+
+        return substr($normalized, 0, $limit);
     }
 
     // ENTREGA
@@ -6424,6 +7117,87 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'action' => $actionPath,
                 'error' => $e->getMessage(),
             ]);
+            return [
+                'status' => 500,
+                'body' => [
+                    'message' => $e->getMessage(),
+                ],
+            ];
+        }
+    }
+
+    private function callIfoodShippingMerchantAction(
+        string $merchantId,
+        string $method,
+        string $path,
+        array $query = [],
+        array $payload = []
+    ): ?array {
+        try {
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->warning('iFood shipping merchant action skipped because token is unavailable', [
+                    'merchant_id' => $merchantId,
+                    'method' => $method,
+                    'path' => $path,
+                ]);
+
+                return null;
+            }
+
+            $options = [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $token,
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/json',
+                ],
+                'query' => $query,
+                'timeout' => 20,
+                'max_duration' => 30,
+            ];
+
+            if ($payload !== []) {
+                $options['json'] = $this->normalizeIfoodRequestPayload($payload);
+            }
+
+            self::$logger->info('iFood shipping merchant action request', [
+                'merchant_id' => $merchantId,
+                'method' => $method,
+                'path' => $path,
+                'query' => $query,
+                'payload' => $payload,
+            ]);
+
+            $response = $this->httpClient->request(
+                strtoupper($method),
+                self::API_BASE_URL . '/shipping/v1.0/merchants/' . rawurlencode($merchantId) . $path,
+                $options
+            );
+
+            $statusCode = $response->getStatusCode();
+            $rawBody = $response->getContent(false);
+            $body = $this->decodeIfoodActionResponseBody((string) $rawBody);
+
+            self::$logger->info('iFood shipping merchant action response', [
+                'merchant_id' => $merchantId,
+                'method' => $method,
+                'path' => $path,
+                'status_code' => $statusCode,
+                'response' => $body,
+            ]);
+
+            return [
+                'status' => $statusCode,
+                'body' => $body,
+            ];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood shipping merchant action error', [
+                'merchant_id' => $merchantId,
+                'method' => $method,
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+
             return [
                 'status' => 500,
                 'body' => [
