@@ -5115,6 +5115,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'delivery_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_method')),
             'confirm_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_confirm_method')),
             'delivery_area_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_area_id')),
+            'settlement_wallet_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settlement_wallet_id')),
             'settings_synced_at' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at')),
         ];
     }
@@ -5131,6 +5132,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'delivery_method' => 'store_delivery_method',
             'confirm_method' => 'store_confirm_method',
             'delivery_area_id' => 'store_delivery_area_id',
+            'settlement_wallet_id' => 'store_settlement_wallet_id',
         ];
 
         $persisted = false;
@@ -5156,6 +5158,39 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if ($persisted) {
             $this->upsertFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at', date('Y-m-d H:i:s'));
         }
+    }
+
+    public function resolveFood99SettlementWallet(People $provider, mixed $walletId): ?Wallet
+    {
+        $this->init();
+
+        $normalizedWalletId = preg_replace('/\D+/', '', trim((string) $walletId));
+        if ($normalizedWalletId === '') {
+            return null;
+        }
+
+        $wallet = $this->entityManager->getRepository(Wallet::class)->find((int) $normalizedWalletId);
+        if (!$wallet instanceof Wallet) {
+            return null;
+        }
+
+        $walletPeople = $wallet->getPeople();
+        if (!$walletPeople instanceof People) {
+            return null;
+        }
+
+        if ((int) $walletPeople->getId() !== (int) $provider->getId()) {
+            return null;
+        }
+
+        return $wallet;
+    }
+
+    public function getStoredSettlementWallet(People $provider): ?Wallet
+    {
+        $settings = $this->getStoredOperationalSettings($provider);
+
+        return $this->resolveFood99SettlementWallet($provider, $settings['settlement_wallet_id'] ?? null);
     }
 
     public function getLatestProviderOrderDeliveryType(People $provider): ?string

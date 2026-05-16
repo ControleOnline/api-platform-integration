@@ -384,6 +384,7 @@ class IntegrationController extends AbstractController
             'delivery_method',
             'confirm_method',
             'delivery_area_id',
+            'settlement_wallet_id',
         ];
 
         $merged = $remoteSettings;
@@ -1542,8 +1543,25 @@ class IntegrationController extends AbstractController
 
         $deliveryAreaPayload = is_array($payload['delivery_area_payload'] ?? null) ? $payload['delivery_area_payload'] : [];
         $deliveryRadiusKm = $this->normalizePositiveFloat($payload['delivery_radius_km'] ?? $payload['delivery_radius'] ?? null);
+        $settlementWalletIdProvided = array_key_exists('settlement_wallet_id', $payload);
+        $settlementWalletId = trim((string) ($payload['settlement_wallet_id'] ?? ''));
         if (($payload['delivery_radius_km'] ?? $payload['delivery_radius'] ?? null) !== null && $deliveryRadiusKm === null) {
             return new JsonResponse(['error' => 'delivery_radius_km must be a positive number'], Response::HTTP_BAD_REQUEST);
+        }
+
+        if ($settlementWalletIdProvided) {
+            if ($settlementWalletId === '') {
+                return new JsonResponse(['error' => 'settlement_wallet_id is required'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $resolvedSettlementWallet = $this->food99Service->resolveFood99SettlementWallet($provider, $settlementWalletId);
+            if (!$resolvedSettlementWallet instanceof \ControleOnline\Entity\Wallet) {
+                return new JsonResponse([
+                    'error' => 'settlement_wallet_id must belong to a wallet from the active company',
+                ], Response::HTTP_BAD_REQUEST);
+            }
+
+            $persistedOperationalSettings['settlement_wallet_id'] = (string) $resolvedSettlementWallet->getId();
         }
 
         if ($deliveryRadiusKm !== null || !empty($deliveryAreaPayload)) {
@@ -1581,7 +1599,7 @@ class IntegrationController extends AbstractController
             }
         }
 
-        if (empty($operations)) {
+        if (empty($operations) && empty($persistedOperationalSettings)) {
             return new JsonResponse([
                 'error' => 'No settings to update',
             ], Response::HTTP_BAD_REQUEST);

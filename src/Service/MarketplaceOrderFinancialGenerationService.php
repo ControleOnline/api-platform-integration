@@ -59,7 +59,9 @@ class MarketplaceOrderFinancialGenerationService
             : Order::APP_IFOOD;
         $marketplacePeople = $this->resolveMarketplacePeople($marketplaceApp);
         $walletName = $this->resolveMarketplaceWalletName($marketplaceApp);
-        $providerWallet = $this->walletService->discoverWallet($provider, $walletName);
+        $providerWallet = $marketplaceApp === Order::APP_FOOD99
+            ? $this->resolveFood99SettlementWallet($provider)
+            : $this->walletService->discoverWallet($provider, $walletName);
         $marketplaceWallet = $this->walletService->discoverWallet($marketplacePeople, $walletName);
         $reference = $referenceDate instanceof DateTimeInterface
             ? new DateTime($referenceDate->format('Y-m-d'))
@@ -401,7 +403,9 @@ class MarketplaceOrderFinancialGenerationService
 
         $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
 
-        $providerWallet = $this->walletService->discoverWallet($order->getProvider(), $walletName);
+        $providerWallet = $normalizedApp === strtolower(Order::APP_FOOD99)
+            ? $this->resolveFood99SettlementWallet($order->getProvider())
+            : $this->walletService->discoverWallet($order->getProvider(), $walletName);
         $marketplaceWallet = $this->walletService->discoverWallet($marketplacePeople, $walletName);
         $pendingStatus = $this->statusService->discoveryStatus('pending', 'waiting payment', 'invoice');
         $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
@@ -1069,6 +1073,21 @@ class MarketplaceOrderFinancialGenerationService
     private function resolveMarketplaceWalletName(string $app): string
     {
         return $app === Order::APP_FOOD99 ? self::FOOD99_NAME : Order::APP_IFOOD;
+    }
+
+    private function resolveFood99SettlementWallet(People $provider): Wallet
+    {
+        $wallet = $this->food99Service->getStoredSettlementWallet($provider);
+        if (!$wallet instanceof Wallet) {
+            throw new \RuntimeException(
+                sprintf(
+                    'Carteira de repasse do Food99 nao configurada para a empresa #%s.',
+                    (string) $provider->getId()
+                )
+            );
+        }
+
+        return $wallet;
     }
 
     private function findWeeklySettlementInvoiceForSummary(
