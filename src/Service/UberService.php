@@ -90,8 +90,17 @@ class UberService
             throw new \RuntimeException('Pedido sem provider vinculado.');
         }
 
+        $sourceOrder = $this->resolveQuoteSourceOrder($order);
+
         $pickupAddress = $this->resolvePickupAddress($order);
         $dropoffAddress = $this->resolveDropoffAddress($order);
+        if (!$pickupAddress instanceof Address) {
+            $pickupAddress = $this->resolvePickupAddress($sourceOrder);
+        }
+
+        if (!$dropoffAddress instanceof Address) {
+            $dropoffAddress = $this->resolveDropoffAddress($sourceOrder);
+        }
 
         if (!$pickupAddress instanceof Address) {
             throw new \RuntimeException('Pedido sem endereco de coleta valido.');
@@ -101,13 +110,13 @@ class UberService
             throw new \RuntimeException('Pedido sem endereco de entrega valido.');
         }
 
-        $dropoffContact = $this->resolveDropoffContact($order);
+        $dropoffContact = $this->resolveDropoffContact($order) ?: $this->resolveDropoffContact($sourceOrder);
         if ($dropoffContact === null) {
             throw new \RuntimeException('Pedido sem contato valido para a entrega.');
         }
 
-        $pickupContact = $this->resolvePickupContact($order);
-        $items = $this->buildOrderItemsPayload($order);
+        $pickupContact = $this->resolvePickupContact($order) ?: $this->resolvePickupContact($sourceOrder);
+        $items = $this->buildOrderItemsPayload($sourceOrder);
         if ($items === []) {
             throw new \RuntimeException('Pedido sem itens para solicitar o motoboy.');
         }
@@ -149,7 +158,7 @@ class UberService
 
         $orderSummary = [
             'currency_code' => self::CURRENCY_CODE,
-            'order_value' => $this->toMinorUnit((float) $order->getPrice()),
+            'order_value' => $this->toMinorUnit((float) $sourceOrder->getPrice()),
         ];
 
         $estimateResponse = $this->requestDeliveryEstimate(
@@ -251,6 +260,453 @@ class UberService
                 'tracking_url' => $trackingUrl,
                 'status' => $deliveryStatus !== '' ? $deliveryStatus : 'requested',
                 'estimate' => $estimateBody,
+                'delivery' => $deliveryBody,
+            ],
+        ];
+    }
+
+    public function getStoredIntegrationState(People $provider): array
+    {
+        $storeId = $this->resolveConfiguredStoreId($provider);
+        $clientId = $this->resolveClientId($provider);
+        $clientSecret = $this->resolveClientSecret($provider);
+        $connected = $storeId !== '' && $clientId !== '' && $clientSecret !== '';
+
+        return [
+            'connected' => $connected,
+            'remote_connected' => $storeId !== '',
+            'online' => $connected,
+            'store_id' => $storeId !== '' ? $storeId : null,
+            'provider_id' => $provider->getId(),
+            'client_id_configured' => $clientId !== '',
+            'client_secret_configured' => $clientSecret !== '',
+            'last_error_code' => null,
+            'last_error_message' => null,
+        ];
+    }
+
+    public function quoteDelivery(Order $order): array
+    {
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return [
+                'errno' => 400,
+                'errmsg' => 'Pedido sem provider vinculado.',
+            ];
+        }
+
+        $sourceOrder = $this->resolveQuoteSourceOrder($order);
+        $pickupAddress = $this->resolvePickupAddress($order) ?: $this->resolvePickupAddress($sourceOrder);
+        $dropoffAddress = $this->resolveDropoffAddress($order) ?: $this->resolveDropoffAddress($sourceOrder);
+
+        if (!$pickupAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de coleta valido.',
+            ];
+        }
+
+        if (!$dropoffAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de entrega valido.',
+            ];
+        }
+
+        $uberState = $this->getUberState($order);
+        $pickupLocation = $this->buildLocationPayload($pickupAddress);
+        $pickupStore = $this->resolvePickupStore($pickupLocation, $uberState, $provider);
+        if (isset($pickupStore['errno']) && (int) $pickupStore['errno'] !== 0) {
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $pickupStore, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => (string) ($pickupStore['errmsg'] ?? 'Falha ao localizar store do Uber.'),
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+            ]);
+
+            return $pickupStore;
+        }
+
+        $pickupStoreId = trim((string) ($pickupStore['store_id'] ?? ''));
+        if ($pickupStoreId === '') {
+            $result = [
+                'errno' => 500,
+                'errmsg' => 'store_id do Uber nao configurado.',
+            ];
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $result, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => $result['errmsg'],
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+            ]);
+
+            return $result;
+        }
+
+        $pickupContact = $this->resolvePickupContact($order) ?: $this->resolvePickupContact($sourceOrder);
+        $dropoffContact = $this->resolveDropoffContact($order) ?: $this->resolveDropoffContact($sourceOrder);
+        $dropoffPayload = $this->buildAddressPayload($dropoffAddress);
+        if ($dropoffPayload === []) {
+            $result = [
+                'errno' => 422,
+                'errmsg' => 'Endereco de entrega invalido para o Uber.',
+            ];
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $result, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => $result['errmsg'],
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+            ]);
+
+            return $result;
+        }
+
+        $pickupInstructions = $this->resolvePickupInstructions($order) ?: $this->resolvePickupInstructions($sourceOrder);
+        $dropoffInstructions = $this->resolveDropoffInstructions($order) ?: $this->resolveDropoffInstructions($sourceOrder);
+        $orderSummary = [
+            'currency_code' => self::CURRENCY_CODE,
+            'order_value' => $this->toMinorUnit((float) $sourceOrder->getPrice()),
+        ];
+
+        $estimateResponse = $this->requestDeliveryEstimate(
+            $pickupStoreId,
+            $dropoffPayload,
+            $pickupInstructions,
+            $orderSummary,
+            $provider
+        );
+        if (($estimateResponse['status'] ?? 0) < 200 || ($estimateResponse['status'] ?? 0) >= 300) {
+            $result = [
+                'errno' => $estimateResponse['status'] ?? 500,
+                'errmsg' => 'Falha ao obter estimate do Uber.',
+                'estimate' => $estimateResponse,
+            ];
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $result, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => $result['errmsg'],
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'quote_response' => is_array($estimateResponse['body'] ?? null) ? $estimateResponse['body'] : [],
+            ]);
+
+            return $result;
+        }
+
+        $estimateBody = is_array($estimateResponse['body']) ? $estimateResponse['body'] : [];
+        $estimateId = $this->extractValue($estimateBody, ['estimate_id', 'estimateId']);
+        if ($estimateId === '') {
+            $result = [
+                'errno' => 500,
+                'errmsg' => 'Estimate do Uber nao retornou identificador.',
+                'estimate' => $estimateResponse,
+            ];
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $result, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => $result['errmsg'],
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'quote_response' => $estimateBody,
+            ]);
+
+            return $result;
+        }
+
+        $pickupAt = (int) ($this->extractPathValue($estimateBody, 'estimates.0.pickup_at') ?? 0);
+        if ($pickupAt < 0) {
+            $pickupAt = 0;
+        }
+
+        $quotePrice = $this->normalizeMoneyValue(
+            $this->extractPathValue($estimateBody, 'estimates.0.delivery_fee.total')
+        );
+        if ($quotePrice === null || $quotePrice <= 0) {
+            $result = [
+                'errno' => 422,
+                'errmsg' => 'Estimate do Uber nao retornou valor de cotacao valido.',
+                'estimate' => $estimateResponse,
+            ];
+            $this->persistQuoteState($order, $this->buildUberStateForError($uberState, $result, 'error'), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => $result['errmsg'],
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'quote_response' => $estimateBody,
+                'estimate_response' => $estimateBody,
+            ]);
+
+            return $result;
+        }
+        $eta = $this->formatUberEstimateEta($estimateBody);
+        $quoteRequestedAt = date('Y-m-d H:i:s');
+        $uberState = array_merge($uberState, [
+            'provider_id' => $provider->getId(),
+            'store_id' => $pickupStoreId,
+            'external_store_id' => $pickupStore['external_store_id'] ?? null,
+            'store_lookup_response' => $pickupStore['lookup_response'] ?? null,
+            'estimate_id' => $estimateId,
+            'quote_id' => $estimateId,
+            'quote_state' => 'ready',
+            'quote_requested_at' => $quoteRequestedAt,
+            'quote_updated_at' => $quoteRequestedAt,
+            'pickup_at' => $pickupAt,
+            'price' => $quotePrice,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'delivery_id' => null,
+            'delivery_response' => null,
+            'quote_response' => $estimateBody,
+            'estimate_response' => $estimateBody,
+            'order_summary' => $orderSummary,
+            'pickup' => [
+                'address' => $pickupAddress,
+                'location' => $pickupLocation,
+                'contact' => $pickupContact ?? null,
+                'instructions' => $pickupInstructions,
+            ],
+            'dropoff' => [
+                'address' => $dropoffAddress,
+                'payload' => $dropoffPayload,
+                'contact' => $dropoffContact ?? null,
+                'instructions' => $dropoffInstructions,
+            ],
+        ]);
+
+        $this->persistQuoteState($order, $uberState, [
+            'flow' => 'quote',
+            'provider_key' => 'uber',
+            'provider_label' => self::APP_CONTEXT,
+            'quote_state' => 'ready',
+            'quote_id' => $estimateId,
+            'estimate_id' => $estimateId,
+            'quote_requested_at' => $quoteRequestedAt,
+            'quote_updated_at' => $quoteRequestedAt,
+            'price' => $quotePrice,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'delivery_response' => null,
+            'quote_response' => $estimateBody,
+            'estimate_response' => $estimateBody,
+            'pickup_at' => $pickupAt,
+            'store_id' => $pickupStoreId,
+            'pickup_address_id' => $pickupAddress->getId(),
+            'dropoff_address_id' => $dropoffAddress->getId(),
+            'main_order_id' => $order->getMainOrderId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'order_summary' => $orderSummary,
+        ]);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'estimate_id' => $estimateId,
+                'quote_id' => $estimateId,
+                'price' => $quotePrice,
+                'eta' => $eta,
+                'estimate' => $estimateBody,
+            ],
+        ];
+    }
+
+    public function requestDeliveryFromQuote(Order $order): array
+    {
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return [
+                'errno' => 400,
+                'errmsg' => 'Pedido sem provider vinculado.',
+            ];
+        }
+
+        $uberState = $this->getUberState($order);
+        if (!empty($uberState['delivery_id']) || !empty($uberState['tracking_url']) || in_array((string) ($uberState['quote_state'] ?? ''), ['selected', 'requested'], true)) {
+            return [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'already_requested' => true,
+                'data' => [
+                    'order_id' => $order->getId(),
+                    'delivery_id' => $uberState['delivery_id'] ?? null,
+                    'tracking_url' => $uberState['tracking_url'] ?? null,
+                    'status' => $uberState['status'] ?? 'requested',
+                ],
+            ];
+        }
+
+        $sourceOrder = $this->resolveQuoteSourceOrder($order);
+        $pickupAddress = $this->resolvePickupAddress($order) ?: $this->resolvePickupAddress($sourceOrder);
+        $dropoffAddress = $this->resolveDropoffAddress($order) ?: $this->resolveDropoffAddress($sourceOrder);
+
+        if (!$pickupAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de coleta valido.',
+            ];
+        }
+
+        if (!$dropoffAddress instanceof Address) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem endereco de entrega valido.',
+            ];
+        }
+
+        $dropoffContact = $this->resolveDropoffContact($order) ?: $this->resolveDropoffContact($sourceOrder);
+        if ($dropoffContact === null) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem contato valido para a entrega.',
+            ];
+        }
+
+        $pickupContact = $this->resolvePickupContact($order) ?: $this->resolvePickupContact($sourceOrder);
+        $items = $this->buildOrderItemsPayload($sourceOrder);
+        if ($items === []) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Pedido sem itens para solicitar o motoboy.',
+            ];
+        }
+
+        $pickupLocation = $this->buildLocationPayload($pickupAddress);
+        $pickupStore = $this->resolvePickupStore($pickupLocation, $uberState, $provider);
+        if (isset($pickupStore['errno']) && (int) $pickupStore['errno'] !== 0) {
+            return $pickupStore;
+        }
+
+        $pickupStoreId = trim((string) ($pickupStore['store_id'] ?? ''));
+        if ($pickupStoreId === '') {
+            return [
+                'errno' => 500,
+                'errmsg' => 'store_id do Uber nao configurado.',
+            ];
+        }
+
+        $estimateId = trim((string) ($uberState['estimate_id'] ?? $uberState['quote_id'] ?? ''));
+        if ($estimateId === '') {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Cotacao do Uber nao encontrada.',
+            ];
+        }
+
+        $dropoffPayload = $this->buildAddressPayload($dropoffAddress);
+        if ($dropoffPayload === []) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Endereco de entrega invalido para o Uber.',
+            ];
+        }
+
+        $pickupInstructions = $this->resolvePickupInstructions($order) ?: $this->resolvePickupInstructions($sourceOrder);
+        $dropoffInstructions = $this->resolveDropoffInstructions($order) ?: $this->resolveDropoffInstructions($sourceOrder);
+        $orderSummary = is_array($uberState['order_summary'] ?? null)
+            ? $uberState['order_summary']
+            : [
+                'currency_code' => self::CURRENCY_CODE,
+                'order_value' => $this->toMinorUnit((float) $sourceOrder->getPrice()),
+            ];
+        $pickupAt = (int) ($uberState['pickup_at'] ?? 0);
+
+        $deliveryResponse = $this->createDelivery(
+            $order,
+            $estimateId,
+            $pickupStoreId,
+            $pickupAt,
+            $dropoffPayload,
+            $pickupInstructions,
+            $dropoffInstructions,
+            $dropoffContact,
+            $items,
+            $orderSummary,
+            $provider
+        );
+        if (($deliveryResponse['status'] ?? 0) < 200 || ($deliveryResponse['status'] ?? 0) >= 300) {
+            $deliveryBody = is_array($deliveryResponse['body'] ?? null) ? $deliveryResponse['body'] : [];
+            $this->persistQuoteState($order, array_merge($uberState, [
+                'quote_state' => 'error',
+                'quote_message' => 'Falha ao criar entrega no Uber.',
+                'delivery_response' => $deliveryBody,
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+            ]), [
+                'flow' => 'quote',
+                'provider_key' => 'uber',
+                'provider_label' => self::APP_CONTEXT,
+                'quote_state' => 'error',
+                'quote_message' => 'Falha ao criar entrega no Uber.',
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'delivery_response' => $deliveryBody,
+                'quote_response' => $uberState['quote_response'] ?? [],
+                'estimate_response' => $uberState['estimate_response'] ?? [],
+            ]);
+
+            return [
+                'errno' => $deliveryResponse['status'] ?? 500,
+                'errmsg' => 'Falha ao criar entrega no Uber.',
+                'estimate' => $uberState['estimate_response'] ?? null,
+                'delivery' => $deliveryResponse,
+            ];
+        }
+
+        $deliveryBody = is_array($deliveryResponse['body']) ? $deliveryResponse['body'] : [];
+        $deliveryId = $this->extractValue($deliveryBody, ['order_id', 'orderId', 'delivery_id', 'deliveryId', 'id']);
+        $trackingUrl = $this->extractValue($deliveryBody, ['order_tracking_url', 'tracking_url', 'trackingUrl']);
+        $deliveryStatus = $this->extractValue($deliveryBody, ['order_status', 'status']);
+        $quoteRequestedAt = date('Y-m-d H:i:s');
+
+        $uberState = array_merge($uberState, [
+            'quote_state' => 'selected',
+            'selected_at' => $quoteRequestedAt,
+            'requested_at' => $quoteRequestedAt,
+            'delivery_id' => $deliveryId !== '' ? $deliveryId : null,
+            'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+            'status' => $deliveryStatus !== '' ? $deliveryStatus : 'requested',
+            'delivery_response' => $deliveryBody,
+            'quote_updated_at' => $quoteRequestedAt,
+        ]);
+        $this->persistQuoteState($order, $uberState, [
+            'flow' => 'quote',
+            'provider_key' => 'uber',
+            'provider_label' => self::APP_CONTEXT,
+            'quote_state' => 'selected',
+            'selected_at' => $quoteRequestedAt,
+            'requested_at' => $quoteRequestedAt,
+            'delivery_id' => $deliveryId !== '' ? $deliveryId : null,
+            'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+            'status' => $deliveryStatus !== '' ? $deliveryStatus : 'requested',
+            'delivery_response' => $deliveryBody,
+            'quote_response' => $uberState['quote_response'] ?? [],
+            'estimate_response' => $uberState['estimate_response'] ?? [],
+            'price' => $this->normalizeMoneyValue($this->extractPathValue($uberState['quote_response'] ?? [], 'estimates.0.delivery_fee.total')),
+        ]);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'delivery_id' => $deliveryId !== '' ? $deliveryId : null,
+                'tracking_url' => $trackingUrl !== '' ? $trackingUrl : null,
+                'status' => $deliveryStatus !== '' ? $deliveryStatus : 'requested',
                 'delivery' => $deliveryBody,
             ],
         ];
@@ -1286,6 +1742,87 @@ class UberService
         $order->setOtherInformations($otherInformations);
         $this->entityManager->persist($order);
         $this->entityManager->flush();
+    }
+
+    private function persistQuoteState(Order $order, array $uberState, array $logisticsState): void
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            $otherInformations = [];
+        }
+
+        $otherInformations[self::APP_CONTEXT] = $uberState;
+        $otherInformations['logistics'] = $logisticsState;
+
+        $order->setOtherInformations($otherInformations);
+        $order->setAlterDate(new \DateTime('now'));
+        if (isset($logisticsState['price']) && is_numeric($logisticsState['price'])) {
+            $order->setPrice((float) $logisticsState['price']);
+        }
+
+        $this->entityManager->persist($order);
+        $this->entityManager->flush();
+    }
+
+    private function resolveQuoteSourceOrder(Order $order): Order
+    {
+        $mainOrder = $order->getMainOrder();
+        if ($mainOrder instanceof Order) {
+            return $mainOrder;
+        }
+
+        $mainOrderId = $order->getMainOrderId();
+        if ($mainOrderId) {
+            $resolved = $this->entityManager->getRepository(Order::class)->find((int) $mainOrderId);
+            if ($resolved instanceof Order) {
+                return $resolved;
+            }
+        }
+
+        return $order;
+    }
+
+    private function buildUberStateForError(array $uberState, array $response, string $quoteState = 'error'): array
+    {
+        return array_merge($uberState, [
+            'quote_state' => $quoteState,
+            'last_error_code' => $response['errno'] ?? null,
+            'last_error_message' => $response['errmsg'] ?? null,
+            'quote_message' => $response['errmsg'] ?? ($uberState['quote_message'] ?? null),
+            'quote_updated_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    private function normalizeMoneyValue(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        return round(((float) $value) / 100, 2);
+    }
+
+    private function formatUberEstimateEta(array $estimateBody): ?string
+    {
+        $etd = (int) ($this->extractPathValue($estimateBody, 'estimates.0.etd') ?? 0);
+        if ($etd <= 0) {
+            return null;
+        }
+
+        $minutes = (int) round(max(0, ($etd - (int) round(microtime(true) * 1000)) / 60000));
+        if ($minutes <= 0) {
+            return null;
+        }
+
+        return sprintf('%d min', $minutes);
     }
 
     private function extractValue(array $payload, array $paths): string

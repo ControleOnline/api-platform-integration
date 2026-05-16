@@ -111,6 +111,136 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return trim((string) $value);
     }
 
+    private function resolveFood99QuoteSourceOrder(Order $order): Order
+    {
+        $mainOrder = $order->getMainOrder();
+        if ($mainOrder instanceof Order) {
+            return $mainOrder;
+        }
+
+        $mainOrderId = $order->getMainOrderId();
+        if ($mainOrderId) {
+            $resolved = $this->entityManager->getRepository(Order::class)->find((int) $mainOrderId);
+            if ($resolved instanceof Order) {
+                return $resolved;
+            }
+        }
+
+        return $order;
+    }
+
+    private function resolveFood99QuotePickupAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $pickupAddress = $order->getAddressOrigin();
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
+
+        $pickupAddress = $sourceOrder->getAddressOrigin();
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
+
+        $provider = $sourceOrder->getProvider();
+        if ($provider instanceof People) {
+            foreach ($provider->getAddress() as $address) {
+                if ($address instanceof Address) {
+                    return $address;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveFood99QuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $dropoffAddress = $order->getAddressDestination();
+        if ($dropoffAddress instanceof Address) {
+            return $dropoffAddress;
+        }
+
+        $dropoffAddress = $sourceOrder->getAddressDestination();
+
+        return $dropoffAddress instanceof Address ? $dropoffAddress : null;
+    }
+
+    private function getStoredFood99QuoteState(Order $order): array
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            return [];
+        }
+
+        $logistics = $otherInformations['logistics'] ?? [];
+
+        return is_array($logistics) ? $logistics : [];
+    }
+
+    private function persistFood99QuoteState(Order $order, array $storedState, array $logisticsState): void
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            $otherInformations = [];
+        }
+
+        $otherInformations[self::APP_CONTEXT] = $storedState;
+        $otherInformations['logistics'] = $logisticsState;
+
+        $order->setOtherInformations($otherInformations);
+        $order->setAlterDate(new DateTime('now'));
+        if (isset($logisticsState['price']) && is_numeric($logisticsState['price'])) {
+            $order->setPrice((float) $logisticsState['price']);
+        }
+
+        $this->entityManager->persist($order);
+        $this->entityManager->flush();
+    }
+
+    private function persistFood99QuoteFailure(Order $order, string $quoteState, string $message, array $extraState = []): array
+    {
+        $now = date('Y-m-d H:i:s');
+        $storedState = array_merge($this->getStoredFood99QuoteState($order), $extraState, [
+            'quote_state' => $quoteState,
+            'quote_message' => $message,
+            'quote_requested_at' => $extraState['quote_requested_at'] ?? $now,
+            'quote_updated_at' => $now,
+            'price' => null,
+            'tracking_url' => null,
+            'remote_order_id' => $extraState['remote_order_id'] ?? null,
+        ]);
+        $this->persistFood99QuoteState($order, $storedState, array_merge([
+            'flow' => 'quote',
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => $quoteState,
+            'quote_message' => $message,
+            'quote_requested_at' => $storedState['quote_requested_at'],
+            'quote_updated_at' => $now,
+            'price' => null,
+            'tracking_url' => null,
+            'quote_response' => $extraState['quote_response'] ?? null,
+        ], $extraState));
+
+        return [
+            'errno' => $extraState['quote_status'] ?? 501,
+            'errmsg' => $message,
+            'data' => [
+                'order_id' => $order->getId(),
+                'quote_state' => $quoteState,
+                'quote_message' => $message,
+            ],
+        ];
+    }
+
     private function normalizeCancelReasonId(mixed $value): ?int
     {
         if ($value === null || $value === '') {
@@ -4938,6 +5068,87 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             'last_reconcile_source' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
             'last_reconcile_duration_ms' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
         ];
+    }
+
+    public function quoteDelivery(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem provider vinculado.');
+        }
+
+        $sourceOrder = $this->resolveFood99QuoteSourceOrder($order);
+        $stored = $this->getStoredIntegrationState($provider);
+        if (empty($stored['connected']) || empty($stored['online'])) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', '99 Food nao esta conectado ou online.');
+        }
+
+        $pickupAddress = $this->resolveFood99QuotePickupAddress($order, $sourceOrder);
+        if (!$pickupAddress instanceof Address) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem endereco de coleta valido.');
+        }
+
+        $dropoffAddress = $this->resolveFood99QuoteDropoffAddress($order, $sourceOrder);
+        if (!$dropoffAddress instanceof Address) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
+        }
+
+        return $this->persistFood99QuoteFailure(
+            $order,
+            'unavailable',
+            '99 Food nao disponibiliza cotacao publica nesta trilha.',
+            [
+                'provider_key' => 'food99',
+                'provider_label' => '99 Food',
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'pickup_address_id' => $pickupAddress->getId(),
+                'dropoff_address_id' => $dropoffAddress->getId(),
+                'main_order_id' => $order->getMainOrderId(),
+                'source_order_id' => $sourceOrder->getId(),
+            ]
+        );
+    }
+
+    public function requestDeliveryFromQuote(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return [
+                'errno' => 400,
+                'errmsg' => 'Pedido sem provider vinculado.',
+            ];
+        }
+
+        $state = $this->getStoredFood99QuoteState($order);
+        if ($this->normalizeIncomingFood99Value($state['remote_order_id'] ?? null) !== '') {
+            return [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'already_requested' => true,
+                'data' => [
+                    'order_id' => $order->getId(),
+                    'remote_order_id' => $state['remote_order_id'] ?? null,
+                    'tracking_url' => $state['tracking_url'] ?? null,
+                ],
+            ];
+        }
+
+        return $this->persistFood99QuoteFailure(
+            $order,
+            'unavailable',
+            '99 Food nao disponibiliza solicitação de entrega para esta trilha.',
+            [
+                'provider_key' => 'food99',
+                'provider_label' => '99 Food',
+                'quote_requested_at' => $state['quote_requested_at'] ?? date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+            ]
+        );
     }
 
     public function getAuthorizationPage(array $payload): ?array
