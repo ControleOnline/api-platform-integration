@@ -83,6 +83,18 @@ class DefaultFoodServiceTest extends TestCase
         self::assertSame(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $sentMessages[1][1]);
     }
 
+    public function testConstructorKeepsLegacyContainerCompatibility(): void
+    {
+        $constructor = new \ReflectionMethod(DefaultFoodService::class, '__construct');
+        $parameters = $constructor->getParameters();
+
+        self::assertCount(20, $parameters);
+        self::assertSame(17, $constructor->getNumberOfRequiredParameters());
+        self::assertTrue($parameters[17]->isOptional());
+        self::assertTrue($parameters[18]->isOptional());
+        self::assertTrue($parameters[19]->isOptional());
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
