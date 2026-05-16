@@ -49,11 +49,50 @@ class DefaultFoodService
         protected WalletService $walletService,
         protected OrderProductService $orderProductService,
         protected ProductGroupService $productGroupService,
-        protected IntegrationService $integrationService,
-        protected WhatsAppService $whatsAppService,
-        protected ContainerInterface $container
+        protected ?IntegrationService $integrationService = null,
+        protected ?WhatsAppService $whatsAppService = null,
+        protected ?ContainerInterface $container = null
     ) {}
 
+    protected function resolveIntegrationService(): ?IntegrationService
+    {
+        if ($this->integrationService instanceof IntegrationService) {
+            return $this->integrationService;
+        }
+
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(IntegrationService::class)) {
+            return null;
+        }
+
+        $service = $this->container->get(IntegrationService::class);
+        if (!$service instanceof IntegrationService) {
+            return null;
+        }
+
+        $this->integrationService = $service;
+
+        return $this->integrationService;
+    }
+
+    protected function resolveWhatsAppService(): ?WhatsAppService
+    {
+        if ($this->whatsAppService instanceof WhatsAppService) {
+            return $this->whatsAppService;
+        }
+
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(WhatsAppService::class)) {
+            return null;
+        }
+
+        $service = $this->container->get(WhatsAppService::class);
+        if (!$service instanceof WhatsAppService) {
+            return null;
+        }
+
+        $this->whatsAppService = $service;
+
+        return $this->whatsAppService;
+    }
 
     protected function printOrder(Order $order)
     {
@@ -112,6 +151,11 @@ class DefaultFoodService
         string $app,
         ?DateTime $referenceDate = null
     ): array {
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(MarketplaceOrderFinancialGenerationService::class)) {
+            self::$logger?->warning('Store closing summary skipped because the financial generation service is unavailable in the current container');
+            return [];
+        }
+
         /** @var MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService */
         $marketplaceOrderFinancialGenerationService = $this->container->get(MarketplaceOrderFinancialGenerationService::class);
         $summary = $marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
@@ -172,7 +216,14 @@ class DefaultFoodService
             return;
         }
 
-        $connection = $this->whatsAppService->searchConnectionFromPeople($company, 'support', true);
+        $whatsAppService = $this->resolveWhatsAppService();
+        $integrationService = $this->resolveIntegrationService();
+        if (!$whatsAppService instanceof WhatsAppService || !$integrationService instanceof IntegrationService) {
+            self::$logger?->warning('Store closing WhatsApp notification skipped because integration dependencies are unavailable');
+            return;
+        }
+
+        $connection = $whatsAppService->searchConnectionFromPeople($company, 'support', true);
         if (!$connection) {
             return;
         }
@@ -198,7 +249,7 @@ class DefaultFoodService
                 continue;
             }
 
-            $this->integrationService->addIntegration($payload, 'WhatsApp', null, null, $company);
+            $integrationService->addIntegration($payload, 'WhatsApp', null, null, $company);
         }
     }
 
