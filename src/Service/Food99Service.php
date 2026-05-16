@@ -5164,8 +5164,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
     {
         $this->init();
 
-        $normalizedWalletId = preg_replace('/\D+/', '', trim((string) $walletId));
-        if ($normalizedWalletId === '') {
+        $normalizedWalletId = trim((string) $walletId);
+        if ($normalizedWalletId === '' || !ctype_digit($normalizedWalletId)) {
             return null;
         }
 

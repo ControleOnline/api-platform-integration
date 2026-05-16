@@ -158,11 +158,21 @@ class DefaultFoodService
 
         /** @var MarketplaceOrderFinancialGenerationService $marketplaceOrderFinancialGenerationService */
         $marketplaceOrderFinancialGenerationService = $this->container->get(MarketplaceOrderFinancialGenerationService::class);
-        $summary = $marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
-            $company,
-            $app,
-            $referenceDate
-        );
+        try {
+            $summary = $marketplaceOrderFinancialGenerationService->buildStoreClosingSummary(
+                $company,
+                $app,
+                $referenceDate
+            );
+        } catch (\Throwable $exception) {
+            self::$logger?->warning('Store closing summary skipped because summary generation failed', [
+                'provider_id' => $company->getId(),
+                'app' => $app,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return [];
+        }
 
         $this->sendStoreClosingWhatsAppNotifications($company, $summary);
 

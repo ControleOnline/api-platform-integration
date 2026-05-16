@@ -6,6 +6,7 @@ use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderInvoice;
 use ControleOnline\Service\MarketplaceOrderFinancialGenerationService;
+use ControleOnline\Service\Food99Service;
 use DateTime;
 use Doctrine\Common\Collections\ArrayCollection;
 use PHPUnit\Framework\TestCase;
@@ -182,11 +183,130 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         );
     }
 
+    public function testFood99BuildContextUsesConfiguredSettlementWalletForTheProvider(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $provider = $this->createConfiguredMock(\ControleOnline\Entity\People::class, [
+            'getId' => 3,
+        ]);
+        $marketplacePeople = $this->createConfiguredMock(\ControleOnline\Entity\People::class, [
+            'getId' => 99,
+        ]);
+
+        $providerWallet = new \ControleOnline\Entity\Wallet();
+        $providerWallet->setId(21);
+        $providerWallet->setWallet('Pic Pay');
+        $providerWallet->setPeople($provider);
+
+        $marketplaceWallet = new \ControleOnline\Entity\Wallet();
+        $marketplaceWallet->setId(99);
+        $marketplaceWallet->setWallet('99 Food');
+        $marketplaceWallet->setPeople($marketplacePeople);
+
+        $order = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_FOOD99,
+            'getProvider' => $provider,
+            'getPrice' => 100.0,
+            'getOrderDate' => new DateTime('2026-05-05 10:00:00'),
+            'getId' => 570004,
+        ]);
+
+        $snapshot = [
+            'financial' => [
+                'items_total' => 100.0,
+                'customer_total' => 100.0,
+                'weekly_settlement_amount' => 73.51,
+                'service_fee' => 2.03,
+                'shop_paid_money' => 73.51,
+                'store_receivable_total' => 73.51,
+                'commission_distribution_amount' => 5.93,
+                'payment_processing_amount' => 2.40,
+                'logistics_cost_amount' => 5.99,
+            ],
+            'payment' => [
+                'is_paid_online' => true,
+                'amount_paid' => 100.0,
+            ],
+            'delivery' => [
+                'is_platform_delivery' => false,
+            ],
+        ];
+
+        $food99Service = $this->createMock(Food99Service::class);
+        $food99Service
+            ->expects(self::once())
+            ->method('getOrderHomologationSnapshot')
+            ->with($order)
+            ->willReturn($snapshot);
+        $food99Service
+            ->expects(self::once())
+            ->method('getStoredOrderIntegrationState')
+            ->with($order)
+            ->willReturn(['is_platform_delivery' => false]);
+        $food99Service
+            ->expects(self::once())
+            ->method('getStoredSettlementWallet')
+            ->with($provider)
+            ->willReturn($providerWallet);
+
+        $peopleService = $this->createMock(\ControleOnline\Service\PeopleService::class);
+        $peopleService
+            ->expects(self::once())
+            ->method('discoveryPeople')
+            ->with('6012920000123', null, [], '99 Food', 'J')
+            ->willReturn($marketplacePeople);
+
+        $walletService = $this->createMock(\ControleOnline\Service\WalletService::class);
+        $walletService
+            ->expects(self::once())
+            ->method('discoverWallet')
+            ->with($marketplacePeople, '99 Food')
+            ->willReturn($marketplaceWallet);
+
+        $pendingStatus = $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+            'getId' => 1,
+        ]);
+        $paidStatus = $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+            'getId' => 2,
+        ]);
+        $statusService = $this->createMock(\ControleOnline\Service\StatusService::class);
+        $statusService
+            ->expects(self::exactly(2))
+            ->method('discoveryStatus')
+            ->willReturnOnConsecutiveCalls($pendingStatus, $paidStatus);
+
+        $this->setObjectProperty($service, 'food99Service', $food99Service);
+        $this->setObjectProperty($service, 'peopleService', $peopleService);
+        $this->setObjectProperty($service, 'walletService', $walletService);
+        $this->setObjectProperty($service, 'statusService', $statusService);
+        $this->setObjectProperty($service, 'entityManager', $this->createMock(\Doctrine\ORM\EntityManagerInterface::class));
+        $this->setObjectProperty($service, 'invoiceService', $this->createMock(\ControleOnline\Service\InvoiceService::class));
+        $this->setObjectProperty($service, 'orderService', $this->createMock(\ControleOnline\Service\OrderService::class));
+        $this->setObjectProperty($service, 'iFoodService', $this->createMock(\ControleOnline\Service\iFoodService::class));
+
+        $context = $this->invokePrivateMethod($service, 'buildContext', $order);
+
+        self::assertSame($providerWallet, $context['provider_wallet']);
+        self::assertSame($marketplaceWallet, $context['marketplace_wallet']);
+        self::assertSame('99 Food', $context['wallet_name']);
+        self::assertSame('99 Food', $context['marketplace_label']);
+        self::assertSame(73.51, $context['weekly_settlement_amount']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
         $method->setAccessible(true);
 
         return $method->invoke($object, ...$arguments);
+    }
+
+    private function setObjectProperty(object $object, string $propertyName, mixed $value): void
+    {
+        $property = new \ReflectionProperty($object, $propertyName);
+        $property->setAccessible(true);
+        $property->setValue($object, $value);
     }
 }

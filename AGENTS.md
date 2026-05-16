@@ -19,6 +19,7 @@
 - Ajustes e descontos que ja nascem compensados dentro do repasse do marketplace, sem cobranca separada para a loja, devem ser modelados como fluxo interno do marketplace com `payer = marketplace` e `receiver = marketplace`.
 - Recebimentos vindos de marketplace para `Food99` e `iFood` devem ser agrupados em uma invoice semanal unica, com vencimento na quarta-feira e vinculacao por `order_invoice` para todos os pedidos incluidos no repasse.
 - Em `Food99`, a invoice de repasse/cobranca deve usar `receiver = 99 Food`, nunca `iFood` ou estado compartilhado do fluxo legado.
+- Em `Food99`, a carteira de repasse da loja vem somente de `store_settlement_wallet_id` configurado na tela de integracao; `provider_wallet` nao pode ser inferido nem cair em `99 Food`.
 - Em `Food99`, a geracao financeira deve ler somente `order.otherInformations.Food99`; o legado `iFood` nao pode ser usado para criar ou recriar invoices.
 - Em `Food99`, pedidos de segunda a domingo entram na mesma invoice semanal, com vencimento na quarta-feira seguinte ao fechamento.
 - Em `Food99`, pedidos novos do webhook `orderNew` devem gerar esse financeiro automaticamente no pipeline de integracao. O endpoint manual de invoices fica como backfill para pedidos legados.

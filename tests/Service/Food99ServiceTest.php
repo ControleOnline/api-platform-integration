@@ -21,6 +21,7 @@ use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
@@ -186,6 +187,75 @@ class Food99ServiceTest extends TestCase
             $oldQueue,
             $newQueue
         );
+    }
+
+    public function testResolveFood99SettlementWalletReturnsWalletOnlyForTheActiveCompany(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 3,
+        ]);
+        $wallet = new Wallet();
+        $wallet->setId(27);
+        $wallet->setWallet('Pic Pay');
+        $wallet->setPeople($provider);
+
+        $walletRepository = $this->createMock(EntityRepository::class);
+        $walletRepository
+            ->expects(self::once())
+            ->method('find')
+            ->with(27)
+            ->willReturn($wallet);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(Wallet::class)
+            ->willReturn($walletRepository);
+
+        $resolvedWallet = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99SettlementWallet',
+            $provider,
+            '27'
+        );
+
+        self::assertSame($wallet, $resolvedWallet);
+    }
+
+    public function testResolveFood99SettlementWalletRejectsWalletFromAnotherCompany(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 3,
+        ]);
+        $otherCompany = $this->createConfiguredMock(People::class, [
+            'getId' => 8,
+        ]);
+        $wallet = new Wallet();
+        $wallet->setId(32);
+        $wallet->setWallet('Pic Pay');
+        $wallet->setPeople($otherCompany);
+
+        $walletRepository = $this->createMock(EntityRepository::class);
+        $walletRepository
+            ->expects(self::once())
+            ->method('find')
+            ->with(32)
+            ->willReturn($wallet);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(Wallet::class)
+            ->willReturn($walletRepository);
+
+        $resolvedWallet = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99SettlementWallet',
+            $provider,
+            '32'
+        );
+
+        self::assertNull($resolvedWallet);
     }
 
     public function testFood99OrderIsNotMarkedReadyWhenSomeQueueEntryIsStillWorking(): void

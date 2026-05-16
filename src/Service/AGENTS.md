@@ -20,6 +20,7 @@
 - Em `Food99`, pedidos `canceled`/`cancelled` nao devem recriar financeiro; o backfill deve apenas limpar invoices gerenciadas legadas daquele pedido.
 - Em `Food99`, o weekly settlement deve considerar `service_fee` do payload bruto e as taxas calibradas da integracao. A calibracao atual vem da reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e comissao efetiva em torno de `7,9%`.
 - Em `Food99`, os componentes monetarios calculados da taxa devem usar arredondamento normal em centavos; nao usar `ceil` para inflar commission/processing/logistics em centavos.
+- Em `Food99`, a carteira de repasse da loja vem da tela de integracao e precisa ser persistida como `store_settlement_wallet_id`; essa carteira e a unica fonte valida para `provider_wallet`.
 
 ## iFoodService.php
 - A carteira operacional da integracao deve ser `iFood`.

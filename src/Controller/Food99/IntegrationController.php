@@ -1554,6 +1554,10 @@ class IntegrationController extends AbstractController
                 return new JsonResponse(['error' => 'settlement_wallet_id is required'], Response::HTTP_BAD_REQUEST);
             }
 
+            if (!ctype_digit($settlementWalletId)) {
+                return new JsonResponse(['error' => 'settlement_wallet_id must be numeric'], Response::HTTP_BAD_REQUEST);
+            }
+
             $resolvedSettlementWallet = $this->food99Service->resolveFood99SettlementWallet($provider, $settlementWalletId);
             if (!$resolvedSettlementWallet instanceof \ControleOnline\Entity\Wallet) {
                 return new JsonResponse([
