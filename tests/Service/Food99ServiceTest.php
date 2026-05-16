@@ -16,6 +16,7 @@ use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\ExtraDataService;
 use ControleOnline\Service\InvoiceService;
+use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
@@ -35,9 +36,12 @@ class Food99ServiceTest extends TestCase
         $this->service = (new \ReflectionClass(Food99Service::class))->newInstanceWithoutConstructor();
         $this->entityManager = $this->createMock(EntityManagerInterface::class);
         $this->statusService = $this->createMock(StatusService::class);
+        $loggerService = $this->createMock(LoggerService::class);
+        $loggerService->method('getLogger')->willReturn(new NullLogger());
 
         $this->setObjectProperty(DefaultFoodService::class, $this->service, 'entityManager', $this->entityManager);
         $this->setObjectProperty(DefaultFoodService::class, $this->service, 'statusService', $this->statusService);
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'loggerService', $loggerService);
         $this->setStaticProperty(DefaultFoodService::class, 'logger', new NullLogger());
     }
 
@@ -560,7 +564,175 @@ class Food99ServiceTest extends TestCase
         self::assertSame($status, $invoice->getStatus());
         self::assertSame($providerWallet, $invoice->getSourceWallet());
         self::assertSame($food99Wallet, $invoice->getDestinationWallet());
-        self::assertSame('2026-05-13', $invoice->getDueDate()->format('Y-m-d'));
+    }
+
+    public function testFood99HomologationSnapshotUsesFood99PayloadAndIgnoresLegacyIfoodData(): void
+    {
+        $order = $this->createMock(Order::class);
+        $payload = json_decode(json_encode([
+            'latest_event_type' => 'iFood',
+            'Food99' => [
+                'latest_event_type' => 'orderNew',
+                'orderNew' => [
+                    'data' => [
+                        'order_info' => [
+                            'order_index' => '570004',
+                            'delivery_type' => '1',
+                            'pay_type' => '1',
+                            'pay_method' => '1',
+                            'pay_channel' => '212',
+                            'promotions' => [
+                                [
+                                    'promo_type' => 2,
+                                    'promo_discount' => 1000,
+                                    'shop_subside_price' => 1000,
+                                ],
+                            ],
+                        ],
+                        'price' => [
+                            'order_price' => 10000,
+                            'customer_need_paying_money' => 9700,
+                            'real_pay_price' => 9700,
+                            'real_price' => 7351,
+                            'shop_paid_money' => 7351,
+                            'store_charged_delivery_price' => 500,
+                            'others_fees' => [
+                                'service_price' => 200,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'iFood' => [
+                'latest_event_type' => 'orderNew',
+                'orderNew' => [
+                    'data' => [
+                        'order_info' => [
+                            'delivery_type' => '2',
+                        ],
+                        'price' => [
+                            'order_price' => 25000,
+                            'customer_need_paying_money' => 25000,
+                            'real_price' => 25000,
+                            'shop_paid_money' => 25000,
+                        ],
+                    ],
+                ],
+            ],
+        ]));
+
+        $order->method('getOtherInformations')->willReturnCallback(
+            static fn(bool $decode = false) => $decode ? $payload : json_encode($payload)
+        );
+
+        $snapshot = $this->service->getOrderHomologationSnapshot($order);
+
+        self::assertTrue($snapshot['raw_payload_available']);
+        self::assertSame(100.0, $snapshot['financial']['items_total']);
+        self::assertSame(73.51, $snapshot['financial']['weekly_settlement_amount']);
+        self::assertSame(7.11, $snapshot['financial']['commission_distribution_amount']);
+        self::assertSame(2.88, $snapshot['financial']['payment_processing_amount']);
+        self::assertSame(4.5, $snapshot['financial']['logistics_cost_amount']);
+        self::assertSame(16.49, $snapshot['financial']['platform_charges_amount']);
+        self::assertSame(97.0, $snapshot['payment']['amount_paid']);
+        self::assertSame('570004', $snapshot['identifiers']['order_index']);
+    }
+
+    public function testFood99HomologationSnapshotPrefersPersistedFinancialAndPaymentBlocks(): void
+    {
+        $order = $this->createMock(Order::class);
+        $payload = json_decode(json_encode([
+            'latest_event_type' => 'orderNew',
+            'Food99' => [
+                'latest_event_type' => 'orderNew',
+                'orderNew' => [
+                    'data' => [
+                        'order_info' => [
+                            'delivery_type' => '2',
+                            'pay_type' => '2',
+                            'pay_method' => '2',
+                            'pay_channel' => '153',
+                        ],
+                        'price' => [
+                            'order_price' => 25000,
+                            'customer_need_paying_money' => 25000,
+                            'real_pay_price' => 25000,
+                            'real_price' => 25000,
+                            'shop_paid_money' => 25000,
+                            'store_charged_delivery_price' => 999,
+                            'others_fees' => [
+                                'service_price' => 0,
+                                'small_order_price' => 0,
+                            ],
+                        ],
+                        'financial' => [
+                            'items_total' => 12345,
+                            'delivery_fee' => 678,
+                            'service_fee_amount' => 111,
+                            'small_order_fee_amount' => 222,
+                            'meal_top_up_fee_amount' => 333,
+                            'tip_total' => 444,
+                            'subtotal_before_discounts' => 13666,
+                            'discount_total' => 500,
+                            'store_discount_total' => 400,
+                            'platform_discount_total' => 100,
+                            'store_non_delivery_discount_total' => 300,
+                            'platform_non_delivery_discount_total' => 100,
+                            'store_delivery_discount_total' => 0,
+                            'platform_delivery_discount_total' => 0,
+                            'charge_base_amount' => 1200,
+                            'commission_distribution_amount' => 777,
+                            'payment_processing_amount' => 888,
+                            'logistics_cost_amount' => 999,
+                            'platform_charges_amount' => 2664,
+                            'weekly_settlement_amount' => 9876,
+                            'promotions_total' => 500,
+                            'items_discount_total' => 0,
+                            'delivery_discount_total' => 0,
+                            'coupon_discount_total' => 0,
+                            'customer_total' => 11999,
+                            'customer_need_paying_money' => 11999,
+                            'store_receivable_total' => 25000,
+                            'real_pay_total' => 25000,
+                            'refund_total' => 0,
+                            'shop_paid_money' => 25000,
+                        ],
+                        'payment' => [
+                            'amount_paid' => 11999,
+                            'amount_pending' => 0,
+                            'customer_need_paying_money' => 11999,
+                            'change_for' => 0,
+                            'change_amount' => 0,
+                            'is_fully_paid' => true,
+                            'should_confirm_payment' => false,
+                            'is_paid_online' => false,
+                            'delivery_99_always_paid_rule' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ]));
+
+        $order->method('getOtherInformations')->willReturnCallback(
+            static fn(bool $decode = false) => $decode ? $payload : json_encode($payload)
+        );
+
+        $snapshot = $this->service->getOrderHomologationSnapshot($order);
+
+        self::assertTrue($snapshot['raw_payload_available']);
+        self::assertSame(123.45, $snapshot['financial']['items_total']);
+        self::assertSame(6.78, $snapshot['financial']['delivery_fee']);
+        self::assertSame(1.11, $snapshot['financial']['service_fee']);
+        self::assertSame(2.22, $snapshot['financial']['small_order_fee']);
+        self::assertSame(12.00, $snapshot['financial']['charge_base_amount']);
+        self::assertSame(7.77, $snapshot['financial']['commission_distribution_amount']);
+        self::assertSame(8.88, $snapshot['financial']['payment_processing_amount']);
+        self::assertSame(9.99, $snapshot['financial']['logistics_cost_amount']);
+        self::assertSame(26.64, $snapshot['financial']['platform_charges_amount']);
+        self::assertSame(98.76, $snapshot['financial']['weekly_settlement_amount']);
+        self::assertSame(119.99, $snapshot['payment']['amount_paid']);
+        self::assertFalse($snapshot['payment']['is_paid_online']);
+        self::assertFalse($snapshot['payment']['should_confirm_payment']);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

@@ -36,10 +36,6 @@ class MarketplaceOrderFinancialGenerationService
     private const IFOOD_NAME = 'Ifood.com Agência de Restaurantes Online S.A';
     private const FOOD99_DOCUMENT = '6012920000123';
     private const FOOD99_NAME = '99 Food';
-    private const FOOD99_COMMISSION_RATE = 0.0790207;
-    private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
-    private const FOOD99_LOGISTICS_COST_RATE = 0.60;
-    private const FOOD99_MIN_LOGISTICS_COST = 4.50;
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -458,22 +454,22 @@ class MarketplaceOrderFinancialGenerationService
             ? $shopPaidMoney
             : $this->money(($isPaidOnline ? $customerTotal : 0) + $platformDiscountAmount);
 
-        $weeklySettlementAmount = $storeReceivableTotal > 0
-            ? $storeReceivableTotal
-            : ($shopPaidMoney > 0
-            ? $shopPaidMoney
-            : ($isFood99Order
-                ? $this->money($food99DerivedFinancials['weekly_settlement_amount'] ?? 0)
-                : $this->money(
-                max(
-                    0,
-                    $marketplaceGrossAmount
-                        - $serviceFeeAmount
-                        - $smallOrderFeeAmount
-                        - $mealTopUpFeeAmount
-                        - $merchantDiscountAmount
-                )
-            )));
+        $weeklySettlementAmount = $isFood99Order
+            ? $this->money($food99DerivedFinancials['weekly_settlement_amount'] ?? 0)
+            : ($storeReceivableTotal > 0
+                ? $storeReceivableTotal
+                : ($shopPaidMoney > 0
+                    ? $shopPaidMoney
+                    : $this->money(
+                        max(
+                            0,
+                            $marketplaceGrossAmount
+                                - $serviceFeeAmount
+                                - $smallOrderFeeAmount
+                                - $mealTopUpFeeAmount
+                                - $merchantDiscountAmount
+                        )
+                    )));
 
         $invoicePaymentType = $this->resolveMarketplaceInvoicePaymentType(
             $order->getProvider(),
@@ -1324,79 +1320,18 @@ class MarketplaceOrderFinancialGenerationService
         return round((float) ($value ?? 0), 2);
     }
 
-    private function roundUpMoney(mixed $value): float
-    {
-        return round((float) ($value ?? 0), 2);
-    }
-
     private function resolveFood99DerivedFinancials(array $financial, array $payment, array $state): array
     {
-        $itemsTotal = $this->money($financial['items_total'] ?? 0);
-        $storeDiscountTotal = $this->money(
-            $financial['store_discount_total']
-                ?? $financial['merchant_subsidy']
-                ?? 0
-        );
-        $storeDeliveryDiscountTotal = $this->money(
-            $financial['store_delivery_discount_total'] ?? 0
-        );
-        $storeNonDeliveryDiscountTotal = $this->money(
-            $financial['store_non_delivery_discount_total']
-                ?? max(0, $storeDiscountTotal - $storeDeliveryDiscountTotal)
-        );
-        $storeChargedDeliveryPrice = $this->money(
-            $financial['store_charged_delivery_price']
-                ?? $financial['delivery_fee']
-                ?? 0
-        );
-        $serviceFeeAmount = $this->money($financial['service_fee'] ?? 0);
-        $isPaidOnline = $this->toBool($payment['is_paid_online'] ?? false);
-        $isPlatformDelivery = $this->toBool($state['is_platform_delivery'] ?? false);
-        $commissionRate = max(
-            0.0,
-            (float) ($financial['commission_rate'] ?? self::FOOD99_COMMISSION_RATE)
-        );
-        $paymentProcessingRate = max(
-            0.0,
-            (float) ($financial['payment_processing_rate'] ?? self::FOOD99_PAYMENT_PROCESSING_RATE)
-        );
-        $logisticsCostRate = max(
-            0.0,
-            (float) ($financial['logistics_cost_rate'] ?? self::FOOD99_LOGISTICS_COST_RATE)
-        );
-        $chargeBaseAmount = $this->money(max(0, $itemsTotal - $storeNonDeliveryDiscountTotal));
-        $commissionDistributionAmount = $chargeBaseAmount > 0
-            ? $this->roundUpMoney($chargeBaseAmount * $commissionRate)
-            : 0.0;
-        $paymentProcessingAmount = $isPaidOnline && $chargeBaseAmount > 0
-            ? $this->roundUpMoney($chargeBaseAmount * $paymentProcessingRate)
-            : 0.0;
-        $logisticsCostAmount = $isPlatformDelivery && $storeChargedDeliveryPrice > 0
-            ? max(
-                $this->roundUpMoney($storeChargedDeliveryPrice * $logisticsCostRate),
-                self::FOOD99_MIN_LOGISTICS_COST
-            )
-            : 0.0;
-        $platformChargesAmount = $this->money(
-            $commissionDistributionAmount
-                + $paymentProcessingAmount
-                + $serviceFeeAmount
-                + $logisticsCostAmount
-        );
-        $weeklySettlementAmount = $this->money(
-            max(0, $itemsTotal - $storeDiscountTotal - $platformChargesAmount)
-        );
-
         return [
-            'charge_base_amount' => $chargeBaseAmount,
-            'commission_distribution_amount' => $commissionDistributionAmount,
-            'payment_processing_amount' => $paymentProcessingAmount,
-            'service_fee_amount' => $serviceFeeAmount,
-            'logistics_cost_amount' => $logisticsCostAmount,
-            'platform_charges_amount' => $platformChargesAmount,
-            'weekly_settlement_amount' => $weeklySettlementAmount,
-            'store_delivery_discount_amount' => $storeDeliveryDiscountTotal,
-            'store_non_delivery_discount_amount' => $storeNonDeliveryDiscountTotal,
+            'charge_base_amount' => $this->money($financial['charge_base_amount'] ?? 0),
+            'commission_distribution_amount' => $this->money($financial['commission_distribution_amount'] ?? 0),
+            'payment_processing_amount' => $this->money($financial['payment_processing_amount'] ?? 0),
+            'service_fee_amount' => $this->money($financial['service_fee_amount'] ?? $financial['service_fee'] ?? 0),
+            'logistics_cost_amount' => $this->money($financial['logistics_cost_amount'] ?? 0),
+            'platform_charges_amount' => $this->money($financial['platform_charges_amount'] ?? 0),
+            'weekly_settlement_amount' => $this->money($financial['weekly_settlement_amount'] ?? 0),
+            'store_delivery_discount_amount' => $this->money($financial['store_delivery_discount_total'] ?? 0),
+            'store_non_delivery_discount_amount' => $this->money($financial['store_non_delivery_discount_total'] ?? 0),
         ];
     }
 

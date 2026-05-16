@@ -75,7 +75,7 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         );
     }
 
-    public function testFood99DerivedFinancialsRebuildWeeklySettlementFromStoredPayloadBreakdown(): void
+    public function testFood99DerivedFinancialsReturnSnapshotValuesWithoutRecalculation(): void
     {
         $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
             ->newInstanceWithoutConstructor();
@@ -84,19 +84,18 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
             $service,
             'resolveFood99DerivedFinancials',
             [
-                'items_total' => 97.79,
-                'store_discount_total' => 32.65,
-                'store_non_delivery_discount_total' => 22.75,
+                'charge_base_amount' => 75.04,
+                'commission_distribution_amount' => 5.93,
+                'payment_processing_amount' => 2.40,
+                'service_fee_amount' => 2.03,
+                'logistics_cost_amount' => 5.99,
+                'platform_charges_amount' => 16.35,
+                'weekly_settlement_amount' => 48.79,
                 'store_delivery_discount_total' => 9.90,
-                'service_fee' => 2.03,
-                'store_charged_delivery_price' => 9.99,
+                'store_non_delivery_discount_total' => 22.75,
             ],
-            [
-                'is_paid_online' => true,
-            ],
-            [
-                'is_platform_delivery' => true,
-            ],
+            [],
+            [],
         );
 
         self::assertSame(75.04, $derivedFinancials['charge_base_amount']);
@@ -106,6 +105,8 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         self::assertSame(5.99, $derivedFinancials['logistics_cost_amount']);
         self::assertSame(16.35, $derivedFinancials['platform_charges_amount']);
         self::assertSame(48.79, $derivedFinancials['weekly_settlement_amount']);
+        self::assertSame(9.90, $derivedFinancials['store_delivery_discount_amount']);
+        self::assertSame(22.75, $derivedFinancials['store_non_delivery_discount_amount']);
     }
 
     public function testWeeklyDueDateUsesNextWednesdayAfterWeekClose(): void

@@ -8,6 +8,8 @@
 - Se o webhook legarado nao trouxer `uid`, o service pode tentar `nome + endereco completo` apenas para reconciliacao exata e unica de registros antigos.
 - Quando nao houver `uid` nem match exato de legado, o service deve seguir sem código e nao criar identificador falso.
 - Pedidos novos do evento `orderNew` devem gerar o financeiro automaticamente no proprio pipeline de integracao. O endpoint manual de invoices serve apenas para backfill/legado.
+- `Food99Service` nao deve criar invoices inline ao processar o webhook; o pedido precisa ser persistido com `otherInformations` e o financeiro deve ser reconstruido pelo gerador central.
+- Para `Food99`, o snapshot financeiro deve vir somente de `order.otherInformations.Food99`; o contexto legado `iFood` nao pode alimentar conta, wallet ou `paymentType`.
 - Quando o pedido for pago no app, precisa existir uma invoice explicita do fluxo `cliente -> 99 Food`.
 - Os meios de pagamento do cliente devem ficar apenas na invoice; nao espelhar esses canais na wallet operacional do `99 Food`.
 - O pagamento do motoboy em pedidos de entrega pela plataforma deve ser modelado com `payer = 99 Food` e `receiver = motoboy`, criando a pessoa do entregador no sistema quando houver identificacao suficiente.
