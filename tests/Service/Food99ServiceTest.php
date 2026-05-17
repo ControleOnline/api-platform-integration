@@ -6,6 +6,7 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\People;
+use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\Status;
@@ -23,9 +24,11 @@ use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 
+#[AllowMockObjectsWithoutExpectations]
 class Food99ServiceTest extends TestCase
 {
     private Food99Service $service;
@@ -428,6 +431,130 @@ class Food99ServiceTest extends TestCase
         );
 
         self::assertSame('client-123', $remoteClientId);
+    }
+
+    public function testResolveAppShopIdUsesProviderIdAndIgnoresLegacyEnvFallbacks(): void
+    {
+        $previousAppShopId = array_key_exists('OAUTH_99FOOD_APP_SHOP_ID', $_ENV)
+            ? $_ENV['OAUTH_99FOOD_APP_SHOP_ID']
+            : null;
+        $previousShopId = array_key_exists('OAUTH_99FOOD_SHOP_ID', $_ENV)
+            ? $_ENV['OAUTH_99FOOD_SHOP_ID']
+            : null;
+
+        $_ENV['OAUTH_99FOOD_APP_SHOP_ID'] = 'legacy-app';
+        $_ENV['OAUTH_99FOOD_SHOP_ID'] = 'legacy-shop';
+
+        try {
+            self::assertNull(
+                $this->invokePrivateMethod($this->service, 'resolveAppShopId', null)
+            );
+
+            $provider = $this->createConfiguredMock(People::class, [
+                'getId' => 2,
+            ]);
+
+            self::assertSame(
+                '2',
+                $this->invokePrivateMethod($this->service, 'resolveAppShopId', $provider)
+            );
+        } finally {
+            if ($previousAppShopId === null) {
+                unset($_ENV['OAUTH_99FOOD_APP_SHOP_ID']);
+            } else {
+                $_ENV['OAUTH_99FOOD_APP_SHOP_ID'] = $previousAppShopId;
+            }
+
+            if ($previousShopId === null) {
+                unset($_ENV['OAUTH_99FOOD_SHOP_ID']);
+            } else {
+                $_ENV['OAUTH_99FOOD_SHOP_ID'] = $previousShopId;
+            }
+        }
+    }
+
+    public function testResolveFood99QuoteDeliveryAreaMatchChoosesMostSpecificPolygon(): void
+    {
+        $deliveryAreasResponse = [
+            'errno' => 0,
+            'data' => [
+                'area_group' => [
+                    [
+                        'id' => 'area-big',
+                        'price' => 700,
+                        'avg_delivery_eta' => 1800,
+                        'points' => [
+                            ['latitude' => 0.0, 'longitude' => 0.0],
+                            ['latitude' => 0.0, 'longitude' => 2.0],
+                            ['latitude' => 2.0, 'longitude' => 2.0],
+                            ['latitude' => 2.0, 'longitude' => 0.0],
+                        ],
+                    ],
+                    [
+                        'id' => 'area-small',
+                        'price' => 500,
+                        'avg_delivery_eta' => 600,
+                        'points' => [
+                            ['latitude' => 0.5, 'longitude' => 0.5],
+                            ['latitude' => 0.5, 'longitude' => 1.5],
+                            ['latitude' => 1.5, 'longitude' => 1.5],
+                            ['latitude' => 1.5, 'longitude' => 0.5],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+        $dropoffAddress = $this->createConfiguredMock(Address::class, [
+            'getLatitude' => 1.0,
+            'getLongitude' => 1.0,
+        ]);
+
+        $match = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99QuoteDeliveryAreaMatch',
+            $deliveryAreasResponse,
+            $dropoffAddress
+        );
+
+        self::assertIsArray($match);
+        self::assertSame('area-small', $match['delivery_area_id']);
+        self::assertSame(5.0, $match['price']);
+        self::assertSame('10 min', $match['eta']);
+    }
+
+    public function testRequestDeliveryFromQuoteReturnsSuccessWhenQuoteIsReady(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 2,
+        ]);
+        $order = $this->createMock(Order::class);
+        $order
+            ->method('getProvider')
+            ->willReturn($provider);
+        $order
+            ->method('getId')
+            ->willReturn(71148);
+        $order
+            ->method('getOtherInformations')
+            ->with(true)
+            ->willReturn([
+                'logistics' => [
+                    'quote_state' => 'ready',
+                    'price' => 10.99,
+                    'eta' => '10 min',
+                ],
+            ]);
+
+        $result = $this->invokePrivateMethod(
+            $this->service,
+            'requestDeliveryFromQuote',
+            $order
+        );
+
+        self::assertSame(0, $result['errno']);
+        self::assertSame('selected', $result['data']['quote_state']);
+        self::assertSame(10.99, $result['data']['quote_price']);
+        self::assertSame('10 min', $result['data']['quote_eta']);
     }
 
     public function testDiscoveryClientReusesExistingPeopleByReceiveAddressUid(): void

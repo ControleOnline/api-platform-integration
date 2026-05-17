@@ -145,16 +145,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $pickupAddress;
         }
 
-        $provider = $sourceOrder->getProvider();
-        if ($provider instanceof People) {
-            foreach ($provider->getAddress() as $address) {
-                $resolvedAddress = $this->resolveAddressCandidate($address);
-                if ($resolvedAddress instanceof Address) {
-                    return $resolvedAddress;
-                }
-            }
-        }
-
         return null;
     }
 
@@ -417,25 +407,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return (string) $provider->getId();
         }
 
-        $appShopId = $_ENV['OAUTH_99FOOD_APP_SHOP_ID']
-            ?? $_ENV['OAUTH_99FOOD_SHOP_ID']
-            ?? null;
-
-        if ($appShopId) {
-            return (string) $appShopId;
-        }
-
-        if ($provider) {
-            $providerCode = $this->getIntegratedStoreCode($provider);
-            if ($providerCode) {
-                return (string) $providerCode;
-            }
-        }
-
         self::$logger->warning('Food99 app_shop_id could not be resolved', [
             'provider_id' => $provider?->getId(),
             'expected_provider_value' => 'People.id',
-            'expected_env' => ['OAUTH_99FOOD_APP_SHOP_ID', 'OAUTH_99FOOD_SHOP_ID'],
         ]);
 
         return null;
@@ -5295,8 +5269,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
         $sourceOrder = $this->resolveFood99QuoteSourceOrder($order);
         $stored = $this->getStoredIntegrationState($provider);
-        if (empty($stored['connected']) || empty($stored['online'])) {
-            return $this->persistFood99QuoteFailure($order, 'unavailable', '99 Food nao esta conectado ou online.');
+        if (empty($stored['connected'])) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', '99 Food nao esta conectada.');
         }
 
         $pickupAddress = $this->resolveFood99QuotePickupAddress($order, $sourceOrder);
@@ -5309,11 +5283,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
         }
 
-        return $this->persistFood99QuoteFailure(
-            $order,
-            'unavailable',
-            '99 Food nao disponibiliza cotacao publica nesta trilha.',
-            [
+        $deliveryAreasResponse = $this->listDeliveryAreas($provider);
+        if (!is_array($deliveryAreasResponse) || !$this->isSuccessfulErrno($deliveryAreasResponse['errno'] ?? null)) {
+            $message = $this->normalizeIncomingFood99Value($deliveryAreasResponse['errmsg'] ?? null);
+            if ($message === '') {
+                $message = 'Nao foi possivel consultar as areas de entrega da 99 Food.';
+            }
+
+            return $this->persistFood99QuoteFailure($order, 'error', $message, [
                 'provider_key' => 'food99',
                 'provider_label' => '99 Food',
                 'quote_requested_at' => date('Y-m-d H:i:s'),
@@ -5322,8 +5299,94 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 'dropoff_address_id' => $dropoffAddress->getId(),
                 'main_order_id' => $order->getMainOrderId(),
                 'source_order_id' => $sourceOrder->getId(),
-            ]
-        );
+                'quote_response' => $deliveryAreasResponse,
+            ]);
+        }
+
+        $deliveryAreaMatch = $this->resolveFood99QuoteDeliveryAreaMatch($deliveryAreasResponse, $dropoffAddress);
+        if (!$deliveryAreaMatch) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Endereco de entrega fora da area de cobertura da 99 Food.', [
+                'provider_key' => 'food99',
+                'provider_label' => '99 Food',
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'pickup_address_id' => $pickupAddress->getId(),
+                'dropoff_address_id' => $dropoffAddress->getId(),
+                'main_order_id' => $order->getMainOrderId(),
+                'source_order_id' => $sourceOrder->getId(),
+                'quote_response' => $deliveryAreasResponse['data'] ?? $deliveryAreasResponse,
+            ]);
+        }
+
+        $now = date('Y-m-d H:i:s');
+        $price = $deliveryAreaMatch['price'];
+        $eta = $deliveryAreaMatch['eta'];
+        $deliveryAreaId = $deliveryAreaMatch['delivery_area_id'];
+        $deliveryAreaLabel = $deliveryAreaMatch['delivery_area_label'];
+        $matchedArea = $deliveryAreaMatch['area'];
+        $quoteResponse = [
+            'delivery_areas' => $deliveryAreasResponse['data'] ?? $deliveryAreasResponse,
+            'matched_delivery_area' => $matchedArea,
+            'matched_delivery_area_id' => $deliveryAreaId,
+            'matched_delivery_area_label' => $deliveryAreaLabel,
+            'price' => $price,
+            'eta' => $eta,
+        ];
+
+        $storedState = array_merge($this->getStoredFood99QuoteState($order), [
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => 'ready',
+            'quote_message' => 'Cotacao pronta',
+            'quote_requested_at' => $now,
+            'quote_updated_at' => $now,
+            'price' => $price,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'remote_order_id' => null,
+            'pickup_address_id' => $pickupAddress->getId(),
+            'dropoff_address_id' => $dropoffAddress->getId(),
+            'main_order_id' => $order->getMainOrderId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'delivery_area_id' => $deliveryAreaId,
+            'delivery_area_label' => $deliveryAreaLabel,
+            'delivery_area_match' => $matchedArea,
+            'quote_response' => $quoteResponse,
+        ]);
+        $this->persistFood99QuoteState($order, $storedState, [
+            'flow' => 'quote',
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => 'ready',
+            'quote_message' => 'Cotacao pronta',
+            'quote_requested_at' => $now,
+            'quote_updated_at' => $now,
+            'price' => $price,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'quote_response' => $quoteResponse,
+            'pickup_address_id' => $pickupAddress->getId(),
+            'dropoff_address_id' => $dropoffAddress->getId(),
+            'main_order_id' => $order->getMainOrderId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'delivery_area_id' => $deliveryAreaId,
+            'delivery_area_label' => $deliveryAreaLabel,
+        ]);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'quote_state' => 'ready',
+                'quote_message' => 'Cotacao pronta',
+                'price' => $price,
+                'eta' => $eta,
+                'delivery_area_id' => $deliveryAreaId,
+                'delivery_area_label' => $deliveryAreaLabel,
+                'quote_response' => $quoteResponse,
+            ],
+        ];
     }
 
     public function requestDeliveryFromQuote(Order $order): array
@@ -5352,17 +5415,318 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             ];
         }
 
-        return $this->persistFood99QuoteFailure(
-            $order,
-            'unavailable',
-            '99 Food nao disponibiliza solicitação de entrega para esta trilha.',
-            [
-                'provider_key' => 'food99',
-                'provider_label' => '99 Food',
-                'quote_requested_at' => $state['quote_requested_at'] ?? date('Y-m-d H:i:s'),
-                'quote_updated_at' => date('Y-m-d H:i:s'),
-            ]
-        );
+        $quoteState = strtolower(trim((string) ($state['quote_state'] ?? '')));
+        if (!in_array($quoteState, ['ready', 'selected', 'requested'], true)) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Cotacao 99 Food ainda nao esta pronta.',
+            ];
+        }
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'remote_order_id' => $state['remote_order_id'] ?? null,
+                'tracking_url' => $state['tracking_url'] ?? null,
+                'quote_state' => 'selected',
+                'quote_price' => isset($state['price']) ? (float) $state['price'] : null,
+                'quote_eta' => $state['eta'] ?? null,
+            ],
+        ];
+    }
+
+    private function resolveFood99QuoteDeliveryAreaMatch(array $deliveryAreasResponse, Address $dropoffAddress): ?array
+    {
+        $latitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLatitude());
+        $longitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLongitude());
+        if ($latitude === null || $longitude === null) {
+            return null;
+        }
+
+        $deliveryAreaGroups = $this->extractFood99DeliveryAreaGroups($deliveryAreasResponse);
+        $matches = [];
+
+        foreach ($deliveryAreaGroups as $index => $deliveryAreaGroup) {
+            if (!is_array($deliveryAreaGroup)) {
+                continue;
+            }
+
+            $polygon = $this->normalizeFood99DeliveryAreaPolygon($deliveryAreaGroup['points'] ?? null);
+            if ($polygon === []) {
+                continue;
+            }
+
+            if (!$this->isFood99PointInsidePolygon($latitude, $longitude, $polygon)) {
+                continue;
+            }
+
+            $matches[] = [
+                'index' => (int) $index,
+                'area' => $deliveryAreaGroup,
+                'polygon_area' => abs($this->calculateFood99PolygonArea($polygon)),
+                'delivery_area_id' => $this->resolveFood99DeliveryAreaValue($deliveryAreaGroup, 'id', 'delivery_area_id', 'area_id', 'deliveryAreaId'),
+                'delivery_area_label' => $this->resolveFood99DeliveryAreaValue($deliveryAreaGroup, 'name', 'title', 'description', 'area_name', 'delivery_area_name'),
+                'price' => $this->resolveFood99DeliveryAreaPrice($deliveryAreaGroup),
+                'eta' => $this->formatFood99QuoteEta($this->resolveFood99DeliveryAreaEtaSeconds($deliveryAreaGroup)),
+            ];
+        }
+
+        if ($matches === []) {
+            return null;
+        }
+
+        usort($matches, static function (array $left, array $right): int {
+            $areaComparison = ($left['polygon_area'] ?? 0) <=> ($right['polygon_area'] ?? 0);
+            if ($areaComparison !== 0) {
+                return $areaComparison;
+            }
+
+            $priceComparison = ($left['price'] ?? 0) <=> ($right['price'] ?? 0);
+            if ($priceComparison !== 0) {
+                return $priceComparison;
+            }
+
+            return ($left['index'] ?? 0) <=> ($right['index'] ?? 0);
+        });
+
+        $match = $matches[0];
+
+        return [
+            'delivery_area_id' => $match['delivery_area_id'] ?? null,
+            'delivery_area_label' => $match['delivery_area_label'] ?? null,
+            'price' => isset($match['price']) ? (float) $match['price'] : null,
+            'eta' => $match['eta'] ?? null,
+            'area' => $match['area'] ?? [],
+        ];
+    }
+
+    private function extractFood99DeliveryAreaGroups(array $deliveryAreasResponse): array
+    {
+        $data = is_array($deliveryAreasResponse['data'] ?? null) ? $deliveryAreasResponse['data'] : [];
+        $deliveryAreaGroups = $data['area_group'] ?? $deliveryAreasResponse['area_group'] ?? [];
+
+        if (is_string($deliveryAreaGroups)) {
+            $decoded = json_decode($deliveryAreaGroups, true);
+            $deliveryAreaGroups = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($deliveryAreaGroups)) {
+            return [];
+        }
+
+        return array_values(array_filter($deliveryAreaGroups, static fn(mixed $deliveryAreaGroup): bool => is_array($deliveryAreaGroup)));
+    }
+
+    private function normalizeFood99DeliveryAreaPolygon(mixed $points): array
+    {
+        if (is_string($points)) {
+            $decoded = json_decode($points, true);
+            $points = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($points)) {
+            return [];
+        }
+
+        $polygon = [];
+        foreach ($points as $point) {
+            $normalizedPoint = $this->normalizeFood99DeliveryAreaPoint($point);
+            if ($normalizedPoint !== null) {
+                $polygon[] = $normalizedPoint;
+            }
+        }
+
+        return $polygon;
+    }
+
+    private function normalizeFood99DeliveryAreaPoint(mixed $point): ?array
+    {
+        if (is_object($point)) {
+            $point = json_decode(json_encode($point, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), true);
+        }
+
+        if (is_string($point)) {
+            $decoded = json_decode($point, true);
+            $point = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($point)) {
+            return null;
+        }
+
+        $latitude = $this->normalizeFood99CoordinateValue($point['latitude'] ?? $point['lat'] ?? $point['y'] ?? $point['point_lat'] ?? $point['pointLatitude'] ?? null);
+        $longitude = $this->normalizeFood99CoordinateValue($point['longitude'] ?? $point['lng'] ?? $point['lon'] ?? $point['x'] ?? $point['point_lng'] ?? $point['pointLongitude'] ?? null);
+
+        if ($latitude === null || $longitude === null) {
+            $values = array_values(array_filter(array_map(
+                [$this, 'normalizeFood99CoordinateValue'],
+                $point
+            ), static fn(mixed $value): bool => $value !== null));
+
+            if (count($values) >= 2) {
+                $first = (float) $values[0];
+                $second = (float) $values[1];
+
+                if (abs($first) <= 90 && abs($second) <= 180) {
+                    $latitude = $first;
+                    $longitude = $second;
+                } elseif (abs($second) <= 90 && abs($first) <= 180) {
+                    $latitude = $second;
+                    $longitude = $first;
+                }
+            }
+        }
+
+        if ($latitude === null || $longitude === null) {
+            return null;
+        }
+
+        return [
+            'latitude' => $latitude,
+            'longitude' => $longitude,
+        ];
+    }
+
+    private function normalizeFood99CoordinateValue(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    private function isFood99PointInsidePolygon(float $latitude, float $longitude, array $polygon): bool
+    {
+        $count = count($polygon);
+        if ($count < 3) {
+            return false;
+        }
+
+        $inside = false;
+        for ($i = 0, $j = $count - 1; $i < $count; $j = $i++) {
+            $yi = (float) ($polygon[$i]['latitude'] ?? 0);
+            $xi = (float) ($polygon[$i]['longitude'] ?? 0);
+            $yj = (float) ($polygon[$j]['latitude'] ?? 0);
+            $xj = (float) ($polygon[$j]['longitude'] ?? 0);
+
+            $intersects = (($yi > $latitude) !== ($yj > $latitude))
+                && ($longitude < (($xj - $xi) * ($latitude - $yi) / (($yj - $yi) ?: 1.0)) + $xi);
+
+            if ($intersects) {
+                $inside = !$inside;
+            }
+        }
+
+        return $inside;
+    }
+
+    private function calculateFood99PolygonArea(array $polygon): float
+    {
+        $count = count($polygon);
+        if ($count < 3) {
+            return 0.0;
+        }
+
+        $sum = 0.0;
+        for ($i = 0, $j = $count - 1; $i < $count; $j = $i++) {
+            $xi = (float) ($polygon[$i]['longitude'] ?? 0);
+            $yi = (float) ($polygon[$i]['latitude'] ?? 0);
+            $xj = (float) ($polygon[$j]['longitude'] ?? 0);
+            $yj = (float) ($polygon[$j]['latitude'] ?? 0);
+
+            $sum += ($xj * $yi) - ($xi * $yj);
+        }
+
+        return $sum / 2.0;
+    }
+
+    private function resolveFood99DeliveryAreaValue(array $deliveryAreaGroup, string ...$keys): ?string
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $this->normalizeIncomingFood99Value($deliveryAreaGroup[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveFood99DeliveryAreaPrice(array $deliveryAreaGroup): ?float
+    {
+        foreach (['price', 'delivery_price', 'deliveryPrice', 'fee', 'delivery_fee'] as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $deliveryAreaGroup[$key];
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            return $this->normalizeFood99Money($value);
+        }
+
+        return null;
+    }
+
+    private function resolveFood99DeliveryAreaEtaSeconds(array $deliveryAreaGroup): ?int
+    {
+        foreach (['avg_delivery_eta', 'delivery_eta', 'eta'] as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $deliveryAreaGroup[$key];
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            if (!is_numeric($value)) {
+                continue;
+            }
+
+            return max(0, (int) round((float) $value));
+        }
+
+        return null;
+    }
+
+    private function formatFood99QuoteEta(?int $etaSeconds): ?string
+    {
+        if ($etaSeconds === null || $etaSeconds <= 0) {
+            return null;
+        }
+
+        $minutes = max(1, (int) ceil($etaSeconds / 60));
+
+        if ($minutes >= 60) {
+            $hours = intdiv($minutes, 60);
+            $remainingMinutes = $minutes % 60;
+
+            if ($remainingMinutes === 0) {
+                return sprintf('%dh', $hours);
+            }
+
+            return sprintf('%dh %d min', $hours, $remainingMinutes);
+        }
+
+        return sprintf('%d min', $minutes);
     }
 
     public function getAuthorizationPage(array $payload): ?array
