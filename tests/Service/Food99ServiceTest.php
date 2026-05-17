@@ -521,6 +521,134 @@ class Food99ServiceTest extends TestCase
         );
     }
 
+    public function testSyncFood99DeliveryOrderCreatesLinkedChildOrderWithCourierAndDeliveryMetadata(): void
+    {
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 10,
+        ]);
+        $client = $this->createConfiguredMock(People::class, [
+            'getId' => 20,
+        ]);
+        $payer = $this->createConfiguredMock(People::class, [
+            'getId' => 30,
+        ]);
+        $retrieveContact = $this->createConfiguredMock(People::class, [
+            'getId' => 40,
+        ]);
+        $deliveryContact = $this->createConfiguredMock(People::class, [
+            'getId' => 50,
+        ]);
+        $courier = $this->createConfiguredMock(People::class, [
+            'getId' => 321,
+            'getName' => 'PAULO VINICIUS CLEMENTINO DIAS',
+        ]);
+        $pickupAddress = $this->createMock(Address::class);
+        $dropoffAddress = $this->createMock(Address::class);
+        $status = $this->createMock(Status::class);
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(71146);
+        $order->method('getProvider')->willReturn($provider);
+        $order->method('getClient')->willReturn($client);
+        $order->method('getPayer')->willReturn($payer);
+        $order->method('getAddressOrigin')->willReturn($pickupAddress);
+        $order->method('getAddressDestination')->willReturn($dropoffAddress);
+        $order->method('getRetrieveContact')->willReturn($retrieveContact);
+        $order->method('getDeliveryContact')->willReturn($deliveryContact);
+        $order->method('getComments')->willReturn('Pedido principal');
+
+        $deliveryOrder = $this->createMock(Order::class);
+        $deliveryOrder->method('getDeliveryPeople')->willReturn(null);
+        $deliveryOrder->method('getStatus')->willReturn(null);
+        $deliveryOrder->method('getOtherInformations')->willReturn([]);
+
+        $deliveryOrder->expects(self::once())->method('setMainOrder')->with($order);
+        $deliveryOrder->expects(self::once())->method('setMainOrderId')->with(71146);
+        $deliveryOrder->expects(self::once())->method('setProvider')->with($provider);
+        $deliveryOrder->expects(self::once())->method('setClient')->with($client);
+        $deliveryOrder->expects(self::once())->method('setPayer')->with($payer);
+        $deliveryOrder->expects(self::once())->method('setAddressOrigin')->with($pickupAddress);
+        $deliveryOrder->expects(self::once())->method('setAddressDestination')->with($dropoffAddress);
+        $deliveryOrder->expects(self::once())->method('setRetrieveContact')->with($retrieveContact);
+        $deliveryOrder->expects(self::once())->method('setDeliveryContact')->with($deliveryContact);
+        $deliveryOrder->expects(self::once())->method('setComments')->with('Pedido principal');
+        $deliveryOrder->expects(self::once())->method('setOrderType')->with(Order::ORDER_TYPE_DELIVERY);
+        $deliveryOrder->expects(self::once())->method('setApp')->with(Order::APP_FOOD99);
+        $deliveryOrder->expects(self::once())->method('setDeliveryPeople')->with($courier);
+        $deliveryOrder->expects(self::once())->method('setStatus')->with($status);
+        $deliveryOrder->expects(self::once())
+            ->method('setOtherInformations')
+            ->with(self::callback(function (array $otherInformations): bool {
+                self::assertSame('delivery', $otherInformations['logistics']['flow']);
+                self::assertSame('food99', $otherInformations['logistics']['provider_key']);
+                self::assertSame('99 Food', $otherInformations['logistics']['provider_label']);
+                self::assertSame('selected', $otherInformations['logistics']['quote_state']);
+                self::assertSame(
+                    'Arrives In 1778983633 min',
+                    $otherInformations['logistics']['quote_message']
+                );
+                self::assertSame('PAULO VINICIUS CLEMENTINO DIAS', $otherInformations['logistics']['rider_name']);
+                self::assertSame('11950751998', $otherInformations['logistics']['rider_phone']);
+                self::assertSame(
+                    'https://tracking.99food.com/delivery/321',
+                    $otherInformations['logistics']['tracking_url']
+                );
+
+                return true;
+            }));
+        $deliveryOrder->expects(self::once())->method('setAlterDate')->with(self::isInstanceOf(\DateTime::class));
+
+        $orderRepository = $this->createMock(EntityRepository::class);
+        $orderRepository
+            ->expects(self::once())
+            ->method('findOneBy')
+            ->with([
+                'mainOrderId' => 71146,
+                'orderType' => Order::ORDER_TYPE_DELIVERY,
+                'app' => Order::APP_FOOD99,
+            ])
+            ->willReturn($deliveryOrder);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(Order::class)
+            ->willReturn($orderRepository);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->with($deliveryOrder);
+        $this->entityManager
+            ->expects(self::once())
+            ->method('flush');
+
+        $this->statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('open', 'open', 'order')
+            ->willReturn($status);
+
+        $this->invokePrivateMethod(
+            $this->service,
+            'syncFood99DeliveryOrder',
+            $order,
+            $courier,
+            'new',
+            null,
+            [
+                'rider_name' => 'PAULO VINICIUS CLEMENTINO DIAS',
+                'rider_phone' => '11950751998',
+                'rider_to_store_eta' => 'Arrives In 1778983633 min',
+                'handover_page_url' => 'https://tracking.99food.com/delivery/321',
+                'pickup_code' => '7788',
+                'locator' => 'LOC-321',
+                'virtual_phone_number' => '11900000000',
+                'handover_code' => 'ABC123',
+            ]
+        );
+    }
+
     public function testResolveAppShopIdUsesProviderIdAndIgnoresLegacyEnvFallbacks(): void
     {
         $previousAppShopId = array_key_exists('OAUTH_99FOOD_APP_SHOP_ID', $_ENV)
