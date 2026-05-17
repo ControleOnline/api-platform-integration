@@ -2825,6 +2825,71 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $candidatePayloads;
     }
 
+    private function extractFood99CourierPayloads(array $payload): array
+    {
+        $courierKeys = [
+            'courier',
+            'courier_info',
+            'courierInfo',
+            'courier_data',
+            'courierData',
+            'rider',
+            'rider_info',
+            'riderInfo',
+            'rider_data',
+            'riderData',
+            'driver',
+            'driver_info',
+            'driverInfo',
+            'driver_data',
+            'driverData',
+            'delivery_courier',
+            'deliveryCourier',
+            'delivery_person',
+            'deliveryPerson',
+            'delivery_person_info',
+            'deliveryPersonInfo',
+            'food99courier',
+            'food99Courier',
+            'FOOD99COURIER',
+        ];
+
+        $candidatePayloads = [];
+
+        foreach ($payload as $key => $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            if (in_array($key, $courierKeys, true)) {
+                $candidatePayloads[] = $value;
+            }
+
+            foreach ($this->extractFood99CourierPayloads($value) as $nestedPayload) {
+                $candidatePayloads[] = $nestedPayload;
+            }
+        }
+
+        return $candidatePayloads;
+    }
+
+    private function extractFood99PayloadValueFromNestedSections(array $json, array $directKeys, array $nestedKeys): ?string
+    {
+        $directValue = $this->searchPayloadValueByKeys($json, $directKeys);
+        if ($directValue !== null && $directValue !== '') {
+            return $directValue;
+        }
+
+        foreach ($this->extractFood99CourierPayloads($json) as $courierPayload) {
+            $resolvedValue = $this->searchPayloadValueByKeys($courierPayload, $nestedKeys);
+            if ($resolvedValue !== null && $resolvedValue !== '') {
+                return $resolvedValue;
+            }
+        }
+
+        return null;
+    }
+
     private function resolveFood99ClientPhone(array $address): array
     {
         $rawPhone = $this->sanitizeFood99IdentityValue($address['phone'] ?? null);
@@ -2916,6 +2981,115 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $this->peopleService->discoveryLink($provider, $client, 'client');
 
         return $client;
+    }
+
+    private function resolveFood99CourierPeople(?string $courierName, ?string $courierPhone): ?People
+    {
+        $resolvedName = trim((string) $courierName);
+        $resolvedPhone = trim((string) $courierPhone);
+
+        if ($resolvedName === '' && $resolvedPhone === '') {
+            return null;
+        }
+
+        $phone = $resolvedPhone !== ''
+            ? $this->resolveFood99ClientPhone(['phone' => $resolvedPhone])
+            : [];
+
+        if ($resolvedName !== '') {
+            $existingCourier = $this->entityManager->getRepository(People::class)->findOneBy([
+                'name' => $resolvedName,
+                'peopleType' => 'F',
+            ]);
+
+            if ($existingCourier instanceof People) {
+                if (!empty($phone)) {
+                    try {
+                        $this->peopleService->addPhone($existingCourier, $phone);
+                    } catch (\Throwable $exception) {
+                        self::$logger->warning('Food99 courier phone could not be synced to an existing people record', [
+                            'courier_id' => $existingCourier->getId(),
+                            'courier_name' => $resolvedName,
+                            'courier_phone' => $resolvedPhone,
+                            'error' => $exception->getMessage(),
+                        ]);
+                    }
+                }
+
+                return $existingCourier;
+            }
+        }
+
+        if (!empty($phone)) {
+            return $this->peopleService->discoveryPeople(
+                null,
+                null,
+                $phone,
+                $resolvedName !== '' ? $resolvedName : 'Motoboy 99 Food',
+                'F'
+            );
+        }
+
+        return $this->peopleService->discoveryPeople(
+            null,
+            null,
+            [],
+            $resolvedName !== '' ? $resolvedName : 'Motoboy 99 Food',
+            'F'
+        );
+    }
+
+    private function shouldUpdateFood99CourierName(People $courier, string $resolvedName): bool
+    {
+        $candidateName = trim($resolvedName);
+        if ($candidateName === '') {
+            return false;
+        }
+
+        $currentName = strtolower(trim((string) $courier->getName()));
+        $normalizedCandidateName = strtolower($candidateName);
+
+        if ($currentName === $normalizedCandidateName) {
+            return false;
+        }
+
+        return $currentName === ''
+            || $currentName === 'name not given'
+            || $currentName === 'motoboy marketplace'
+            || $currentName === 'motoboy 99 food'
+            || $currentName === 'motoboy 99food'
+            || $currentName === 'food99 courier';
+    }
+
+    private function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): void
+    {
+        $courierName = $this->sanitizeFood99IdentityValue($deliveryState['rider_name'] ?? null);
+        $courierPhone = $this->sanitizeFood99IdentityValue($deliveryState['rider_phone'] ?? null);
+
+        if (($courierName === null || $courierName === '') && ($courierPhone === null || $courierPhone === '')) {
+            return;
+        }
+
+        $courier = $this->resolveFood99CourierPeople($courierName, $courierPhone);
+        if (!$courier instanceof People) {
+            return;
+        }
+
+        $courierTouched = false;
+        if ($courierName !== null && $courierName !== '' && $this->shouldUpdateFood99CourierName($courier, $courierName)) {
+            $courier->setName($courierName);
+            $this->entityManager->persist($courier);
+            $courierTouched = true;
+        }
+
+        if ($order->getDeliveryPeople()?->getId() !== $courier->getId()) {
+            $order->setDeliveryPeople($courier);
+            $courierTouched = true;
+        }
+
+        if ($courierTouched) {
+            $order->setAlterDate(new DateTime('now'));
+        }
     }
 
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
@@ -3864,28 +4038,68 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function extractOrderRiderName(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        return $this->extractFood99PayloadValueFromNestedSections($json, [
             'rider_name',
             'riderName',
+            'courier_name',
+            'courierName',
+            'driver_name',
+            'driverName',
+        ], [
+            'name',
+            'full_name',
+            'fullName',
+            'display_name',
+            'displayName',
+            'alias',
         ]);
     }
 
     private function extractOrderRiderPhone(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        return $this->extractFood99PayloadValueFromNestedSections($json, [
             'rider_phone',
             'riderPhone',
+            'courier_phone',
+            'courierPhone',
+            'driver_phone',
+            'driverPhone',
+        ], [
+            'phone',
+            'phone_number',
+            'phoneNumber',
+            'mobile',
+            'mobile_phone',
+            'mobilePhone',
+            'contact_phone',
+            'contactPhone',
         ]);
     }
 
     private function extractOrderRiderToStoreEta(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        return $this->extractFood99PayloadValueFromNestedSections($json, [
             'rider_to_B_ETA',
             'rider_to_b_eta',
             'riderToBEta',
             'rider_to_store_eta',
             'riderToStoreEta',
+            'courier_to_store_eta',
+            'courierToStoreEta',
+            'eta_to_store',
+            'etaToStore',
+        ], [
+            'eta',
+            'eta_minutes',
+            'etaMinutes',
+            'arrived_eta',
+            'arrivedEta',
+            'arrival_eta',
+            'arrivalEta',
+            'to_store_eta',
+            'toStoreEta',
+            'to_b_eta',
+            'toBEta',
         ]);
     }
 
@@ -4235,6 +4449,8 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $integrationState,
             $deliveryState
         ));
+
+        $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
 
         if ($isCanceled) {
             $this->applyLocalCanceledStatus($order);
@@ -7660,12 +7876,13 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
             $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
             $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
+            $deliveryState = $this->extractOrderDeliveryStateFields($json);
             $this->persistOrderIntegrationState($order, array_merge([
                 'last_event_type' => 'orderNew',
                 'last_event_at' => $this->extractOrderEventTimestamp($json),
                 'remote_order_state' => 'new',
                 'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
-            ], $this->extractOrderDeliveryStateFields($json)));
+            ], $deliveryState));
 
             self::$logger->info('Food99 order shell persisted locally before item/address processing', $this->buildLogContext(null, $json, [
                 'provider_id' => $provider?->getId(),
@@ -7690,6 +7907,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $this->addAddress($order, $receiveAddress);
+            $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
 
             $this->entityManager->persist($order);
             $this->entityManager->flush();

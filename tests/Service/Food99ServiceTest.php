@@ -433,6 +433,94 @@ class Food99ServiceTest extends TestCase
         self::assertSame('client-123', $remoteClientId);
     }
 
+    public function testExtractOrderRiderFieldsFromNestedCourierPayload(): void
+    {
+        $json = [
+            'data' => [
+                'order_info' => [
+                    'FOOD99COURIER' => [
+                        'name' => 'PAULO VINICIUS CLEMENTINO DIAS',
+                        'phone' => '11950751998',
+                        'eta_to_store' => 'Arrives In 1778983633 min',
+                    ],
+                ],
+            ],
+        ];
+
+        self::assertSame(
+            'PAULO VINICIUS CLEMENTINO DIAS',
+            $this->invokePrivateMethod($this->service, 'extractOrderRiderName', $json)
+        );
+        self::assertSame(
+            '11950751998',
+            $this->invokePrivateMethod($this->service, 'extractOrderRiderPhone', $json)
+        );
+        self::assertSame(
+            'Arrives In 1778983633 min',
+            $this->invokePrivateMethod($this->service, 'extractOrderRiderToStoreEta', $json)
+        );
+    }
+
+    public function testSyncFood99CourierFromDeliveryStateCreatesCourierAndLinksOrder(): void
+    {
+        $courier = $this->createConfiguredMock(People::class, [
+            'getId' => 321,
+            'getName' => 'PAULO VINICIUS CLEMENTINO DIAS',
+        ]);
+        $order = $this->createMock(Order::class);
+        $order->method('getDeliveryPeople')->willReturn(null);
+        $order->expects(self::once())
+            ->method('setDeliveryPeople')
+            ->with($courier);
+        $order->expects(self::once())
+            ->method('setAlterDate')
+            ->with(self::isInstanceOf(\DateTime::class));
+
+        $peopleRepository = $this->createMock(EntityRepository::class);
+        $peopleRepository
+            ->expects(self::once())
+            ->method('findOneBy')
+            ->with([
+                'name' => 'PAULO VINICIUS CLEMENTINO DIAS',
+                'peopleType' => 'F',
+            ])
+            ->willReturn(null);
+
+        $peopleService = $this->createMock(PeopleService::class);
+        $peopleService
+            ->expects(self::once())
+            ->method('discoveryPeople')
+            ->with(
+                null,
+                null,
+                [
+                    'ddi' => 55,
+                    'ddd' => 11,
+                    'phone' => 950751998,
+                ],
+                'PAULO VINICIUS CLEMENTINO DIAS',
+                'F'
+            )
+            ->willReturn($courier);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(People::class)
+            ->willReturn($peopleRepository);
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'peopleService', $peopleService);
+
+        $this->invokePrivateMethod(
+            $this->service,
+            'syncFood99CourierFromDeliveryState',
+            $order,
+            [
+                'rider_name' => 'PAULO VINICIUS CLEMENTINO DIAS',
+                'rider_phone' => '11950751998',
+            ]
+        );
+    }
+
     public function testResolveAppShopIdUsesProviderIdAndIgnoresLegacyEnvFallbacks(): void
     {
         $previousAppShopId = array_key_exists('OAUTH_99FOOD_APP_SHOP_ID', $_ENV)
