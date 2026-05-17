@@ -3061,18 +3061,18 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             || $currentName === 'food99 courier';
     }
 
-    private function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): void
+    private function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): ?People
     {
         $courierName = $this->sanitizeFood99IdentityValue($deliveryState['rider_name'] ?? null);
         $courierPhone = $this->sanitizeFood99IdentityValue($deliveryState['rider_phone'] ?? null);
 
         if (($courierName === null || $courierName === '') && ($courierPhone === null || $courierPhone === '')) {
-            return;
+            return null;
         }
 
         $courier = $this->resolveFood99CourierPeople($courierName, $courierPhone);
         if (!$courier instanceof People) {
-            return;
+            return null;
         }
 
         $courierTouched = false;
@@ -3090,6 +3090,81 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if ($courierTouched) {
             $order->setAlterDate(new DateTime('now'));
         }
+
+        return $courier;
+    }
+
+    private function findFood99DeliveryOrder(Order $order): ?Order
+    {
+        $deliveryOrder = $this->entityManager->getRepository(Order::class)->findOneBy([
+            'mainOrderId' => $order->getId(),
+            'orderType' => Order::ORDER_TYPE_DELIVERY,
+            'app' => self::APP_CONTEXT,
+        ]);
+
+        return $deliveryOrder instanceof Order ? $deliveryOrder : null;
+    }
+
+    private function resolveFood99DeliveryOrderStatus(?string $remoteState, ?string $deliveryStatus): Status
+    {
+        $normalizedRemoteState = $this->normalizeRemoteOrderState($remoteState);
+        $normalizedDeliveryStatus = $this->normalizeIncomingFood99Value($deliveryStatus);
+
+        if (
+            $this->isCancellationRemoteOrderState($normalizedRemoteState)
+            || $normalizedRemoteState === 'finished'
+            || $normalizedRemoteState === 'delivered'
+            || $normalizedRemoteState === 'closed'
+            || $this->isDeliveredRemoteState($normalizedDeliveryStatus)
+        ) {
+            return $this->statusService->discoveryStatus('closed', 'closed', 'order');
+        }
+
+        if ($normalizedRemoteState === 'ready') {
+            return $this->statusService->discoveryStatus('pending', 'ready', 'order');
+        }
+
+        if (in_array($normalizedRemoteState, ['picked_up', 'delivering', 'arriving'], true)) {
+            return $this->statusService->discoveryStatus('pending', 'way', 'order');
+        }
+
+        if (in_array($normalizedRemoteState, ['accepted', 'preparing'], true)) {
+            return $this->statusService->discoveryStatus('open', 'preparing', 'order');
+        }
+
+        return $this->statusService->discoveryStatus('open', 'open', 'order');
+    }
+
+    private function syncFood99DeliveryOrder(
+        Order $order,
+        ?People $courier = null,
+        ?string $remoteState = null,
+        ?string $deliveryStatus = null
+    ): Order {
+        $deliveryOrder = $this->findFood99DeliveryOrder($order);
+        if (!$deliveryOrder instanceof Order) {
+            $deliveryOrder = new Order();
+        }
+
+        $deliveryOrder->setMainOrder($order);
+        $deliveryOrder->setMainOrderId($order->getId());
+        $deliveryOrder->setProvider($order->getProvider());
+        $deliveryOrder->setClient($order->getClient());
+        $deliveryOrder->setPayer($order->getPayer());
+        $deliveryOrder->setAddressOrigin($order->getAddressOrigin());
+        $deliveryOrder->setAddressDestination($order->getAddressDestination());
+        $deliveryOrder->setRetrieveContact($order->getRetrieveContact());
+        $deliveryOrder->setDeliveryContact($order->getDeliveryContact());
+        $deliveryOrder->setOrderType(Order::ORDER_TYPE_DELIVERY);
+        $deliveryOrder->setApp(self::APP_CONTEXT);
+        $deliveryOrder->setDeliveryPeople($courier);
+        $deliveryOrder->setStatus($this->resolveFood99DeliveryOrderStatus($remoteState, $deliveryStatus));
+        $deliveryOrder->setPrice(0);
+        $deliveryOrder->setAlterDate(new DateTime('now'));
+
+        $this->entityManager->persist($deliveryOrder);
+
+        return $deliveryOrder;
     }
 
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
