@@ -26,21 +26,23 @@ class LogisticsQuoteService
     {
         $payload = $this->decodePayload($integration->getBody());
         if ($payload === []) {
-            self::$logger?->warning('Logistics quote ignored because payload is invalid', [
+            $message = 'Logistics quote ignored because payload is invalid';
+            self::$logger?->warning($message, [
                 'integration_id' => $integration->getId(),
             ]);
 
-            return null;
+            throw new \RuntimeException($message);
         }
 
         $quoteOrder = $this->resolveQuoteOrder($payload);
         if (!$quoteOrder instanceof Order) {
-            self::$logger?->warning('Logistics quote ignored because quote order could not be resolved', [
+            $message = 'Logistics quote ignored because quote order could not be resolved';
+            self::$logger?->warning($message, [
                 'integration_id' => $integration->getId(),
                 'payload' => $payload,
             ]);
 
-            return null;
+            throw new \RuntimeException($message);
         }
 
         $providerKey = $this->normalizeProviderKey($payload['provider_key'] ?? $quoteOrder->getApp());
@@ -56,10 +58,14 @@ class LogisticsQuoteService
                 ],
             };
         } catch (\Throwable $exception) {
-            $result = [
-                'errno' => 500,
-                'errmsg' => $exception->getMessage(),
-            ];
+            self::$logger?->error('Logistics quote worker failed', [
+                'integration_id' => $integration->getId(),
+                'quote_order_id' => $quoteOrder->getId(),
+                'provider_key' => $providerKey,
+                'exception' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
         }
 
         $quoteOrder = $this->entityManager->getRepository(Order::class)->find($quoteOrder->getId()) ?? $quoteOrder;
@@ -74,6 +80,13 @@ class LogisticsQuoteService
             'quoteError' => $result['errmsg'] ?? null,
             'quoteErrorCode' => $result['errno'] ?? null,
         ]);
+
+        if (isset($result['errno']) && (int) $result['errno'] !== 0) {
+            throw new \RuntimeException(
+                (string) ($result['errmsg'] ?? 'Logistics quote provider returned an error.'),
+                (int) $result['errno']
+            );
+        }
 
         return $quoteOrder;
     }
