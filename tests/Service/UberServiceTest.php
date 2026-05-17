@@ -15,6 +15,7 @@ use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\RequestPayloadService;
 use ControleOnline\Service\UberService;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -273,15 +274,56 @@ class UberServiceTest extends TestCase
         }
     }
 
-    private function createService(MockHttpClient $httpClient, ConfigService $configService): UberService
+    public function testResolveDropoffAddressAcceptsObjectIds(): void
     {
-        $entityManager = $this->createStub(EntityManagerInterface::class);
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $repository = $this->createMock(EntityRepository::class);
+        $resolvedAddress = $this->createConfiguredMock(Address::class, [
+            'getId' => 2059,
+        ]);
+        $order = $this->createMock(\ControleOnline\Entity\Order::class);
+        $candidate = new class {
+            public function getId(): int
+            {
+                return 2059;
+            }
+        };
+
+        $entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(Address::class)
+            ->willReturn($repository);
+
+        $repository
+            ->expects(self::once())
+            ->method('find')
+            ->with(2059)
+            ->willReturn($resolvedAddress);
+
+        $service = $this->createService(
+            new MockHttpClient(),
+            $this->createConfigService([]),
+            $entityManager
+        );
+
+        $order->method('getAddressDestination')->willReturn($candidate);
+
+        self::assertSame($resolvedAddress, $this->invokePrivateMethod($service, 'resolveDropoffAddress', $order));
+    }
+
+    private function createService(
+        MockHttpClient $httpClient,
+        ConfigService $configService,
+        ?EntityManagerInterface $entityManager = null
+    ): UberService
+    {
         $requestPayloadService = $this->createStub(RequestPayloadService::class);
         $loggerService = $this->createMock(LoggerService::class);
         $loggerService->method('getLogger')->willReturn(new NullLogger());
 
         return new UberService(
-            $entityManager,
+            $entityManager ?? $this->createStub(EntityManagerInterface::class),
             $httpClient,
             $loggerService,
             $requestPayloadService,

@@ -4,6 +4,7 @@ namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\DeviceConfig;
+use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\WebsocketClient;
@@ -95,6 +96,43 @@ class DefaultFoodServiceTest extends TestCase
         self::assertTrue($parameters[19]->isOptional());
     }
 
+    public function testResolveAddressCandidateAcceptsObjectIds(): void
+    {
+        $service = (new \ReflectionClass(DefaultFoodServiceProbe::class))->newInstanceWithoutConstructor();
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $repository = $this->getMockBuilder(\Doctrine\ORM\EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['find'])
+            ->getMock();
+        $resolvedAddress = $this->createConfiguredMock(Address::class, [
+            'getId' => 2059,
+        ]);
+
+        $candidate = new class {
+            public function getId(): int
+            {
+                return 2059;
+            }
+        };
+
+        $entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(Address::class)
+            ->willReturn($repository);
+
+        $repository
+            ->expects(self::once())
+            ->method('find')
+            ->with(2059)
+            ->willReturn($resolvedAddress);
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'entityManager', $entityManager);
+
+        self::assertSame($resolvedAddress, $service->resolveAddressCandidateValue($candidate));
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
@@ -108,5 +146,10 @@ final class DefaultFoodServiceProbe extends DefaultFoodService
     public function emit(People $company, array $events): void
     {
         $this->broadcastCompanyWebsocketEvents($company, $events);
+    }
+
+    public function resolveAddressCandidateValue(mixed $candidate): ?Address
+    {
+        return $this->resolveAddressCandidate($candidate);
     }
 }
