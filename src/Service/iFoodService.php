@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Service\AddressService;
+use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
@@ -3951,7 +3952,22 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Loja iFood nao conectada.');
         }
 
-        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
+        self::$logger?->info('iFood quote delivery debug', [
+            'quote_order_id' => $order->getId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'quote_address_destination' => get_debug_type($order->getAddressDestination()),
+            'source_address_destination' => get_debug_type($sourceOrder->getAddressDestination()),
+        ]);
+
+        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
+        if (!$dropoffAddress instanceof Address) {
+            $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
+        }
+        self::$logger?->info('iFood quote dropoff resolution', [
+            'quote_order_id' => $order->getId(),
+            'resolved_dropoff_type' => get_debug_type($dropoffAddress),
+            'resolved_dropoff_id' => is_object($dropoffAddress) && method_exists($dropoffAddress, 'getId') ? $dropoffAddress->getId() : null,
+        ]);
         if (!$dropoffAddress instanceof Address) {
             return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
         }
@@ -4101,7 +4117,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ];
         }
 
-        $pickupAddress = $this->resolveIfoodQuotePickupAddress($order, $sourceOrder);
+        $pickupAddress = $this->resolveAddressCandidate($order->getAddressOrigin());
+        if (!$pickupAddress instanceof Address) {
+            $pickupAddress = $this->resolveAddressCandidate($sourceOrder->getAddressOrigin());
+        }
         if (!$pickupAddress instanceof Address) {
             return [
                 'errno' => 422,
@@ -4109,7 +4128,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ];
         }
 
-        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
+        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
+        if (!$dropoffAddress instanceof Address) {
+            $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
+        }
         if (!$dropoffAddress instanceof Address) {
             return [
                 'errno' => 422,
