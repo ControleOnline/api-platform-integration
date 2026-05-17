@@ -3139,9 +3139,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         Order $order,
         ?People $courier = null,
         ?string $remoteState = null,
-        ?string $deliveryStatus = null
+        ?string $deliveryStatus = null,
+        array $deliveryState = []
     ): Order {
         $deliveryOrder = $this->findFood99DeliveryOrder($order);
+        $deliveryOrderExists = $deliveryOrder instanceof Order;
         if (!$deliveryOrder instanceof Order) {
             $deliveryOrder = new Order();
         }
@@ -3155,14 +3157,52 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $deliveryOrder->setAddressDestination($order->getAddressDestination());
         $deliveryOrder->setRetrieveContact($order->getRetrieveContact());
         $deliveryOrder->setDeliveryContact($order->getDeliveryContact());
+        $deliveryOrder->setComments($order->getComments());
         $deliveryOrder->setOrderType(Order::ORDER_TYPE_DELIVERY);
         $deliveryOrder->setApp(self::APP_CONTEXT);
-        $deliveryOrder->setDeliveryPeople($courier);
-        $deliveryOrder->setStatus($this->resolveFood99DeliveryOrderStatus($remoteState, $deliveryStatus));
-        $deliveryOrder->setPrice(0);
-        $deliveryOrder->setAlterDate(new DateTime('now'));
+        if ($courier instanceof People && $deliveryOrder->getDeliveryPeople()?->getId() !== $courier->getId()) {
+            $deliveryOrder->setDeliveryPeople($courier);
+        }
 
-        $this->entityManager->persist($deliveryOrder);
+        $shouldRefreshStatus = !$deliveryOrderExists
+            || $remoteState !== null
+            || $deliveryStatus !== null
+            || !($deliveryOrder->getStatus() instanceof Status);
+        if ($shouldRefreshStatus) {
+            $deliveryOrder->setStatus($this->resolveFood99DeliveryOrderStatus($remoteState, $deliveryStatus));
+        }
+
+        $storedState = $this->getStoredFood99QuoteState($deliveryOrder);
+        $deliveryLogisticsState = array_merge($storedState, [
+            'flow' => 'delivery',
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => $storedState['quote_state'] ?? 'selected',
+            'quote_message' => trim((string) ($deliveryStatus ?? '')) !== ''
+                ? $deliveryStatus
+                : (trim((string) ($deliveryState['rider_to_store_eta'] ?? '')) !== ''
+                    ? $deliveryState['rider_to_store_eta']
+                    : 'Entrega definida'),
+            'quote_requested_at' => $storedState['quote_requested_at'] ?? date('Y-m-d H:i:s'),
+            'quote_updated_at' => date('Y-m-d H:i:s'),
+            'price' => $storedState['price'] ?? null,
+            'eta' => $deliveryState['rider_to_store_eta'] ?? ($storedState['eta'] ?? null),
+            'tracking_url' => $deliveryState['handover_page_url'] ?? ($storedState['tracking_url'] ?? null),
+            'remote_order_id' => $storedState['remote_order_id'] ?? null,
+            'remote_order_state' => $remoteState ?? ($storedState['remote_order_state'] ?? null),
+            'remote_delivery_status' => $deliveryStatus ?? ($storedState['remote_delivery_status'] ?? null),
+            'pickup_code' => $deliveryState['pickup_code'] ?? ($storedState['pickup_code'] ?? null),
+            'locator' => $deliveryState['locator'] ?? ($storedState['locator'] ?? null),
+            'handover_page_url' => $deliveryState['handover_page_url'] ?? ($storedState['handover_page_url'] ?? null),
+            'virtual_phone_number' => $deliveryState['virtual_phone_number'] ?? ($storedState['virtual_phone_number'] ?? null),
+            'handover_code' => $deliveryState['handover_code'] ?? ($storedState['handover_code'] ?? null),
+            'rider_name' => $deliveryState['rider_name'] ?? ($storedState['rider_name'] ?? null),
+            'rider_phone' => $deliveryState['rider_phone'] ?? ($storedState['rider_phone'] ?? null),
+            'rider_to_store_eta' => $deliveryState['rider_to_store_eta'] ?? ($storedState['rider_to_store_eta'] ?? null),
+            'delivery_response' => $deliveryState,
+        ]);
+
+        $this->persistFood99QuoteState($deliveryOrder, $deliveryLogisticsState, $deliveryLogisticsState);
 
         return $deliveryOrder;
     }
@@ -4525,7 +4565,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $deliveryState
         ));
 
-        $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
+        $courier = $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
+        $this->syncFood99DeliveryOrder(
+            $order,
+            $courier,
+            'new',
+            $this->extractOrderDeliveryStatus($json),
+            $deliveryState
+        );
 
         if ($isCanceled) {
             $this->applyLocalCanceledStatus($order);
@@ -7982,7 +8029,14 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             }
 
             $this->addAddress($order, $receiveAddress);
-            $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
+            $courier = $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
+            $this->syncFood99DeliveryOrder(
+                $order,
+                $courier,
+                $remoteState,
+                $deliveryStatus,
+                $deliveryState
+            );
 
             $this->entityManager->persist($order);
             $this->entityManager->flush();
