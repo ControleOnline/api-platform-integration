@@ -62,7 +62,15 @@ class LogisticsQuoteService
             ];
         }
 
+        $quoteOrder = $this->entityManager->getRepository(Order::class)->find($quoteOrder->getId()) ?? $quoteOrder;
+        $quoteState = $this->extractQuoteState($quoteOrder);
+
         $this->quoteLogisticsService->broadcastOrderChange($quoteOrder, 'order.updated', [
+            'changed' => true,
+            'quoteChanged' => true,
+            'quoteState' => $quoteState['quote_state'] ?? null,
+            'quotePrice' => $quoteState['price'] ?? null,
+            'quoteUpdatedAt' => $quoteState['quote_updated_at'] ?? null,
             'quoteError' => $result['errmsg'] ?? null,
             'quoteErrorCode' => $result['errno'] ?? null,
         ]);
@@ -118,5 +126,21 @@ class LogisticsQuoteService
         }
 
         return (int) $normalized;
+    }
+
+    private function extractQuoteState(Order $order): array
+    {
+        $otherInformations = $order->getOtherInformations(true);
+        if (is_object($otherInformations)) {
+            $otherInformations = (array) $otherInformations;
+        }
+
+        if (!is_array($otherInformations)) {
+            return [];
+        }
+
+        $logistics = $otherInformations['logistics'] ?? [];
+
+        return is_array($logistics) ? $logistics : [];
     }
 }
