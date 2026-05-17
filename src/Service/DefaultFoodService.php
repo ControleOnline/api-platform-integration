@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\Address;
 use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Integration;
@@ -92,6 +93,29 @@ class DefaultFoodService
         $this->whatsAppService = $service;
 
         return $this->whatsAppService;
+    }
+
+    protected function resolveAddressCandidate(mixed $candidate): ?Address
+    {
+        if ($candidate instanceof Address) {
+            return $candidate;
+        }
+
+        if (is_object($candidate) && method_exists($candidate, 'getId')) {
+            $candidate = $candidate->getId();
+        }
+
+        if (is_array($candidate)) {
+            $candidate = $candidate['id'] ?? $candidate['@id'] ?? null;
+        }
+
+        if (!is_numeric($candidate)) {
+            return null;
+        }
+
+        $address = $this->entityManager->getRepository(Address::class)->find((int) $candidate);
+
+        return $address instanceof Address ? $address : null;
     }
 
     protected function printOrder(Order $order)

@@ -135,12 +135,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function resolveFood99QuotePickupAddress(Order $order, Order $sourceOrder): ?Address
     {
-        $pickupAddress = $order->getAddressOrigin();
+        $pickupAddress = $this->resolveAddressCandidate($order->getAddressOrigin());
         if ($pickupAddress instanceof Address) {
             return $pickupAddress;
         }
 
-        $pickupAddress = $sourceOrder->getAddressOrigin();
+        $pickupAddress = $this->resolveAddressCandidate($sourceOrder->getAddressOrigin());
         if ($pickupAddress instanceof Address) {
             return $pickupAddress;
         }
@@ -148,8 +148,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $provider = $sourceOrder->getProvider();
         if ($provider instanceof People) {
             foreach ($provider->getAddress() as $address) {
-                if ($address instanceof Address) {
-                    return $address;
+                $resolvedAddress = $this->resolveAddressCandidate($address);
+                if ($resolvedAddress instanceof Address) {
+                    return $resolvedAddress;
                 }
             }
         }
@@ -159,12 +160,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function resolveFood99QuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
     {
-        $dropoffAddress = $order->getAddressDestination();
+        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
         if ($dropoffAddress instanceof Address) {
             return $dropoffAddress;
         }
 
-        $dropoffAddress = $sourceOrder->getAddressDestination();
+        $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
 
         return $dropoffAddress instanceof Address ? $dropoffAddress : null;
     }

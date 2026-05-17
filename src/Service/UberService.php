@@ -849,7 +849,7 @@ class UberService
 
     private function resolvePickupAddress(Order $order): ?Address
     {
-        $address = $order->getAddressOrigin();
+        $address = $this->resolveAddressCandidate($order->getAddressOrigin());
         if ($address instanceof Address) {
             return $address;
         }
@@ -859,7 +859,7 @@ class UberService
 
     private function resolveDropoffAddress(Order $order): ?Address
     {
-        $address = $order->getAddressDestination();
+        $address = $this->resolveAddressCandidate($order->getAddressDestination());
 
         return $address instanceof Address ? $address : null;
     }
@@ -1453,12 +1453,36 @@ class UberService
 
         $addresses = $people->getAddress();
         foreach ($addresses as $address) {
-            if ($address instanceof Address) {
-                return $address;
+            $resolvedAddress = $this->resolveAddressCandidate($address);
+            if ($resolvedAddress instanceof Address) {
+                return $resolvedAddress;
             }
         }
 
         return null;
+    }
+
+    private function resolveAddressCandidate(mixed $candidate): ?Address
+    {
+        if ($candidate instanceof Address) {
+            return $candidate;
+        }
+
+        if (is_object($candidate) && method_exists($candidate, 'getId')) {
+            $candidate = $candidate->getId();
+        }
+
+        if (is_array($candidate)) {
+            $candidate = $candidate['id'] ?? $candidate['@id'] ?? null;
+        }
+
+        if (!is_numeric($candidate)) {
+            return null;
+        }
+
+        $address = $this->entityManager->getRepository(Address::class)->find((int) $candidate);
+
+        return $address instanceof Address ? $address : null;
     }
 
     private function resolvePickupContact(Order $order): ?array
