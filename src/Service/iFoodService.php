@@ -5722,18 +5722,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function getStoredIfoodQuoteState(Order $order): array
     {
-        $otherInformations = $order->getOtherInformations(true);
-        if (is_object($otherInformations)) {
-            $otherInformations = (array) $otherInformations;
-        }
-
-        if (!is_array($otherInformations)) {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        if ($otherInformations === []) {
             return [];
         }
 
-        $logistics = $otherInformations['logistics'] ?? [];
+        $storedState = $otherInformations[self::APP_CONTEXT]
+            ?? $otherInformations['logistics']
+            ?? [];
 
-        return is_array($logistics) ? $logistics : [];
+        if (is_object($storedState)) {
+            $storedState = (array) $storedState;
+        }
+
+        return is_array($storedState) ? $storedState : [];
     }
 
     private function resolveIfoodQuoteStateFromStatus(int $statusCode): string
