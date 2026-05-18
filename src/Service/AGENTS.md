@@ -8,7 +8,7 @@
 - Se o webhook legarado nao trouxer `uid`, o service pode tentar `nome + endereco completo` apenas para reconciliacao exata e unica de registros antigos.
 - Quando nao houver `uid` nem match exato de legado, o service deve seguir sem código e nao criar identificador falso.
 - Pedidos novos do evento `orderNew` devem gerar o financeiro automaticamente no proprio pipeline de integracao. O endpoint manual de invoices serve apenas para backfill/legado.
-- `Food99Service` nao deve criar invoices inline ao processar o webhook; o pedido precisa ser persistido com `otherInformations` e o financeiro deve ser reconstruido pelo gerador central.
+- `Food99Service` nao deve criar invoices inline ao processar o webhook; o pedido principal precisa ser persistido com `otherInformations` e o financeiro deve ser reconstruido pelo gerador central. O pedido filho de logistica nao deve espelhar esse snapshot.
 - Para `Food99`, o snapshot financeiro deve vir somente de `order.otherInformations.Food99`; o contexto legado `iFood` nao pode alimentar conta, wallet ou `paymentType`.
 - Quando o pedido for pago no app, precisa existir uma invoice explicita do fluxo `cliente -> 99 Food`.
 - Os meios de pagamento do cliente devem ficar apenas na invoice; nao espelhar esses canais na wallet operacional do `99 Food`.
@@ -21,6 +21,7 @@
 - Em `Food99`, o weekly settlement deve considerar `service_fee` do payload bruto e as taxas calibradas da integracao. A calibracao atual vem da reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e comissao efetiva em torno de `7,9%`.
 - Em `Food99`, os componentes monetarios calculados da taxa devem usar arredondamento normal em centavos; nao usar `ceil` para inflar commission/processing/logistics em centavos.
 - Em `Food99`, a carteira de repasse da loja vem da tela de integracao e precisa ser persistida como `store_settlement_wallet_id`; essa carteira e a unica fonte valida para `provider_wallet`.
+- Em pedidos filhos de logistica gerados por `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 
 ## iFoodService.php
 - A carteira operacional da integracao deve ser `iFood`.

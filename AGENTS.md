@@ -26,6 +26,7 @@
 - Em `Food99`, pedidos com status terminal `canceled`/`cancelled` devem ser tratados como sem geracao financeira, mas a limpeza das invoices gerenciadas do proprio pedido continua obrigatoria.
 - Em `Food99`, o repasse semanal deve abater `service_fee` do payload bruto e usar as taxas calibradas pela integracao antes de fechar a invoice semanal. A calibracao vigente e obtida pela reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e a comissao efetiva em torno de `7,9%`.
 - Em `Food99`, os componentes de fee calculados pela integracao devem ser arredondados normalmente em centavos; nao usar `ceil` para as taxas calculadas.
+- Em pedidos filhos de logistica gerados pela integracao `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 
 ## iFood - negociacao e cancelamento
 - `HANDSHAKE_DISPUTE` nao cancela o pedido sozinho. Ele abre uma disputa que precisa ficar visivel para decisao humana ate chegar `HANDSHAKE_SETTLEMENT` ou ate uma resposta local bem-sucedida.

@@ -18,6 +18,7 @@ use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
+use DateTimeInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
@@ -143,6 +144,42 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         $pickupAddress = $this->resolveAddressCandidate($sourceOrder->getAddressOrigin());
         if ($pickupAddress instanceof Address) {
             return $pickupAddress;
+        }
+
+        return null;
+    }
+
+    private function resolveFood99DeliveryPickupAddress(Order $order): ?Address
+    {
+        $pickupAddress = $this->resolveAddressCandidate($order->getAddressOrigin());
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
+
+        return $this->resolveFood99PrimaryAddress($order->getProvider());
+    }
+
+    private function resolveFood99DeliveryDropoffAddress(Order $order): ?Address
+    {
+        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
+        if ($dropoffAddress instanceof Address) {
+            return $dropoffAddress;
+        }
+
+        return $this->resolveFood99PrimaryAddress($order->getClient());
+    }
+
+    private function resolveFood99PrimaryAddress(?People $people): ?Address
+    {
+        if (!$people instanceof People) {
+            return null;
+        }
+
+        foreach ($people->getAddress() as $address) {
+            $resolvedAddress = $this->resolveAddressCandidate($address);
+            if ($resolvedAddress instanceof Address) {
+                return $resolvedAddress;
+            }
         }
 
         return null;
@@ -3139,8 +3176,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         Order $order,
         ?People $courier = null,
         ?string $remoteState = null,
-        ?string $deliveryStatus = null,
-        array $deliveryState = []
+        ?string $deliveryStatus = null
     ): Order {
         $deliveryOrder = $this->findFood99DeliveryOrder($order);
         $deliveryOrderExists = $deliveryOrder instanceof Order;
@@ -3148,21 +3184,36 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $deliveryOrder = new Order();
         }
 
+        $resolvedCourier = $courier instanceof People ? $courier : null;
+        if (!$resolvedCourier instanceof People && $deliveryOrder->getDeliveryPeople() instanceof People) {
+            $resolvedCourier = $deliveryOrder->getDeliveryPeople();
+        }
+        if (!$resolvedCourier instanceof People && $order->getDeliveryPeople() instanceof People) {
+            $resolvedCourier = $order->getDeliveryPeople();
+        }
+
+        $pickupAddress = $this->resolveFood99DeliveryPickupAddress($order);
+        $dropoffAddress = $this->resolveFood99DeliveryDropoffAddress($order);
+        $marketplacePeople = $this->resolveFood99MarketplacePeople();
+
         $deliveryOrder->setMainOrder($order);
         $deliveryOrder->setMainOrderId($order->getId());
-        $deliveryOrder->setProvider($order->getProvider());
-        $deliveryOrder->setClient($order->getClient());
-        $deliveryOrder->setPayer($order->getPayer());
-        $deliveryOrder->setAddressOrigin($order->getAddressOrigin());
-        $deliveryOrder->setAddressDestination($order->getAddressDestination());
-        $deliveryOrder->setRetrieveContact($order->getRetrieveContact());
-        $deliveryOrder->setDeliveryContact($order->getDeliveryContact());
+        if ($resolvedCourier instanceof People) {
+            $deliveryOrder->setProvider($resolvedCourier);
+            $deliveryOrder->setDeliveryPeople($resolvedCourier);
+        }
+        $deliveryOrder->setClient($order->getProvider());
+        $deliveryOrder->setPayer($marketplacePeople);
+        $deliveryOrder->setAddressOrigin($pickupAddress);
+        $deliveryOrder->setAddressDestination($dropoffAddress);
+        $deliveryOrder->setOtherInformations(new \stdClass());
+        $deliveryOrder->setRetrieveContact($order->getRetrieveContact() instanceof People
+            ? $order->getRetrieveContact()
+            : $order->getProvider());
+        $deliveryOrder->setDeliveryContact($order->getClient());
         $deliveryOrder->setComments($order->getComments());
         $deliveryOrder->setOrderType(Order::ORDER_TYPE_DELIVERY);
         $deliveryOrder->setApp(self::APP_CONTEXT);
-        if ($courier instanceof People && $deliveryOrder->getDeliveryPeople()?->getId() !== $courier->getId()) {
-            $deliveryOrder->setDeliveryPeople($courier);
-        }
 
         $shouldRefreshStatus = !$deliveryOrderExists
             || $remoteState !== null
@@ -3171,38 +3222,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if ($shouldRefreshStatus) {
             $deliveryOrder->setStatus($this->resolveFood99DeliveryOrderStatus($remoteState, $deliveryStatus));
         }
-
-        $storedState = $this->getStoredFood99QuoteState($deliveryOrder);
-        $deliveryLogisticsState = array_merge($storedState, [
-            'flow' => 'delivery',
-            'provider_key' => 'food99',
-            'provider_label' => '99 Food',
-            'quote_state' => $storedState['quote_state'] ?? 'selected',
-            'quote_message' => trim((string) ($deliveryStatus ?? '')) !== ''
-                ? $deliveryStatus
-                : (trim((string) ($deliveryState['rider_to_store_eta'] ?? '')) !== ''
-                    ? $deliveryState['rider_to_store_eta']
-                    : 'Entrega definida'),
-            'quote_requested_at' => $storedState['quote_requested_at'] ?? date('Y-m-d H:i:s'),
-            'quote_updated_at' => date('Y-m-d H:i:s'),
-            'price' => $storedState['price'] ?? null,
-            'eta' => $deliveryState['rider_to_store_eta'] ?? ($storedState['eta'] ?? null),
-            'tracking_url' => $deliveryState['handover_page_url'] ?? ($storedState['tracking_url'] ?? null),
-            'remote_order_id' => $storedState['remote_order_id'] ?? null,
-            'remote_order_state' => $remoteState ?? ($storedState['remote_order_state'] ?? null),
-            'remote_delivery_status' => $deliveryStatus ?? ($storedState['remote_delivery_status'] ?? null),
-            'pickup_code' => $deliveryState['pickup_code'] ?? ($storedState['pickup_code'] ?? null),
-            'locator' => $deliveryState['locator'] ?? ($storedState['locator'] ?? null),
-            'handover_page_url' => $deliveryState['handover_page_url'] ?? ($storedState['handover_page_url'] ?? null),
-            'virtual_phone_number' => $deliveryState['virtual_phone_number'] ?? ($storedState['virtual_phone_number'] ?? null),
-            'handover_code' => $deliveryState['handover_code'] ?? ($storedState['handover_code'] ?? null),
-            'rider_name' => $deliveryState['rider_name'] ?? ($storedState['rider_name'] ?? null),
-            'rider_phone' => $deliveryState['rider_phone'] ?? ($storedState['rider_phone'] ?? null),
-            'rider_to_store_eta' => $deliveryState['rider_to_store_eta'] ?? ($storedState['rider_to_store_eta'] ?? null),
-            'delivery_response' => $deliveryState,
-        ]);
-
-        $this->persistFood99QuoteState($deliveryOrder, $deliveryLogisticsState, $deliveryLogisticsState);
 
         return $deliveryOrder;
     }
@@ -4329,11 +4348,39 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function storeOrderRemoteSnapshot(Order $order, string $entryKey, array $payload): void
     {
-        $otherInformations = (array) $order->getOtherInformations(true);
-        $otherInformations[$entryKey] = $payload;
-        $otherInformations['latest_event_type'] = $entryKey;
-        $order->addOtherInformations(self::APP_CONTEXT, $otherInformations);
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        $food99Snapshot = $this->flattenFood99SnapshotBlock($otherInformations[self::APP_CONTEXT] ?? []);
+        $food99Snapshot[$entryKey] = $payload;
+        $food99Snapshot['latest_event_type'] = $entryKey;
+        $otherInformations[self::APP_CONTEXT] = $food99Snapshot;
+        $order->setOtherInformations($otherInformations);
         $this->entityManager->persist($order);
+    }
+
+    private function flattenFood99SnapshotBlock(mixed $snapshot): array
+    {
+        if ($snapshot instanceof \stdClass) {
+            $snapshot = (array) $snapshot;
+        }
+
+        if (!is_array($snapshot)) {
+            return [];
+        }
+
+        $flattened = [];
+        if (isset($snapshot[self::APP_CONTEXT])) {
+            $flattened = $this->flattenFood99SnapshotBlock($snapshot[self::APP_CONTEXT]);
+        }
+
+        foreach ($snapshot as $key => $value) {
+            if ($key === self::APP_CONTEXT) {
+                continue;
+            }
+
+            $flattened[$key] = $value;
+        }
+
+        return $flattened;
     }
 
     private function isTerminalLocalOrderStatus(Order $order): bool
@@ -4570,8 +4617,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             $order,
             $courier,
             'new',
-            $this->extractOrderDeliveryStatus($json),
-            $deliveryState
+            $this->extractOrderDeliveryStatus($json)
         );
 
         if ($isCanceled) {
@@ -8034,8 +8080,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 $order,
                 $courier,
                 $remoteState,
-                $deliveryStatus,
-                $deliveryState
+                $deliveryStatus
             );
 
             $this->entityManager->persist($order);
