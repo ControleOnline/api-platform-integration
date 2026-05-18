@@ -2,7 +2,13 @@
 
 namespace ControleOnline\Integration\Tests\Service;
 
+use ControleOnline\Entity\Address;
+use ControleOnline\Entity\Cep;
+use ControleOnline\Entity\City;
+use ControleOnline\Entity\District;
 use ControleOnline\Entity\Order;
+use ControleOnline\Entity\State;
+use ControleOnline\Entity\Street;
 use ControleOnline\Service\iFoodService;
 use PHPUnit\Framework\TestCase;
 
@@ -91,6 +97,41 @@ class iFoodServiceTest extends TestCase
             ],
             $this->invokePrivateMethod($service, 'getStoredIfoodQuoteState', $order)
         );
+    }
+
+    public function testShippingAddressPayloadUsesStringStreetNumber(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $cep = $this->createStub(Cep::class);
+        $cep->method('getCep')->willReturn('07063080');
+        $state = $this->createStub(State::class);
+        $state->method('getUf')->willReturn('SP');
+        $state->method('getState')->willReturn('Sao Paulo');
+        $city = $this->createStub(City::class);
+        $city->method('getCity')->willReturn('Guarulhos');
+        $city->method('getState')->willReturn($state);
+        $district = $this->createStub(District::class);
+        $district->method('getDistrict')->willReturn('Jardim Alianca');
+        $district->method('getCity')->willReturn($city);
+        $street = $this->createStub(Street::class);
+        $street->method('getStreet')->willReturn('Rua Antonio Rabello');
+        $street->method('getDistrict')->willReturn($district);
+        $street->method('getCep')->willReturn($cep);
+        $address = $this->createStub(Address::class);
+        $address->method('getStreet')->willReturn($street);
+        $address->method('getNumber')->willReturn(22);
+        $address->method('getComplement')->willReturn(null);
+        $address->method('getLocator')->willReturn(null);
+        $address->method('getNickname')->willReturn('Default');
+        $address->method('getLatitude')->willReturn(0.0);
+        $address->method('getLongitude')->willReturn(0.0);
+
+        $payload = $this->invokePrivateMethod($service, 'buildIfoodShippingAddressPayload', $address);
+
+        self::assertSame('22', $payload['streetNumber']);
+        self::assertSame('07063080', $payload['postalCode']);
+        self::assertSame('BR', $payload['country']);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

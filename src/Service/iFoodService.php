@@ -5535,7 +5535,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $payload = [
             'postalCode' => preg_replace('/\D+/', '', (string) ($cep?->getCep() ?? '')) ?: null,
-            'streetNumber' => $streetNumberPayload['street_number'] ?? $address->getNumber(),
+            'streetNumber' => (string) ($streetNumberPayload['street_number'] ?? $address->getNumber() ?? ''),
             'streetName' => $this->truncateIfoodText($street?->getStreet() ?? '', 50),
             'complement' => $this->truncateIfoodText($streetNumberPayload['complement'] ?? $address->getComplement() ?? '', 50),
             'reference' => $this->truncateIfoodText($address->getLocator() ?: $address->getNickname() ?: '', 70),
