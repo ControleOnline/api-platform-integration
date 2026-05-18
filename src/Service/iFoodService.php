@@ -3968,6 +3968,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'resolved_dropoff_type' => get_debug_type($dropoffAddress),
             'resolved_dropoff_id' => is_object($dropoffAddress) && method_exists($dropoffAddress, 'getId') ? $dropoffAddress->getId() : null,
         ]);
+        $routeError = $this->validateIfoodQuoteRoute($pickupAddress, $dropoffAddress);
+        if ($routeError !== null) {
+            return $this->persistIfoodQuoteFailure($order, 'unavailable', $routeError);
+        }
         if (!$dropoffAddress instanceof Address) {
             return $this->persistIfoodQuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
         }
@@ -4136,6 +4140,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return [
                 'errno' => 422,
                 'errmsg' => 'Pedido sem endereco de entrega valido.',
+            ];
+        }
+
+        $routeError = $this->validateIfoodQuoteRoute($pickupAddress, $dropoffAddress);
+        if ($routeError !== null) {
+            return [
+                'errno' => 422,
+                'errmsg' => $routeError,
             ];
         }
 
@@ -5503,6 +5515,65 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
 
         return $dropoffAddress instanceof Address ? $dropoffAddress : null;
+    }
+
+    private function validateIfoodQuoteRoute(?Address $pickupAddress, ?Address $dropoffAddress): ?string
+    {
+        if (!$pickupAddress instanceof Address) {
+            return 'Pedido sem endereco de coleta valido.';
+        }
+
+        if (!$dropoffAddress instanceof Address) {
+            return 'Pedido sem endereco de entrega valido.';
+        }
+
+        if (!$this->hasCompleteIfoodAddress($pickupAddress)) {
+            return 'Pedido sem endereco de coleta valido.';
+        }
+
+        if (!$this->hasCompleteIfoodAddress($dropoffAddress)) {
+            return 'Pedido sem endereco de entrega valido.';
+        }
+
+        if ($this->buildIfoodAddressRouteSignature($pickupAddress) === $this->buildIfoodAddressRouteSignature($dropoffAddress)) {
+            return 'Endereco de coleta e entrega nao podem ser iguais.';
+        }
+
+        return null;
+    }
+
+    private function hasCompleteIfoodAddress(Address $address): bool
+    {
+        $street = $address->getStreet();
+        $district = $street?->getDistrict();
+        $city = $district?->getCity();
+        $state = $city?->getState();
+        $cep = $street?->getCep();
+
+        return $this->normalizeString($street?->getStreet() ?? null) !== ''
+            && $this->normalizeString($district?->getDistrict() ?? null) !== ''
+            && $this->normalizeString($city?->getCity() ?? null) !== ''
+            && $this->normalizeString($state?->getUf() ?: $state?->getState() ?: null) !== ''
+            && $this->normalizeString($cep?->getCep() ?? null) !== '';
+    }
+
+    private function buildIfoodAddressRouteSignature(Address $address): string
+    {
+        $street = $address->getStreet();
+        $district = $street?->getDistrict();
+        $city = $district?->getCity();
+        $state = $city?->getState();
+        $cep = $street?->getCep();
+
+        return strtolower(implode('|', [
+            $this->normalizeString($street?->getStreet() ?? null),
+            $this->normalizeString((string) $address->getNumber()),
+            $this->normalizeString($address->getComplement() ?? null),
+            $this->normalizeString($district?->getDistrict() ?? null),
+            $this->normalizeString($city?->getCity() ?? null),
+            $this->normalizeString($state?->getUf() ?: $state?->getState() ?: null),
+            preg_replace('/\D+/', '', $this->normalizeString($cep?->getCep() ?? null)),
+        ]));
     }
 
     private function buildIfoodAddressCoordinatesPayload(Address $address): array

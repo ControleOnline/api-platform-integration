@@ -29,6 +29,7 @@
 - Descontos e ajustes que ja venham liquidos no repasse, sem cobranca separada para a loja, devem ser modelados como fluxo interno do marketplace, com `payer = iFood` e `receiver = iFood`.
 - O valor que a loja recebe do marketplace deve entrar na invoice semanal unica, com vencimento na quarta-feira. Taxas cobradas da loja ficam em invoices especificas; descontos ja liquidados dentro do repasse seguem a regra de ajuste interno acima.
 - Quando o pedido for pago na entrega, o recebimento do cliente continua separado do repasse semanal do marketplace.
+- Cotacao e solicitacao de entrega devem falhar quando pickup e dropoff forem o mesmo endereco ou quando o dropoff nao resolver um endereco real e completo.
 - Eventos `HANDSHAKE_DISPUTE` devem persistir os campos essenciais da disputa antes de qualquer acao: `disputeId`, `action`, `handshakeType`, `handshakeGroup`, `message`, `expiresAt`, `timeoutAction`, `acceptCancellationReasons`, `alternatives` e `evidences`.
 - A resposta de disputa deve usar `disputeId`, nao `orderId`. Aceite, rejeicao e contraproposta sao endpoints de `/order/v1.0/disputes/{disputeId}`.
 - Para `reject`, enviar sempre `reason` valido de `negotiationReasons`; se o usuario nao escolheu motivo, nao enviar fallback silencioso que possa reprovar a solicitacao sem clareza operacional.
