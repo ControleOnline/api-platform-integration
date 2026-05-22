@@ -9,8 +9,11 @@ use ControleOnline\Entity\District;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\State;
 use ControleOnline\Entity\Street;
+use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\iFoodService;
+use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 class iFoodServiceTest extends TestCase
 {
@@ -160,6 +163,106 @@ class iFoodServiceTest extends TestCase
         );
     }
 
+    public function testResolveOrderDetailsUsesEventSnapshotWithoutRemoteLookup(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(DefaultFoodService::class, 'app', 'iFood');
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects(self::never())->method('request');
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        $event = [
+            'orderId' => 'ifood-order-1',
+            'merchantId' => 'merchant-1',
+            'order' => [
+                'displayId' => 'ABC-123',
+                'customer' => [
+                    'name' => 'Cliente Teste',
+                ],
+                'delivery' => [
+                    'deliveryAddress' => [
+                        'formattedAddress' => 'Rua A, 123',
+                    ],
+                ],
+            ],
+        ];
+
+        $orderDetails = $this->invokePrivateMethod($service, 'resolveOrderDetailsFromEvent', 'ifood-order-1', $event, null);
+
+        self::assertSame('ABC-123', $orderDetails['displayId']);
+        self::assertSame('Cliente Teste', $orderDetails['customer']['name']);
+        self::assertSame('Rua A, 123', $orderDetails['delivery']['deliveryAddress']['formattedAddress']);
+    }
+
+    public function testResolveOrderDetailsUsesStoredSnapshotAndPersistsItBack(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(DefaultFoodService::class, 'app', 'iFood');
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects(self::never())->method('request');
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())
+            ->method('persist')
+            ->with(self::isInstanceOf(Order::class));
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        $storedEvent = (object) [
+            'iFood' => (object) [
+                'latest_event_type' => 'PLACED',
+                'PLACED' => [
+                    'orderId' => 'ifood-order-2',
+                    'merchantId' => 'merchant-2',
+                    'order' => [
+                        'displayId' => 'XYZ-987',
+                        'customer' => [
+                            'name' => 'Cliente Cache',
+                        ],
+                        'delivery' => [
+                            'deliveryAddress' => [
+                                'formattedAddress' => 'Av. Cache, 99',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $order = $this->createMock(Order::class);
+        $order->expects(self::exactly(2))
+            ->method('getOtherInformations')
+            ->with(true)
+            ->willReturn($storedEvent);
+        $order->expects(self::once())
+            ->method('setOtherInformations')
+            ->with(self::callback(static function (array $otherInformations): bool {
+                $event = $otherInformations['iFood']['PLACED'] ?? null;
+
+                return is_array($event)
+                    && isset($event['order']['displayId'])
+                    && $event['order']['displayId'] === 'XYZ-987'
+                    && isset($event['order_details_cached_at']);
+            }))
+            ->willReturnSelf();
+
+        $orderDetails = $this->invokePrivateMethod(
+            $service,
+            'resolveOrderDetailsFromEvent',
+            'ifood-order-2',
+            ['orderId' => 'ifood-order-2', 'merchantId' => 'merchant-2'],
+            $order
+        );
+
+        self::assertSame('XYZ-987', $orderDetails['displayId']);
+        self::assertSame('Cliente Cache', $orderDetails['customer']['name']);
+        self::assertSame('Av. Cache, 99', $orderDetails['delivery']['deliveryAddress']['formattedAddress']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);
@@ -167,6 +270,38 @@ class iFoodServiceTest extends TestCase
         $method->setAccessible(true);
 
         return $method->invokeArgs($object, $arguments);
+    }
+
+    private function setObjectProperty(object $object, string $propertyName, mixed $value): void
+    {
+        $reflection = new \ReflectionClass($object);
+        $property = $reflection->getProperty($propertyName);
+        $property->setAccessible(true);
+        $property->setValue($object, $value);
+    }
+
+    private function setStaticProperty(string $className, string $propertyName, mixed $value): void
+    {
+        $property = new \ReflectionProperty($className, $propertyName);
+        $property->setAccessible(true);
+        $property->setValue(null, $value);
+    }
+
+    private function createNullLoggerStub(): object
+    {
+        return new class() {
+            public function info(mixed ...$arguments): void
+            {
+            }
+
+            public function warning(mixed ...$arguments): void
+            {
+            }
+
+            public function error(mixed ...$arguments): void
+            {
+            }
+        };
     }
 
     private function createComparableAddressStub(): Address
