@@ -83,6 +83,70 @@ class IntegrationMessageHandlerTest extends TestCase
         $handler(new SendIntegrationMessage(42));
     }
 
+    public function testInvokeMarksIntegrationAsErrorWhenExecutionFails(): void
+    {
+        $integration = new Integration();
+        $integration->setQueueName('MockQueue');
+        $this->setEntityId($integration, 42);
+
+        $repository = $this->getMockBuilder(EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['find'])
+            ->getMock();
+        $repository
+            ->expects(self::exactly(2))
+            ->method('find')
+            ->with(42)
+            ->willReturn($integration);
+
+        $manager = $this->createMock(EntityManagerInterface::class);
+        $manager->expects(self::exactly(2))
+            ->method('isOpen')
+            ->willReturn(true);
+        $manager->expects(self::exactly(2))
+            ->method('getRepository')
+            ->with(Integration::class)
+            ->willReturn($repository);
+
+        $managerRegistry = $this->createMock(ManagerRegistry::class);
+        $managerRegistry->expects(self::never())->method('resetManager');
+
+        $lock = $this->createMock(SharedLockInterface::class);
+        $lock->expects(self::once())
+            ->method('acquire')
+            ->with(true)
+            ->willReturn(true);
+        $lock->expects(self::once())
+            ->method('isAcquired')
+            ->willReturn(true);
+        $lock->expects(self::once())
+            ->method('release');
+
+        $lockFactory = $this->createMock(LockFactory::class);
+        $lockFactory->expects(self::once())
+            ->method('createLock')
+            ->with('integration:start')
+            ->willReturn($lock);
+
+        $integrationService = $this->createMock(IntegrationService::class);
+        $integrationService->expects(self::once())
+            ->method('executeIntegration')
+            ->with($integration)
+            ->willThrowException(new \RuntimeException('EntityManager is closed.'));
+        $integrationService->expects(self::once())
+            ->method('setError')
+            ->with($integration);
+
+        $handler = new IntegrationMessageHandler(
+            $integrationService,
+            $lockFactory,
+            $manager,
+            $managerRegistry
+        );
+
+        $handler(new SendIntegrationMessage(42));
+    }
+
     private function setEntityId(object $entity, int $id): void
     {
         $property = new \ReflectionProperty(Integration::class, 'id');
