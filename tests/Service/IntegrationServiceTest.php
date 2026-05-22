@@ -68,7 +68,7 @@ class IntegrationServiceTest extends TestCase
         $closedManager->expects(self::never())->method('persist');
         $closedManager->expects(self::never())->method('flush');
 
-        $status = $this->createMock(Status::class);
+        $status = $this->createStub(Status::class);
         $status->method('getStatus')->willReturn('pending');
         $status->method('getRealStatus')->willReturn('error');
 
@@ -78,7 +78,7 @@ class IntegrationServiceTest extends TestCase
             ->with('pending', 'error', 'integration')
             ->willReturn($status);
 
-        $lock = $this->createMock(SharedLockInterface::class);
+        $lock = $this->createStub(SharedLockInterface::class);
         $lockFactory = $this->createMock(LockFactory::class);
         $lockFactory->expects(self::once())
             ->method('createLock')
@@ -105,7 +105,7 @@ class IntegrationServiceTest extends TestCase
         $bus = $this->createMock(MessageBusInterface::class);
         $bus->expects(self::never())->method('dispatch');
 
-        $security = $this->createMock(TokenStorageInterface::class);
+        $security = $this->createStub(TokenStorageInterface::class);
 
         $service = new IntegrationService(
             $closedManager,
