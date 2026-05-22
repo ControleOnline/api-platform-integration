@@ -2836,7 +2836,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $ec       = (string) $prod['id'];
                 $existing = $byEc[$ec] ?? null;
 
-                $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $resolvedCategoryId);
+                $existingFlat = null;
+                if (!empty($existing['item_id'])) {
+                    $existingFlat = $this->fetchIfoodCatalogItemFlatV2($merchantId, $existing['item_id']);
+                }
+
+                $result = $this->upsertIfoodCatalogItemV2($merchantId, $prod, $existing, $resolvedCategoryId, $existingFlat);
                 if ($result['ok']) {
                     $pushed++;
                     $pushedProductIds[] = (int) ($prod['id'] ?? 0);
@@ -3272,6 +3277,32 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
     }
 
+    private function fetchIfoodCatalogItemFlatV2(string $merchantId, string $itemId): ?array
+    {
+        $token = $this->getAccessToken();
+        $normalizedItemId = $this->normalizeString($itemId);
+        if (!$token || $normalizedItemId === '') return null;
+
+        try {
+            $response = $this->httpClient->request('GET',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/' . rawurlencode($normalizedItemId) . '/flat',
+                ['headers' => ['Authorization' => 'Bearer ' . $token]]
+            );
+
+            if ($response->getStatusCode() !== 200) return null;
+            $item = $response->toArray(false);
+
+            return is_array($item) ? $item : null;
+        } catch (\Throwable $e) {
+            self::$logger->warning('iFood catalog v2 flat item fetch failed', [
+                'merchant_id' => $merchantId,
+                'item_id' => $normalizedItemId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
     private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
     {
         return $this->resolveIfoodCatalogCategoryId($merchantId, $catalogId, 'Produtos', [], 0);
@@ -3462,7 +3493,52 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
-    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product): array
+    private function mapIfoodOptionIdsByGroupProduct(?array $existingItemFlat): array
+    {
+        if (!is_array($existingItemFlat)) {
+            return [];
+        }
+
+        $optionsById = [];
+        $existingOptions = is_array($existingItemFlat['options'] ?? null) ? $existingItemFlat['options'] : [];
+        foreach ($existingOptions as $option) {
+            if (!is_array($option)) {
+                continue;
+            }
+
+            $optionId = $this->normalizeString($option['id'] ?? null);
+            if ($optionId !== '') {
+                $optionsById[$optionId] = $option;
+            }
+        }
+
+        $mapped = [];
+        $existingGroups = is_array($existingItemFlat['optionGroups'] ?? null) ? $existingItemFlat['optionGroups'] : [];
+        foreach ($existingGroups as $group) {
+            if (!is_array($group)) {
+                continue;
+            }
+
+            $groupId = $this->normalizeString($group['id'] ?? null);
+            $optionIds = is_array($group['optionIds'] ?? null) ? $group['optionIds'] : [];
+            if ($groupId === '' || empty($optionIds)) {
+                continue;
+            }
+
+            foreach ($optionIds as $optionId) {
+                $normalizedOptionId = $this->normalizeString($optionId);
+                $option = $optionsById[$normalizedOptionId] ?? null;
+                $productId = $this->normalizeString(is_array($option) ? ($option['productId'] ?? null) : null);
+                if ($normalizedOptionId !== '' && $productId !== '') {
+                    $mapped[$groupId . '|' . $productId] = $normalizedOptionId;
+                }
+            }
+        }
+
+        return $mapped;
+    }
+
+    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null): array
     {
         $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
         if (empty($modifierGroups)) {
@@ -3478,6 +3554,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $productsById = [];
         $optionGroups = [];
         $options = [];
+        $existingOptionIds = $this->mapIfoodOptionIdsByGroupProduct($existingItemFlat);
 
         foreach ($modifierGroups as $groupIndex => $group) {
             $groupId = (int) ($group['id'] ?? 0);
@@ -3537,7 +3614,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     $productsById[$childProductUuid] = $childProductBody;
                 }
 
-                $optionUuid = $this->generateStableUuidFromSeed('catalog:option:' . $relationId);
+                $optionMapKey = $groupUuid . '|' . $childProductUuid;
+                $optionSeed = is_array($existingItemFlat)
+                    ? 'catalog:option:' . $groupId . ':' . $childProductId
+                    : 'catalog:option:' . $relationId;
+                $optionUuid = $existingOptionIds[$optionMapKey]
+                    ?? $this->generateStableUuidFromSeed($optionSeed);
                 $optionIds[] = $optionUuid;
                 $optionPrice = round((float) ($option['price'] ?? 0), 2);
 
@@ -3740,7 +3822,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return str_contains($message, 'concurrently modified');
     }
 
-    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId): array
+    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null): array
     {
         $token = $this->getAccessToken();
         if (!$token) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];
@@ -3777,7 +3859,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
-        $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product);
+        $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product, $existingItemFlat);
         $productBody['optionGroups'] = $modifierPayload['product_option_groups'];
         $sourceImageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
         if ($sourceImageUrl) {
