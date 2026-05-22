@@ -9,6 +9,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Throwable;
 
 #[AsMessageHandler]
 class IntegrationMessageHandler
@@ -60,6 +61,16 @@ class IntegrationMessageHandler
 
         try {
             $this->integrationService->executeIntegration($integration);
+        } catch (Throwable) {
+            try {
+                $manager = $this->getManager();
+                $freshIntegration = $manager->getRepository(Integration::class)->find($message->integrationId);
+                if ($freshIntegration instanceof Integration) {
+                    $this->integrationService->setError($freshIntegration);
+                }
+            } catch (Throwable) {
+                return;
+            }
         } finally {
             if ($this->lock->isAcquired()) {
                 $this->lock->release();
