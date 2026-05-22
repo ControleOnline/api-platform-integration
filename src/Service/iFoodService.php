@@ -562,24 +562,35 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $currentRealStatus === 'open' && $currentStatusName === 'open';
     }
 
-    private function resolveOrderDetailsFromEvent(string $orderId, array $event): array
+    private function resolveOrderDetailsFromEvent(string $orderId, array $event, ?Order $order = null): array
     {
         $eventOrderDetails = is_array($event['order'] ?? null) ? $event['order'] : [];
-        $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+        $storedOrderDetails = $order instanceof Order ? $this->findStoredIfoodOrderDetails($order) : [];
+        $fetchedOrderDetails = [];
         $orderDetails = [];
 
-        if (is_array($fetchedOrderDetails)) {
-            $orderDetails = $fetchedOrderDetails;
+        if ($eventOrderDetails !== []) {
+            $orderDetails = $storedOrderDetails !== []
+                ? $this->mergeIfoodOrderDetails($storedOrderDetails, $eventOrderDetails)
+                : $eventOrderDetails;
+        } elseif ($storedOrderDetails !== []) {
+            $orderDetails = $storedOrderDetails;
+        } else {
+            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+            if (is_array($fetchedOrderDetails)) {
+                $orderDetails = $fetchedOrderDetails;
+            }
         }
 
-        if ($eventOrderDetails) {
-            $orderDetails = $this->mergeIfoodOrderDetails($orderDetails, $eventOrderDetails);
+        if ($order instanceof Order && $orderDetails !== []) {
+            $this->persistResolvedIfoodOrderDetails($order, $event, $orderDetails);
         }
 
         self::$logger->info('iFood order details resolved for integration step', [
             'order_id' => $orderId,
-            'has_event_snapshot' => !empty($eventOrderDetails),
-            'has_fetched_details' => is_array($fetchedOrderDetails) && !empty($fetchedOrderDetails),
+            'has_event_snapshot' => $eventOrderDetails !== [],
+            'has_stored_snapshot' => $storedOrderDetails !== [],
+            'has_fetched_details' => is_array($fetchedOrderDetails) && $fetchedOrderDetails !== [],
             'resolved_customer_id' => $this->normalizeString($orderDetails['customer']['id'] ?? null),
             'resolved_customer_document' => $this->normalizeString($orderDetails['customer']['documentNumber'] ?? null),
             'resolved_delivery_address' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['formattedAddress'] ?? null),
@@ -589,6 +600,127 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ]);
 
         return is_array($orderDetails) ? $orderDetails : [];
+    }
+
+    private function getIfoodContextOtherInformations(Order $order): array
+    {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        if ($otherInformations === []) {
+            return [];
+        }
+
+        foreach ([self::$app, strtolower(self::$app), strtoupper(self::$app)] as $contextKey) {
+            $context = $this->decodeOrderOtherInformationsValue($otherInformations[$contextKey] ?? null);
+            if ($context !== []) {
+                return $context;
+            }
+        }
+
+        return [];
+    }
+
+    private function looksLikeIfoodOrderPayload(array $payload): bool
+    {
+        foreach (['displayId', 'delivery', 'items', 'payments', 'total', 'customer', 'orderType', 'orderTiming'] as $fieldName) {
+            if (!array_key_exists($fieldName, $payload)) {
+                continue;
+            }
+
+            $fieldValue = $payload[$fieldName];
+            if (is_array($fieldValue)) {
+                if ($fieldValue !== []) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($this->normalizeString($fieldValue) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function extractStoredIfoodOrderDetails(mixed $candidate): array
+    {
+        $payload = $this->decodeOrderOtherInformationsValue($candidate);
+        if ($payload === []) {
+            return [];
+        }
+
+        $nestedOrder = $this->decodeOrderOtherInformationsValue($payload['order'] ?? null);
+        if ($nestedOrder !== []) {
+            return $nestedOrder;
+        }
+
+        return $this->looksLikeIfoodOrderPayload($payload) ? $payload : [];
+    }
+
+    private function findStoredIfoodOrderDetails(Order $order): array
+    {
+        $context = $this->getIfoodContextOtherInformations($order);
+        if ($context === []) {
+            return [];
+        }
+
+        $candidateKeys = [];
+        $latestEventType = $this->normalizeString($context['latest_event_type'] ?? null);
+        if ($latestEventType !== '') {
+            $candidateKeys[] = $latestEventType;
+        }
+
+        foreach ($context as $key => $value) {
+            if ($key === 'latest_event_type' || in_array($key, $candidateKeys, true)) {
+                continue;
+            }
+
+            $candidateKeys[] = $key;
+        }
+
+        foreach ($candidateKeys as $candidateKey) {
+            $storedDetails = $this->extractStoredIfoodOrderDetails($context[$candidateKey] ?? null);
+            if ($storedDetails !== []) {
+                return $storedDetails;
+            }
+        }
+
+        return [];
+    }
+
+    private function persistResolvedIfoodOrderDetails(Order $order, array $event, array $orderDetails): void
+    {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        if ($otherInformations === []) {
+            $otherInformations = [];
+        }
+
+        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::$app] ?? null);
+        if ($context === []) {
+            $context = [];
+        }
+
+        $eventKey = $this->resolveEventCode($event);
+        if ($eventKey === '') {
+            $eventKey = $this->normalizeString($context['latest_event_type'] ?? null);
+        }
+
+        if ($eventKey === '') {
+            return;
+        }
+
+        if (!is_array($context[$eventKey] ?? null)) {
+            $context[$eventKey] = [];
+        }
+
+        $context[$eventKey]['order'] = $orderDetails;
+        $context[$eventKey]['order_details_cached_at'] = date('Y-m-d H:i:s');
+        $context['latest_event_type'] = $eventKey;
+
+        $otherInformations[self::$app] = $context;
+        $order->setOtherInformations($otherInformations);
+        $this->entityManager->persist($order);
     }
 
     private function resumePendingEntryFlowIfNeeded(Order $order, array $event, string $eventCode, array $orderDetails = []): void
@@ -603,7 +735,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if (!$orderDetails) {
-            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event);
+            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event, $order);
         }
 
         if (!$orderDetails) {
@@ -1985,7 +2117,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     }
                 }
             }
+        }
 
+        $storedOrderDetails = $this->findStoredIfoodOrderDetails($order);
+        if ($storedOrderDetails !== []) {
+            $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($storedOrderDetails['displayId'] ?? null);
+            foreach ($this->extractOrderDetailSnapshot($storedOrderDetails) as $fieldName => $fieldValue) {
+                if (($state[$fieldName] ?? '') === '' && $fieldValue !== '') {
+                    $state[$fieldName] = $fieldValue;
+                }
+            }
         }
 
         return $state;
@@ -2001,6 +2142,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ? $otherInformations[$latestEventType]
             : [];
         $orderPayload = is_array($payload['order'] ?? null) ? $payload['order'] : [];
+
+        if ($orderPayload === []) {
+            $orderPayload = $this->findStoredIfoodOrderDetails($order);
+        }
 
         if ($orderPayload === []) {
             return [
@@ -5420,7 +5565,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return [];
         }
 
-        $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event);
+        $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event, $order);
         if (!$orderDetails) {
             return [];
         }
@@ -6231,79 +6376,53 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         try {
             $encodedOrderId = rawurlencode($orderId);
             $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
-            $maxAttempts = 4;
+            $token = $this->getAccessToken();
+            if (!$token) {
+                self::$logger->warning('iFood order details request skipped because token is unavailable', [
+                    'order_id' => $orderId,
+                    'endpoint' => $endpoint,
+                ]);
 
-            for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-                $token = $this->getAccessToken();
-                if (!$token) {
-                    self::$logger->warning('iFood order details request skipped because token is unavailable', [
-                        'order_id' => $orderId,
-                        'attempt' => $attempt,
-                        'max_attempts' => $maxAttempts,
-                    ]);
-
-                    if ($attempt < $maxAttempts) {
-                        usleep(300000 * $attempt);
-                        continue;
-                    }
-                    break;
-                }
-
-                try {
-                    $response = $this->httpClient->request('GET', $endpoint, [
-                        'headers' => [
-                            'Authorization' => 'Bearer ' . $token,
-                        ],
-                    ]);
-
-                    $statusCode = $response->getStatusCode();
-                    $rawBody = $response->getContent(false);
-
-                    if ($statusCode !== 200) {
-                        self::$logger->warning('iFood order details request returned non-success status', [
-                            'order_id' => $orderId,
-                            'endpoint' => $endpoint,
-                            'status' => $statusCode,
-                            'attempt' => $attempt,
-                            'max_attempts' => $maxAttempts,
-                            'response' => $rawBody,
-                        ]);
-
-                        $isRetryableStatus = in_array($statusCode, [401, 404, 409, 425, 429, 500, 502, 503, 504], true);
-                        if ($statusCode === 401) {
-                            // Force token refresh on next attempt.
-                            self::$authTokenCache = [];
-                        }
-
-                        if ($isRetryableStatus && $attempt < $maxAttempts) {
-                            usleep(300000 * $attempt);
-                            continue;
-                        }
-                    } else {
-                        $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
-                        return is_array($data) ? $data : null;
-                    }
-                } catch (\Throwable $e) {
-                    self::$logger->warning('iFood order details request endpoint error', [
-                        'order_id' => $orderId,
-                        'endpoint' => $endpoint,
-                        'attempt' => $attempt,
-                        'max_attempts' => $maxAttempts,
-                        'error' => $e->getMessage(),
-                    ]);
-
-                    if ($attempt < $maxAttempts) {
-                        usleep(300000 * $attempt);
-                        continue;
-                    }
-                }
+                return null;
             }
 
-            self::$logger->error('iFood order details request failed', [
-                'order_id' => $orderId,
-                'endpoint' => $endpoint,
-            ]);
-            return null;
+            try {
+                $response = $this->httpClient->request('GET', $endpoint, [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $token,
+                    ],
+                ]);
+
+                $statusCode = $response->getStatusCode();
+                $rawBody = $response->getContent(false);
+
+                if ($statusCode !== 200) {
+                    self::$logger->warning('iFood order details request returned non-success status', [
+                        'order_id' => $orderId,
+                        'endpoint' => $endpoint,
+                        'status' => $statusCode,
+                        'response' => $rawBody,
+                    ]);
+
+                    if ($statusCode === 401) {
+                        // Force token refresh on the next independent lookup.
+                        self::$authTokenCache = [];
+                    }
+
+                    return null;
+                }
+
+                $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
+                return is_array($data) ? $data : null;
+            } catch (\Throwable $e) {
+                self::$logger->warning('iFood order details request endpoint error', [
+                    'order_id' => $orderId,
+                    'endpoint' => $endpoint,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return null;
+            }
         } catch (\Throwable $e) {
             self::$logger->error('iFood order details request error', [
                 'order_id' => $orderId,
