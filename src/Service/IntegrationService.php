@@ -9,6 +9,7 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
 use ControleOnline\Service\StatusService;
 use Symfony\Component\Lock\LockFactory;
@@ -26,6 +27,7 @@ class IntegrationService
     private $lock;
     public function __construct(
         private EntityManagerInterface $manager,
+        private ManagerRegistry $managerRegistry,
         private Security $security,
         private StatusService $statusService,
         private LockFactory $lockFactory,
@@ -36,14 +38,41 @@ class IntegrationService
         $this->lock = $this->lockFactory->createLock('integration:start');
     }
 
+    private function getManager(): EntityManagerInterface
+    {
+        if (method_exists($this->manager, 'isOpen') && $this->manager->isOpen()) {
+            return $this->manager;
+        }
+
+        $this->managerRegistry->resetManager();
+        $manager = $this->managerRegistry->getManagerForClass(Integration::class);
+
+        if (!$manager instanceof EntityManagerInterface) {
+            throw new \RuntimeException('Doctrine entity manager unavailable for IntegrationService.');
+        }
+
+        $this->manager = $manager;
+
+        return $this->manager;
+    }
+
+    private function reloadIntegration(int $integrationId): ?Integration
+    {
+        $manager = $this->getManager();
+        $integration = $manager->getRepository(Integration::class)->find($integrationId);
+
+        return $integration instanceof Integration ? $integration : null;
+    }
+
 
     public function getAllOpenIntegrations($limit = 100): array
     {
+        $manager = $this->getManager();
         $search = [
             'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
         ];
 
-        $queryBuilder = $this->manager->getRepository(Integration::class)->createQueryBuilder('i')
+        $queryBuilder = $manager->getRepository(Integration::class)->createQueryBuilder('i')
             ->andWhere('i.queueName NOT IN (:queueNames)')
             ->andWhere('i.status = :status')
             ->setParameter('queueNames', ['Websocket'])
@@ -77,14 +106,20 @@ class IntegrationService
                     ->generate($result);
             }
 
-            if (!$handled) {
-                $integration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
-            } else {
-                $integration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
+            $managedIntegration = $this->reloadIntegration((int) $integration->getId());
+            if (!$managedIntegration) {
+                return;
             }
 
-            $this->manager->persist($integration);
-            $this->manager->flush();
+            if (!$handled) {
+                $managedIntegration->setStatus($this->statusService->discoveryStatus('closed', 'not implemented', 'integration'));
+            } else {
+                $managedIntegration->setStatus($this->statusService->discoveryStatus('closed', 'closed', 'integration'));
+            }
+
+            $manager = $this->getManager();
+            $manager->persist($managedIntegration);
+            $manager->flush();
         } catch (Throwable $exception) {
             $this->handleRetryableFailure($integration);
         }
@@ -92,24 +127,36 @@ class IntegrationService
 
     private function handleRetryableFailure(Integration $integration): void
     {
-        $integration->incrementRetry();
+        $integrationId = (int) $integration->getId();
+        if ($integrationId <= 0) {
+            return;
+        }
 
-        if ($integration->getRetry() <= self::MAX_RETRIES) {
-            $integration->setStatus($this->statusService->discoveryStatus('open', 'open', 'integration'));
-            $this->manager->persist($integration);
-            $this->manager->flush();
+        $managedIntegration = $this->reloadIntegration($integrationId);
+        if (!$managedIntegration) {
+            return;
+        }
+
+        $managedIntegration->incrementRetry();
+
+        if ($managedIntegration->getRetry() <= self::MAX_RETRIES) {
+            $managedIntegration->setStatus($this->statusService->discoveryStatus('open', 'open', 'integration'));
+            $manager = $this->getManager();
+            $manager->persist($managedIntegration);
+            $manager->flush();
 
             $this->bus->dispatch(
-                new SendIntegrationMessage($integration->getId()),
-                [new DelayStamp(self::RETRY_DELAY_MS * $integration->getRetry())]
+                new SendIntegrationMessage($managedIntegration->getId()),
+                [new DelayStamp(self::RETRY_DELAY_MS * $managedIntegration->getRetry())]
             );
 
             return;
         }
 
-        $integration->setStatus($this->statusService->discoveryStatus('pending', 'error', 'integration'));
-        $this->manager->persist($integration);
-        $this->manager->flush();
+        $managedIntegration->setStatus($this->statusService->discoveryStatus('pending', 'error', 'integration'));
+        $manager = $this->getManager();
+        $manager->persist($managedIntegration);
+        $manager->flush();
     }
 
     private function shouldGenerateMarketplaceFinancial(Integration $integration, mixed $result): bool
@@ -138,24 +185,26 @@ class IntegrationService
 
     public function getWebsocketOpen(array $devices = [], $limit = 100): array
     {
+        $manager = $this->getManager();
         $search = [
             'queueName' => ['Websocket'],
             'status' => $this->statusService->discoveryStatus('open', 'open', 'integration')
         ];
 
         if (!empty($devices))
-            $search['device'] = $this->manager->getRepository(Device::class)->findBy(['device' => $devices], null, $limit);
+            $search['device'] = $manager->getRepository(Device::class)->findBy(['device' => $devices], null, $limit);
 
-        return $this->manager->getRepository(Integration::class)->findBy($search);
+        return $manager->getRepository(Integration::class)->findBy($search);
     }
 
     public function setDelivered(Integration $integration)
     {
+        $manager = $this->getManager();
         $status = $this->statusService->discoveryStatus('closed', 'closed', 'integration');
 
         $integration->setStatus($status);
-        $this->manager->persist($integration);
-        $this->manager->flush();
+        $manager->persist($integration);
+        $manager->flush();
 
         return $integration;
     }
@@ -165,11 +214,12 @@ class IntegrationService
 
     public function setError(Integration $integration)
     {
+        $manager = $this->getManager();
         $status = $this->statusService->discoveryStatus('pending', 'error', 'integration');
 
         $integration->setStatus($status);
-        $this->manager->persist($integration);
-        $this->manager->flush();
+        $manager->persist($integration);
+        $manager->flush();
 
         return $integration;
     }
@@ -187,8 +237,9 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $this->manager->persist($integration);
-        $this->manager->flush();
+        $manager = $this->getManager();
+        $manager->persist($integration);
+        $manager->flush();
 
         if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
             $this->bus->dispatch(
@@ -223,8 +274,9 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $this->manager->persist($integration);
-        $this->manager->flush();
+        $manager = $this->getManager();
+        $manager->persist($integration);
+        $manager->flush();
 
         if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
             $this->bus->dispatch(
@@ -248,6 +300,7 @@ class IntegrationService
         }
 
         $hours = max(1, min($lookbackHours, 24 * 30));
+        $manager = $this->getManager();
         $sql = <<<SQL
             SELECT id
             FROM integration
@@ -262,7 +315,7 @@ class IntegrationService
         SQL;
 
         try {
-            $existingId = $this->manager->getConnection()->fetchOne($sql, [
+            $existingId = $manager->getConnection()->fetchOne($sql, [
                 'queueName' => $queueName,
                 'eventId' => $normalizedEventId,
             ]);
@@ -281,7 +334,7 @@ class IntegrationService
                 LIMIT 1
             SQL;
 
-            $existingId = $this->manager->getConnection()->fetchOne($fallbackSql, [
+            $existingId = $manager->getConnection()->fetchOne($fallbackSql, [
                 'queueName' => $queueName,
                 'needle' => '%"event_id":"' . str_replace('"', '\"', $normalizedEventId) . '"%',
                 'bodyNeedle' => '%"__webhook":{"event_id":"' . str_replace('"', '\"', $normalizedEventId) . '"%',
