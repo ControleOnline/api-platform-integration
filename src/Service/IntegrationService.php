@@ -20,7 +20,7 @@ use Throwable;
 
 class IntegrationService
 {
-    private const MAX_RETRIES = 3;
+    private const MAX_RETRIES = 0;
     private const RETRY_DELAY_MS = 60000;
 
     private $lock;
