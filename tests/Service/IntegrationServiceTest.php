@@ -21,13 +21,13 @@ class IntegrationServiceTest extends TestCase
     public function testExecuteIntegrationResetsClosedEntityManagerBeforePersistingRetryFailure(): void
     {
         $integration = new Integration();
-        $integration->setQueueName('MockQueue');
-        $integration->setBody('{}');
+        $integration->setQueueName('iFood');
+        $integration->setBody('{"orderId":"6557f98b-1926-41bc-99a6-7f2d49d1fe3d"}');
         $this->setEntityId($integration, 77);
 
         $reloadedIntegration = new Integration();
-        $reloadedIntegration->setQueueName('MockQueue');
-        $reloadedIntegration->setBody('{}');
+        $reloadedIntegration->setQueueName('iFood');
+        $reloadedIntegration->setBody('{"orderId":"6557f98b-1926-41bc-99a6-7f2d49d1fe3d"}');
         $this->setEntityId($reloadedIntegration, 77);
 
         $repository = $this->getMockBuilder(EntityRepository::class)
@@ -95,11 +95,11 @@ class IntegrationServiceTest extends TestCase
         $container = $this->createMock(ContainerInterface::class);
         $container->expects(self::once())
             ->method('has')
-            ->with('ControleOnline\\Service\\MockQueueService')
+            ->with('ControleOnline\\Service\\iFoodService')
             ->willReturn(true);
         $container->expects(self::once())
             ->method('get')
-            ->with('ControleOnline\\Service\\MockQueueService')
+            ->with('ControleOnline\\Service\\iFoodService')
             ->willReturn($containerService);
 
         $bus = $this->createMock(MessageBusInterface::class);
