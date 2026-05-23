@@ -131,11 +131,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return false;
         }
 
-        if ($this->isCancellationEventCode($normalized) || $this->isConclusionEventCode($normalized)) {
-            return false;
-        }
-
-        return true;
+        return $this->isEntryEventCode($normalized);
     }
 
     private function isEntryEventCode(string $eventCode): bool

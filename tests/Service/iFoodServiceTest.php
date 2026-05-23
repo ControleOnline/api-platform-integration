@@ -62,6 +62,16 @@ class iFoodServiceTest extends TestCase
         ));
     }
 
+    public function testOnlyEntryEventsCanCreateLocalIfoodOrder(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        self::assertTrue($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'PLACED'));
+        self::assertFalse($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'CONFIRMED'));
+        self::assertFalse($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'READY_TO_PICKUP'));
+        self::assertFalse($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'CONCLUDED'));
+    }
+
     public function testStoredQuoteStateReadsCurrentIfoodContextSnapshot(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
