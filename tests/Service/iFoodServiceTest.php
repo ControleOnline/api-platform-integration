@@ -68,8 +68,10 @@ class iFoodServiceTest extends TestCase
         $order = $this->createMock(Order::class);
         $order->method('getOtherInformations')->with(true)->willReturn((object) [
             'iFood' => (object) [
-                'quote_state' => 'ready',
-                'quote_id' => 'quote-123',
+                'quote' => (object) [
+                    'quote_state' => 'ready',
+                    'quote_id' => 'quote-123',
+                ],
             ],
         ]);
 
@@ -261,6 +263,79 @@ class iFoodServiceTest extends TestCase
         self::assertSame('XYZ-987', $orderDetails['displayId']);
         self::assertSame('Cliente Cache', $orderDetails['customer']['name']);
         self::assertSame('Av. Cache, 99', $orderDetails['delivery']['deliveryAddress']['formattedAddress']);
+    }
+
+    public function testResolveOrderDetailsForExistingOrderDoesNotFetchWhenSnapshotIsMissing(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(DefaultFoodService::class, 'app', 'iFood');
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects(self::never())->method('request');
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        $order = $this->createMock(Order::class);
+        $order->expects(self::exactly(2))
+            ->method('getOtherInformations')
+            ->willReturn((object) [
+                'iFood' => (object) [
+                    'latest_event_type' => 'CONFIRMED',
+                    'CONFIRMED' => [
+                        'orderId' => 'ifood-order-3',
+                    ],
+                ],
+            ]);
+        $order->expects(self::never())->method('setOtherInformations');
+
+        $orderDetails = $this->invokePrivateMethod(
+            $service,
+            'resolveOrderDetailsFromEvent',
+            'ifood-order-3',
+            ['orderId' => 'ifood-order-3', 'fullCode' => 'CONFIRMED'],
+            $order
+        );
+
+        self::assertSame([], $orderDetails);
+    }
+
+    public function testPersistIfoodQuoteStateKeepsOrderDetailsSnapshot(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('persist');
+        $entityManager->expects(self::once())->method('flush');
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        $order = $this->createMock(Order::class);
+        $order->method('getOtherInformations')->willReturn((object) [
+            'iFood' => (object) [
+                'latest_event_type' => 'PLACED',
+                'PLACED' => [
+                    'order' => [
+                        'displayId' => 'SNAP-1',
+                    ],
+                ],
+            ],
+        ]);
+        $order->expects(self::once())
+            ->method('setOtherInformations')
+            ->with(self::callback(static function (array $otherInformations): bool {
+                return ($otherInformations['iFood']['PLACED']['order']['displayId'] ?? null) === 'SNAP-1'
+                    && ($otherInformations['iFood']['quote']['quote_id'] ?? null) === 'quote-456'
+                    && ($otherInformations['logistics']['quote_id'] ?? null) === 'quote-456';
+            }));
+        $order->method('setAlterDate')->willReturnSelf();
+        $order->method('setPrice')->willReturnSelf();
+
+        $this->invokePrivateMethod(
+            $service,
+            'persistIfoodQuoteState',
+            $order,
+            ['quote_id' => 'quote-456'],
+            ['quote_id' => 'quote-456']
+        );
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

@@ -575,7 +575,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 : $eventOrderDetails;
         } elseif ($storedOrderDetails !== []) {
             $orderDetails = $storedOrderDetails;
-        } else {
+        } elseif (!$order instanceof Order) {
             $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
             if (is_array($fetchedOrderDetails)) {
                 $orderDetails = $fetchedOrderDetails;
@@ -5971,16 +5971,18 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
     private function persistIfoodQuoteState(Order $order, array $storedState, array $logisticsState): void
     {
-        $otherInformations = $order->getOtherInformations(true);
-        if (is_object($otherInformations)) {
-            $otherInformations = (array) $otherInformations;
-        }
-
-        if (!is_array($otherInformations)) {
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        if ($otherInformations === []) {
             $otherInformations = [];
         }
 
-        $otherInformations[self::APP_CONTEXT] = $storedState;
+        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
+        if ($context === []) {
+            $context = [];
+        }
+
+        $context['quote'] = $storedState;
+        $otherInformations[self::APP_CONTEXT] = $context;
         $otherInformations['logistics'] = $logisticsState;
 
         $order->setOtherInformations($otherInformations);
@@ -6041,6 +6043,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         if (is_object($storedState)) {
             $storedState = (array) $storedState;
+        }
+
+        if (is_array($storedState) && is_array($storedState['quote'] ?? null)) {
+            return $storedState['quote'];
         }
 
         return is_array($storedState) ? $storedState : [];
