@@ -6,6 +6,7 @@ use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Status;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\StatusService;
+use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
@@ -35,20 +36,30 @@ class IntegrationServiceTest extends TestCase
             ->onlyMethods(['find'])
             ->getMock();
 
+        $connection = $this->createMock(Connection::class);
+        $connection->expects(self::once())
+            ->method('fetchOne')
+            ->with('SELECT GET_LOCK(:lockKey, 0)', ['lockKey' => 'integration:execute:77'])
+            ->willReturn(1);
+        $connection->expects(self::once())
+            ->method('executeQuery')
+            ->with('SELECT RELEASE_LOCK(:lockKey)', ['lockKey' => 'integration:execute:77']);
+
         $freshManager = $this->createMock(EntityManagerInterface::class);
         $freshManager->method('isOpen')->willReturn(true);
-        $freshManager->expects(self::once())
+        $freshManager->method('getConnection')->willReturn($connection);
+        $freshManager->expects(self::exactly(2))
             ->method('getRepository')
             ->with(Integration::class)
             ->willReturn($repository);
-        $freshManager->expects(self::once())
+        $freshManager->expects(self::exactly(2))
             ->method('persist')
             ->with($reloadedIntegration);
-        $freshManager->expects(self::once())
+        $freshManager->expects(self::exactly(2))
             ->method('flush');
 
         $repository
-            ->expects(self::once())
+            ->expects(self::exactly(2))
             ->method('find')
             ->with(77)
             ->willReturn($reloadedIntegration);
@@ -68,15 +79,33 @@ class IntegrationServiceTest extends TestCase
         $closedManager->expects(self::never())->method('persist');
         $closedManager->expects(self::never())->method('flush');
 
+        $openStatus = $this->createStub(Status::class);
+        $openStatus->method('getStatus')->willReturn('open');
+        $openStatus->method('getRealStatus')->willReturn('open');
+        $reloadedIntegration->setStatus($openStatus);
+
+        $processingStatus = $this->createStub(Status::class);
+        $processingStatus->method('getStatus')->willReturn('pending');
+        $processingStatus->method('getRealStatus')->willReturn('processing');
+
         $status = $this->createStub(Status::class);
         $status->method('getStatus')->willReturn('pending');
         $status->method('getRealStatus')->willReturn('error');
 
         $statusService = $this->createMock(StatusService::class);
-        $statusService->expects(self::once())
+        $statusService->expects(self::exactly(2))
             ->method('discoveryStatus')
-            ->with('pending', 'error', 'integration')
-            ->willReturn($status);
+            ->willReturnCallback(static function (string $statusName, string $realStatus, string $context) use ($processingStatus, $status): Status {
+                if ($statusName === 'pending' && $realStatus === 'processing' && $context === 'integration') {
+                    return $processingStatus;
+                }
+
+                if ($statusName === 'pending' && $realStatus === 'error' && $context === 'integration') {
+                    return $status;
+                }
+
+                throw new \RuntimeException('Unexpected status discovery call.');
+            });
 
         $lock = $this->createStub(SharedLockInterface::class);
         $lockFactory = $this->createMock(LockFactory::class);
