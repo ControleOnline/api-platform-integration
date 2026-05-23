@@ -233,7 +233,6 @@ class IntegrationService
         $manager->persist($managedIntegration);
         $manager->flush();
     }
-
     private function isIfoodOrderWebhook(Integration $integration): bool
     {
         if (strcasecmp((string) $integration->getQueueName(), 'iFood') !== 0) {
@@ -269,9 +268,6 @@ class IntegrationService
 
         return strtolower(trim((string) ($body['type'] ?? ''))) === 'ordernew';
     }
-
-
-
     public function getWebsocketOpen(array $devices = [], $limit = 100): array
     {
         $manager = $this->getManager();
