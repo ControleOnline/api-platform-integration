@@ -5276,6 +5276,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->entityManager->persist($order);
             $this->entityManager->flush();
             $this->discoveryFoodCode($order, $orderId, 'id');
+            $autoConfirmed = $this->autoConfirmOrder($order, $orderId);
 
             $this->addProducts($order, is_array($orderDetails['items'] ?? null) ? $orderDetails['items'] : []);
             if (is_array($orderDetails['delivery'] ?? null)) {
@@ -5323,7 +5324,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
 
             $this->printOrder($order);
-            $this->autoConfirmOrder($order, $orderId);
+            if (!$autoConfirmed) {
+                $this->autoConfirmOrder($order, $orderId);
+            }
             return $order;
         } catch (\Throwable $exception) {
             self::$logger->error('iFood order integration failed during creation pipeline', [
@@ -5431,7 +5434,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ->getOneOrNullResult();
     }
 
-    private function autoConfirmOrder(Order $order, string $orderId): void
+    private function autoConfirmOrder(Order $order, string $orderId): bool
     {
         try {
             $raw = $this->confirmOrder($orderId);
@@ -5449,6 +5452,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'order_id' => $orderId,
                         'local_order_id' => $order->getId(),
                     ]);
+                    return true;
                 }
             }
         } catch (\Throwable $e) {
@@ -5458,6 +5462,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'error' => $e->getMessage(),
             ]);
         }
+
+        return false;
     }
     // FATURAS DE RECEBIMENTO (Pagamentos)
     // Para cada método de pagamento, cria fatura de recebimento no banco
