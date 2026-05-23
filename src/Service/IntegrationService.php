@@ -64,6 +64,66 @@ class IntegrationService
         return $integration instanceof Integration ? $integration : null;
     }
 
+    private function buildIntegrationExecutionLockKey(int $integrationId): string
+    {
+        return sprintf('integration:execute:%d', $integrationId);
+    }
+
+    private function acquireIntegrationExecutionLock(int $integrationId): bool
+    {
+        if ($integrationId <= 0) {
+            return false;
+        }
+
+        try {
+            $result = $this->getManager()->getConnection()->fetchOne(
+                'SELECT GET_LOCK(:lockKey, 0)',
+                ['lockKey' => $this->buildIntegrationExecutionLockKey($integrationId)]
+            );
+        } catch (Throwable) {
+            return false;
+        }
+
+        return (int) $result === 1;
+    }
+
+    private function releaseIntegrationExecutionLock(int $integrationId): void
+    {
+        if ($integrationId <= 0) {
+            return;
+        }
+
+        try {
+            $this->getManager()->getConnection()->executeQuery(
+                'SELECT RELEASE_LOCK(:lockKey)',
+                ['lockKey' => $this->buildIntegrationExecutionLockKey($integrationId)]
+            );
+        } catch (Throwable) {
+        }
+    }
+
+    private function claimIntegrationForProcessing(int $integrationId): ?Integration
+    {
+        $integration = $this->reloadIntegration($integrationId);
+        if (!$integration instanceof Integration) {
+            return null;
+        }
+
+        $status = $integration->getStatus();
+        $statusName = strtolower(trim((string) ($status?->getStatus() ?? '')));
+        $realStatus = strtolower(trim((string) ($status?->getRealStatus() ?? '')));
+        if ($statusName !== 'open' || $realStatus !== 'open') {
+            return null;
+        }
+
+        $integration->setStatus($this->statusService->discoveryStatus('pending', 'processing', 'integration'));
+        $manager = $this->getManager();
+        $manager->persist($integration);
+        $manager->flush();
+
+        return $integration;
+    }
+
 
     public function getAllOpenIntegrations($limit = 100): array
     {
@@ -87,7 +147,17 @@ class IntegrationService
             return;
         }
 
+        $integrationId = (int) $integration->getId();
+        if (!$this->acquireIntegrationExecutionLock($integrationId)) {
+            return;
+        }
+
         try {
+            $integration = $this->claimIntegrationForProcessing($integrationId);
+            if (!$integration instanceof Integration) {
+                return;
+            }
+
             $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
             $method = 'integrate';
             $handled = false;
@@ -122,6 +192,8 @@ class IntegrationService
             $manager->flush();
         } catch (Throwable $exception) {
             $this->handleRetryableFailure($integration);
+        } finally {
+            $this->releaseIntegrationExecutionLock($integrationId);
         }
     }
 

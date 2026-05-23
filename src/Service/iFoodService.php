@@ -842,11 +842,21 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $entryKey = $eventCode !== '' ? $eventCode : 'UNKNOWN';
 
-        $otherInformations = (array) $order->getOtherInformations(true);
-        $otherInformations[$entryKey] = $payload;
-        $otherInformations['latest_event_type'] = $entryKey;
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        if ($otherInformations === []) {
+            $otherInformations = [];
+        }
 
-        $order->addOtherInformations(self::$app, $otherInformations);
+        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::$app] ?? null);
+        if ($context === []) {
+            $context = [];
+        }
+
+        $context[$entryKey] = $payload;
+        $context['latest_event_type'] = $entryKey;
+
+        $otherInformations[self::$app] = $context;
+        $order->setOtherInformations($otherInformations);
         $this->entityManager->persist($order);
     }
 
