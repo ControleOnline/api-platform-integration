@@ -20,6 +20,11 @@ services:
     ControleOnline\Service\N8NService:
         arguments:
             $n8nClient: '@http_client.n8n'
+    ControleOnline\Service\FirebaseCloudMessagingService:
+        arguments:
+            $projectId: '%env(string:FIREBASE_PROJECT_ID)%'
+            $serviceAccountSource: '%env(string:FIREBASE_SERVICE_ACCOUNT)%'
+            $projectDir: '%kernel.project_dir%'
     http_client.n8n:
         class: Symfony\Contracts\HttpClient\HttpClientInterface
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
