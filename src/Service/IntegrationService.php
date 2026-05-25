@@ -23,6 +23,7 @@ class IntegrationService
 {
     private const MAX_RETRIES = 3;
     private const RETRY_DELAY_MS = 60000;
+    private const EPHEMERAL_QUEUE_NAMES = ['Websocket', 'PushNotification'];
 
     private $lock;
     public function __construct(
@@ -143,10 +144,6 @@ class IntegrationService
 
     public function executeIntegration(Integration $integration)
     {
-        if (strcasecmp((string) $integration->getQueueName(), 'Websocket') === 0) {
-            return;
-        }
-
         $integrationId = (int) $integration->getId();
         if (!$this->acquireIntegrationExecutionLock($integrationId)) {
             return;
@@ -178,6 +175,14 @@ class IntegrationService
 
             $managedIntegration = $this->reloadIntegration((int) $integration->getId());
             if (!$managedIntegration) {
+                return;
+            }
+
+            if ($handled && $this->isEphemeralQueue($managedIntegration)) {
+                $manager = $this->getManager();
+                $manager->remove($managedIntegration);
+                $manager->flush();
+
                 return;
             }
 
@@ -285,6 +290,13 @@ class IntegrationService
     public function setDelivered(Integration $integration)
     {
         $manager = $this->getManager();
+        if ($this->isEphemeralQueue($integration)) {
+            $manager->remove($integration);
+            $manager->flush();
+
+            return $integration;
+        }
+
         $status = $this->statusService->discoveryStatus('closed', 'closed', 'integration');
 
         $integration->setStatus($status);
@@ -292,6 +304,46 @@ class IntegrationService
         $manager->flush();
 
         return $integration;
+    }
+
+    public function cleanupExpiredEphemeralIntegrations(?\DateTimeInterface $cutoff = null): array
+    {
+        $cutoff ??= new \DateTimeImmutable('-24 hours');
+        $manager = $this->getManager();
+        $openStatus = $this->statusService->discoveryStatus('open', 'open', 'integration');
+        $connection = $manager->getConnection();
+
+        $deleted = (int) $connection->executeStatement(
+            'DELETE FROM integration
+             WHERE queue_name IN (:queueNames)
+               AND queue_status_id = :statusId
+               AND created_at < :cutoff',
+            [
+                'queueNames' => self::EPHEMERAL_QUEUE_NAMES,
+                'statusId' => $openStatus->getId(),
+                'cutoff' => $cutoff->format('Y-m-d H:i:s'),
+            ],
+            [
+                'queueNames' => \Doctrine\DBAL\ArrayParameterType::STRING,
+            ]
+        );
+
+        return [
+            'deletedTotal' => $deleted,
+            'queueNames' => self::EPHEMERAL_QUEUE_NAMES,
+            'cutoff' => $cutoff->format(\DateTimeInterface::ATOM),
+        ];
+    }
+
+    private function isEphemeralQueue(Integration $integration): bool
+    {
+        foreach (self::EPHEMERAL_QUEUE_NAMES as $queueName) {
+            if (strcasecmp((string) $integration->getQueueName(), $queueName) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 

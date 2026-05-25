@@ -7,6 +7,7 @@ use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\People;
+use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\DefaultFoodService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -25,6 +26,7 @@ class DefaultFoodServiceTest extends TestCase
             ->onlyMethods(['findBy'])
             ->getMock();
         $websocketClient = $this->createMock(WebsocketClient::class);
+        $integrationService = $this->createMock(IntegrationService::class);
         $company = $this->createConfiguredMock(People::class, [
             'getId' => 88,
         ]);
@@ -63,6 +65,18 @@ class DefaultFoodServiceTest extends TestCase
             'message' => 'Loja Central foi aberta',
         ]];
 
+        $integrationService
+            ->expects(self::once())
+            ->method('addIntegration')
+            ->with(
+                json_encode($payload[0], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'PushNotification',
+                null,
+                null,
+                $company
+            )
+            ->willReturn(new Integration());
+
         $websocketClient
             ->expects(self::exactly(2))
             ->method('push')
@@ -74,6 +88,7 @@ class DefaultFoodServiceTest extends TestCase
 
         $this->setObjectProperty(DefaultFoodService::class, $service, 'entityManager', $entityManager);
         $this->setObjectProperty(DefaultFoodService::class, $service, 'websocketClient', $websocketClient);
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'integrationService', $integrationService);
 
         $service->emit($company, $payload);
 

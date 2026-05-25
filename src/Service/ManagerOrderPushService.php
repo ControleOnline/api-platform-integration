@@ -14,6 +14,7 @@ class ManagerOrderPushService
     private const MANAGER_DEVICE_TYPE = 'MANAGER';
     private const ROUTE_NAME = 'OrderDetails';
     private const MANAGER_EVENT_NAMES = [
+        'cash.open' => true,
         'cash.closed' => true,
         'store.opened' => true,
         'store.closed' => true,
@@ -173,6 +174,7 @@ class ManagerOrderPushService
             $title = match ($eventName) {
                 'store.opened' => sprintf('%s foi aberta', $companyLabel ?: 'Loja'),
                 'store.closed' => sprintf('%s foi fechada', $companyLabel ?: 'Loja'),
+                'cash.open' => sprintf('Caixa aberto%s', $companyLabel ? ' - ' . $companyLabel : ''),
                 'cash.closed' => sprintf('Caixa fechado%s', $companyLabel ? ' - ' . $companyLabel : ''),
                 default => 'Aviso do Gestor',
             };
@@ -186,6 +188,7 @@ class ManagerOrderPushService
             $bodyParts[] = match ($eventName) {
                 'store.opened' => 'A loja voltou a ficar online.',
                 'store.closed' => 'A loja foi fechada.',
+                'cash.open' => 'O caixa foi aberto.',
                 'cash.closed' => 'O fechamento de caixa foi concluido.',
                 default => 'Novo aviso do Gestor.',
             };

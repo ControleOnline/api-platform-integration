@@ -15,7 +15,6 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
-use ControleOnline\Message\SendManagerEventPushMessage;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -60,11 +59,11 @@ class DefaultFoodService
 
     protected function resolveIntegrationService(): ?IntegrationService
     {
-        if ($this->integrationService instanceof IntegrationService) {
+        if (isset($this->integrationService) && $this->integrationService instanceof IntegrationService) {
             return $this->integrationService;
         }
 
-        if (!$this->container instanceof ContainerInterface || !$this->container->has(IntegrationService::class)) {
+        if (!isset($this->container) || !$this->container instanceof ContainerInterface || !$this->container->has(IntegrationService::class)) {
             return null;
         }
 
@@ -142,14 +141,18 @@ class DefaultFoodService
 
     protected function broadcastCompanyWebsocketEvents(People $company, array $events): void
     {
+        $integrationService = $this->resolveIntegrationService();
         foreach ($events as $event) {
             if (
-                isset($this->messageBus) &&
-                $this->messageBus instanceof MessageBusInterface &&
+                $integrationService instanceof IntegrationService &&
                 in_array((string) ($event['event'] ?? ''), ['store.opened', 'store.closed'], true)
             ) {
-                $this->messageBus->dispatch(
-                    new SendManagerEventPushMessage((int) $company->getId(), $event)
+                $integrationService->addIntegration(
+                    json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+                    'PushNotification',
+                    null,
+                    null,
+                    $company
                 );
             }
         }

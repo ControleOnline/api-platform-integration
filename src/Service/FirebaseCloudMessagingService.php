@@ -44,9 +44,9 @@ class FirebaseCloudMessagingService
                     'priority' => 'HIGH',
                     'notification' => array_replace(
                         [
-                            'channel_id' => 'manager-orders-push',
-                            'sound' => 'default',
-                            'default_sound' => true,
+                            'channel_id' => 'manager-orders-push-caixa-v1',
+                            'sound' => 'caixa',
+                            'default_sound' => false,
                         ],
                         array_filter(
                             $androidNotification,
