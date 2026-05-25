@@ -15,6 +15,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
+use ControleOnline\Message\SendManagerEventPushMessage;
 use ControleOnline\Service\Client\WebsocketClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -22,6 +23,7 @@ use ControleOnline\Service\LoggerService;
 use DateTime;
 use Exception;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 
 class DefaultFoodService
@@ -52,7 +54,8 @@ class DefaultFoodService
         protected ProductGroupService $productGroupService,
         protected ?IntegrationService $integrationService = null,
         protected ?WhatsAppService $whatsAppService = null,
-        protected ?ContainerInterface $container = null
+        protected ?ContainerInterface $container = null,
+        protected ?MessageBusInterface $messageBus = null
     ) {}
 
     protected function resolveIntegrationService(): ?IntegrationService
@@ -139,6 +142,18 @@ class DefaultFoodService
 
     protected function broadcastCompanyWebsocketEvents(People $company, array $events): void
     {
+        foreach ($events as $event) {
+            if (
+                isset($this->messageBus) &&
+                $this->messageBus instanceof MessageBusInterface &&
+                in_array((string) ($event['event'] ?? ''), ['store.opened', 'store.closed'], true)
+            ) {
+                $this->messageBus->dispatch(
+                    new SendManagerEventPushMessage((int) $company->getId(), $event)
+                );
+            }
+        }
+
         $deviceConfigs = $this->entityManager->getRepository(DeviceConfig::class)->findBy([
             'people' => $company,
         ]);

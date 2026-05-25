@@ -89,11 +89,12 @@ class DefaultFoodServiceTest extends TestCase
         $constructor = new \ReflectionMethod(DefaultFoodService::class, '__construct');
         $parameters = $constructor->getParameters();
 
-        self::assertCount(20, $parameters);
+        self::assertCount(21, $parameters);
         self::assertSame(17, $constructor->getNumberOfRequiredParameters());
         self::assertTrue($parameters[17]->isOptional());
         self::assertTrue($parameters[18]->isOptional());
         self::assertTrue($parameters[19]->isOptional());
+        self::assertTrue($parameters[20]->isOptional());
     }
 
     public function testResolveAddressCandidateAcceptsObjectIds(): void
