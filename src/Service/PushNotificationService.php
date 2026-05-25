@@ -37,10 +37,13 @@ class PushNotificationService
                 'event' => $eventName,
             ]);
 
-            return;
+            throw new \RuntimeException('Manager push notification company was not found.');
         }
 
-        $this->managerOrderPushService->sendCompanyEventNotification($company, $payload);
+        $sentCount = $this->managerOrderPushService->sendCompanyEventNotification($company, $payload);
+        if ($sentCount <= 0) {
+            throw new \RuntimeException('Manager push notification was not sent to any token.');
+        }
     }
 
     private function sendOrderCreated(array $payload, Integration $integration): void
@@ -57,10 +60,13 @@ class PushNotificationService
                 'orderId' => $orderId,
             ]);
 
-            return;
+            throw new \RuntimeException('Manager order push notification order was not found.');
         }
 
-        $this->managerOrderPushService->sendOrderCreatedNotification($order);
+        $sentCount = $this->managerOrderPushService->sendOrderCreatedNotification($order);
+        if ($sentCount <= 0) {
+            throw new \RuntimeException('Manager order push notification was not sent to any token.');
+        }
     }
 
     private function resolveCompany(array $payload, Integration $integration): ?People

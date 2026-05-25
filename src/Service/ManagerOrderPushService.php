@@ -26,17 +26,17 @@ class ManagerOrderPushService
         private LoggerInterface $logger
     ) {}
 
-    public function sendOrderCreatedNotification(Order $order): void
+    public function sendOrderCreatedNotification(Order $order): int
     {
         $orderId = $order->getId();
         $company = $order->getProvider();
         if (!$orderId || !$company) {
-            return;
+            return 0;
         }
 
         $tokens = $this->resolveManagerDeviceTokens($order);
         if (empty($tokens)) {
-            return;
+            return 0;
         }
 
         $companyLabel = trim((string) (
@@ -66,6 +66,7 @@ class ManagerOrderPushService
             'companyId' => (string) $company->getId(),
         ];
 
+        $sentCount = 0;
         foreach ($tokens as $token) {
             try {
                 $this->firebaseCloudMessagingService->sendNotificationToToken(
@@ -74,6 +75,7 @@ class ManagerOrderPushService
                     $body,
                     $data
                 );
+                $sentCount++;
             } catch (Throwable $throwable) {
                 $this->logger->warning('Unable to send manager order push notification.', [
                     'orderId' => $orderId,
@@ -83,18 +85,20 @@ class ManagerOrderPushService
                 ]);
             }
         }
+
+        return $sentCount;
     }
 
-    public function sendCompanyEventNotification(People $company, array $event): void
+    public function sendCompanyEventNotification(People $company, array $event): int
     {
         $eventName = trim((string) ($event['event'] ?? ''));
         if (!isset(self::MANAGER_EVENT_NAMES[$eventName]) || !$company->getId()) {
-            return;
+            return 0;
         }
 
         $tokens = $this->resolveManagerDeviceTokens($company);
         if (empty($tokens)) {
-            return;
+            return 0;
         }
 
         [$title, $body] = $this->buildCompanyEventNotificationContent($company, $event);
@@ -105,6 +109,7 @@ class ManagerOrderPushService
             'companyId' => (string) $company->getId(),
         ]);
 
+        $sentCount = 0;
         foreach ($tokens as $token) {
             try {
                 $this->firebaseCloudMessagingService->sendNotificationToToken(
@@ -113,6 +118,7 @@ class ManagerOrderPushService
                     $body,
                     $data
                 );
+                $sentCount++;
             } catch (Throwable $throwable) {
                 $this->logger->warning('Unable to send manager event push notification.', [
                     'event' => $eventName,
@@ -122,6 +128,8 @@ class ManagerOrderPushService
                 ]);
             }
         }
+
+        return $sentCount;
     }
 
     private function resolveManagerDeviceTokens(Order|People $target): array
