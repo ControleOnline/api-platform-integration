@@ -198,13 +198,46 @@ class AsaasService
 
     public function discoveryCustomer(People $people)
     {
-        $response = $this->client->request('GET',  'customers', ['query' => ['cpfCnpj' => '32115692861']]);
+        $document = preg_replace('/\D+/', '', (string) $people->getOneDocument()?->getDocument());
+        if ($document === '') {
+            throw new \InvalidArgumentException('Customer document not found');
+        }
+
+        $response = $this->client->request('GET',  'customers', ['query' => ['cpfCnpj' => $document]]);
         $customer = json_decode($response->getBody()->getContents(), true);
 
         if ($customer['totalCount'] > 0) {
-            $this->discoveryAsaasCode($people, $customer[0]['id']);
+            $this->discoveryAsaasCode($people, $customer['data'][0]['id']);
             return $customer['data'][0];
         }
+
+        $phone = $people->getPhone()->first();
+        $payload = [
+            'name' => $people->getFullName() ?: $people->getName(),
+            'cpfCnpj' => $document,
+        ];
+
+        if ($people->getOneEmail()?->getEmail()) {
+            $payload['email'] = $people->getOneEmail()->getEmail();
+        }
+
+        if ($phone !== false) {
+            $payload['mobilePhone'] = sprintf(
+                '%s%s',
+                $phone->getDdd(),
+                $phone->getPhone()
+            );
+        }
+
+        $createdCustomer = json_decode($this->client->request('POST', 'customers', [
+            'json' => $payload
+        ])->getBody()->getContents(), true);
+
+        if (!empty($createdCustomer['id'])) {
+            $this->discoveryAsaasCode($people, $createdCustomer['id']);
+        }
+
+        return $createdCustomer;
     }
 
     public function getClient($client_id)
