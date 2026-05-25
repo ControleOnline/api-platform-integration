@@ -2696,6 +2696,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $categoryId   = isset($row['category_id']) && $row['category_id'] !== null ? (int) $row['category_id'] : null;
         $categoryName = $categoryId !== null ? trim((string) ($row['category_name'] ?? '')) : null;
         $modifierGroups = is_array($row['modifier_groups'] ?? null) ? $row['modifier_groups'] : [];
+        $modifierGroups = $this->enrichIfoodModifierGroupsWithRemoteOptions($modifierGroups, $remoteByEc);
         $hasRequiredModifiers = !empty(array_filter($modifierGroups, static function (array $group): bool {
             return !empty($group['required']) || (int) ($group['minimum'] ?? 0) >= 1;
         }));
@@ -2719,18 +2720,65 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'category'         => $categoryId !== null ? ['id' => $categoryId, 'name' => $categoryName] : null,
             'has_required_modifiers' => $hasRequiredModifiers,
             'modifier_groups'  => $modifierGroups,
+            'options'          => $this->flattenIfoodModifierOptions($modifierGroups),
             'active'           => (int) ($row['product_active'] ?? 1) === 1,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
             'published_remotely' => $remoteEntry !== null,
-            'ifood_item_id'    => $remoteEntry['item_id'] ?? null,
+            'ifood_item_id'    => !empty($remoteEntry['option_id']) ? null : ($remoteEntry['item_id'] ?? null),
+            'ifood_option_id'  => $remoteEntry['option_id'] ?? null,
             'ifood_status'     => $remoteEntry['status'] ?? null,
+            'ifood_match_source' => $remoteEntry['match_source'] ?? null,
             'cover_image_url'  => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
         ];
 
         $view['sync'] = $this->buildIfoodProductSyncState($view, $remoteEntry !== null);
 
         return $view;
+    }
+
+    private function enrichIfoodModifierGroupsWithRemoteOptions(array $modifierGroups, array $remoteByEc): array
+    {
+        return array_map(function (array $group) use ($remoteByEc): array {
+            $options = is_array($group['options'] ?? null) ? $group['options'] : [];
+            $group['options'] = array_map(function (array $option) use ($remoteByEc): array {
+                $relationId = (int) ($option['id'] ?? 0);
+                $childProductId = (int) ($option['child_product_id'] ?? 0);
+                $remoteEntry = null;
+
+                foreach (['option-' . $relationId, (string) $childProductId] as $candidate) {
+                    if ($candidate !== '' && !empty($remoteByEc[$candidate]['option_id'])) {
+                        $remoteEntry = $remoteByEc[$candidate];
+                        break;
+                    }
+                }
+
+                if ($remoteEntry) {
+                    $option['ifood_option_id'] = $remoteEntry['option_id'];
+                    $option['ifood_status'] = $remoteEntry['status'] ?? null;
+                    $option['ifood_item_id'] = $remoteEntry['item_id'] ?? null;
+                    $option['ifood_match_source'] = $remoteEntry['match_source'] ?? null;
+                }
+
+                return $option;
+            }, $options);
+
+            return $group;
+        }, $modifierGroups);
+    }
+
+    private function flattenIfoodModifierOptions(array $modifierGroups): array
+    {
+        $options = [];
+        foreach ($modifierGroups as $group) {
+            foreach (($group['options'] ?? []) as $option) {
+                if (is_array($option)) {
+                    $options[] = $option;
+                }
+            }
+        }
+
+        return $options;
     }
 
     private function normalizeCatalogSyncHashPayload(mixed $value): mixed
@@ -2809,7 +2857,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $storedHash = $this->getIfoodExtraDataValue('Product', $productId, 'sync_hash') ?? '';
         $hasStoredHash = $storedHash !== '';
         $dirty = $published && (!$hasStoredHash || !hash_equals($storedHash, $currentHash));
-        $remoteId = trim((string) ($product['ifood_item_id'] ?? ''));
+        $remoteId = trim((string) ($product['ifood_item_id'] ?? ($product['ifood_option_id'] ?? '')));
 
         return [
             'platform' => 'ifood',
@@ -3157,10 +3205,12 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         $synced = 0;
         $syncedProductIds = [];
+        $syncedProductIdSet = [];
         $syncedItemIds = [];
         foreach ($remoteByEc as $externalCode => $remoteEntry) {
             $itemId = $this->normalizeString($remoteEntry['item_id'] ?? null);
-            if ($itemId === '' || isset($syncedItemIds[$itemId]) || !ctype_digit((string) $externalCode)) {
+            $optionId = $this->normalizeString($remoteEntry['option_id'] ?? null);
+            if ($itemId === '' || !ctype_digit((string) $externalCode)) {
                 continue;
             }
 
@@ -3170,10 +3220,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
 
             if ($product) {
-                $this->discoveryFoodCode($product, $itemId);
+                $productId = (int) $product->getId();
+                if (isset($syncedProductIdSet[$productId])) {
+                    continue;
+                }
+                if ($optionId === '' && !isset($syncedItemIds[$itemId])) {
+                    $this->discoveryFoodCode($product, $itemId);
+                    $syncedItemIds[$itemId] = true;
+                }
                 $synced++;
-                $syncedItemIds[$itemId] = true;
-                $syncedProductIds[] = (int) $product->getId();
+                $syncedProductIdSet[$productId] = true;
+                $syncedProductIds[] = $productId;
             }
         }
 
@@ -3191,10 +3248,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             }
 
             if ($product) {
+                $productId = (int) $product->getId();
+                if (isset($syncedProductIdSet[$productId])) {
+                    continue;
+                }
                 $this->discoveryFoodCode($product, $itemId);
                 $synced++;
                 $syncedItemIds[$itemId] = true;
-                $syncedProductIds[] = (int) $product->getId();
+                $syncedProductIdSet[$productId] = true;
+                $syncedProductIds[] = $productId;
             }
         }
 
@@ -3625,6 +3687,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             );
 
             $products = is_array($flat['products'] ?? null) ? $flat['products'] : [];
+            $optionsByProductId = $this->mapIfoodFlatOptionsByProductId($flat);
+
             foreach ($products as $product) {
                 if (!is_array($product)) {
                     continue;
@@ -3648,9 +3712,70 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     $categoryId
                 );
             }
+
+            foreach ($products as $product) {
+                if (!is_array($product)) {
+                    continue;
+                }
+
+                $productId = $this->normalizeString($product['id'] ?? null);
+                if ($productId === '' || $productId === $rootProductId || empty($optionsByProductId[$productId])) {
+                    continue;
+                }
+
+                foreach ($optionsByProductId[$productId] as $option) {
+                    $optionId = $this->normalizeString($option['id'] ?? null);
+                    if ($optionId === '') {
+                        continue;
+                    }
+
+                    $optionStatus = $this->normalizeString($option['status'] ?? $status);
+                    $this->registerIfoodCatalogExternalCode(
+                        $remoteByEc,
+                        $product['externalCode'] ?? null,
+                        $itemId,
+                        $optionStatus !== '' ? $optionStatus : $status,
+                        'option_product',
+                        $productId,
+                        $categoryId,
+                        $optionId
+                    );
+                    $this->registerIfoodCatalogExternalCode(
+                        $remoteByEc,
+                        $option['externalCode'] ?? null,
+                        $itemId,
+                        $optionStatus !== '' ? $optionStatus : $status,
+                        'option',
+                        $productId,
+                        $categoryId,
+                        $optionId
+                    );
+                }
+            }
         }
 
         return $remoteByEc;
+    }
+
+    private function mapIfoodFlatOptionsByProductId(array $flat): array
+    {
+        $mapped = [];
+        $options = is_array($flat['options'] ?? null) ? $flat['options'] : [];
+
+        foreach ($options as $option) {
+            if (!is_array($option)) {
+                continue;
+            }
+
+            $productId = $this->normalizeString($option['productId'] ?? null);
+            if ($productId === '') {
+                continue;
+            }
+
+            $mapped[$productId][] = $option;
+        }
+
+        return $mapped;
     }
 
     private function registerIfoodCatalogExternalCode(
@@ -3660,28 +3785,55 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         string $status,
         string $source,
         string $productId = '',
-        string $categoryId = ''
+        string $categoryId = '',
+        string $optionId = ''
     ): void
     {
+        $candidates = $this->normalizeIfoodCatalogExternalCodeCandidates($externalCode);
+        if (empty($candidates) || $itemId === '') {
+            return;
+        }
+
+        $priority = 0;
+        if ($source === 'item') {
+            $priority = 3;
+        } elseif ($source === 'root_product') {
+            $priority = 2;
+        } elseif ($source === 'option') {
+            $priority = 1;
+        }
+
+        foreach ($candidates as $ec) {
+            $currentPriority = (int) ($remoteByEc[$ec]['match_priority'] ?? -1);
+            if ($currentPriority > $priority) {
+                continue;
+            }
+
+            $remoteByEc[$ec] = [
+                'item_id' => $itemId,
+                'product_id' => $productId,
+                'category_id' => $categoryId,
+                'option_id' => $optionId !== '' ? $optionId : null,
+                'status'  => $status !== '' ? $status : 'AVAILABLE',
+                'match_source' => $source,
+                'match_priority' => $priority,
+            ];
+        }
+    }
+
+    private function normalizeIfoodCatalogExternalCodeCandidates(mixed $externalCode): array
+    {
         $ec = $this->normalizeString($externalCode);
-        if ($ec === '' || $itemId === '') {
-            return;
+        if ($ec === '') {
+            return [];
         }
 
-        $priority = $source === 'item' ? 2 : 1;
-        $currentPriority = (int) ($remoteByEc[$ec]['match_priority'] ?? 0);
-        if ($currentPriority > $priority) {
-            return;
+        $candidates = [$ec];
+        if (preg_match('/^option-product-(\d+)$/', $ec, $matches)) {
+            $candidates[] = $matches[1];
         }
 
-        $remoteByEc[$ec] = [
-            'item_id' => $itemId,
-            'product_id' => $productId,
-            'category_id' => $categoryId,
-            'status'  => $status !== '' ? $status : 'AVAILABLE',
-            'match_source' => $source,
-            'match_priority' => $priority,
-        ];
+        return array_values(array_unique($candidates));
     }
 
     private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
