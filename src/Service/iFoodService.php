@@ -2667,15 +2667,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         /* mapa de externalCodes já publicados no catálogo iFood */
         $remoteByEc = [];
         if ($merchantId !== '') {
-            foreach ($this->fetchIfoodCatalogItemsV2($merchantId) as $item) {
-                $ec = $this->normalizeString($item['externalCode'] ?? null);
-                if ($ec !== '') {
-                    $remoteByEc[$ec] = [
-                        'item_id' => $this->normalizeString($item['id'] ?? ''),
-                        'status'  => $this->normalizeString($item['status'] ?? 'AVAILABLE'),
-                    ];
-                }
-            }
+            $remoteByEc = $this->buildIfoodCatalogItemExternalCodeIndex(
+                $merchantId,
+                $this->fetchIfoodCatalogItemsV2($merchantId),
+                true
+            );
         }
 
         $products = array_map(
@@ -3058,17 +3054,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
         /* mapa de itens existentes por externalCode */
         $remoteItems = $this->fetchIfoodCatalogItemsV2($merchantId);
-        $byEc        = [];
-        foreach ($remoteItems as $item) {
-            $ec = $this->normalizeString($item['externalCode'] ?? null);
-            if ($ec !== '') {
-                $byEc[$ec] = [
-                    'item_id'    => $this->normalizeString($item['id'] ?? ''),
-                    'product_id' => $this->normalizeString($item['productId'] ?? ''),
-                    'category_id' => $this->normalizeString($item['_categoryId'] ?? null),
-                ];
-            }
-        }
+        $byEc        = $this->buildIfoodCatalogItemExternalCodeIndex($merchantId, $remoteItems, true);
 
         $pushed = 0;
         $errors = [];
@@ -3167,21 +3153,36 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return ['errno' => 0, 'errmsg' => 'Nenhum item encontrado no catalogo iFood.', 'data' => ['synced' => 0, 'total' => 0]];
         }
 
+        $remoteByEc = $this->buildIfoodCatalogItemExternalCodeIndex($merchantId, $items, true);
+
         $synced = 0;
         $syncedProductIds = [];
+        $syncedItemIds = [];
+        foreach ($remoteByEc as $externalCode => $remoteEntry) {
+            $itemId = $this->normalizeString($remoteEntry['item_id'] ?? null);
+            if ($itemId === '' || isset($syncedItemIds[$itemId]) || !ctype_digit((string) $externalCode)) {
+                continue;
+            }
+
+            $product = $this->entityManager->getRepository(Product::class)->findOneBy([
+                'company' => $provider,
+                'id'      => (int) $externalCode,
+            ]);
+
+            if ($product) {
+                $this->discoveryFoodCode($product, $itemId);
+                $synced++;
+                $syncedItemIds[$itemId] = true;
+                $syncedProductIds[] = (int) $product->getId();
+            }
+        }
+
         foreach ($items as $item) {
             $itemId       = $this->normalizeString($item['id'] ?? null);
-            $externalCode = $this->normalizeString($item['externalCode'] ?? null);
             $itemName     = $this->normalizeString($item['name'] ?? null);
-            if ($itemId === '') continue;
+            if ($itemId === '' || isset($syncedItemIds[$itemId])) continue;
 
             $product = null;
-            if ($externalCode !== '' && ctype_digit($externalCode)) {
-                $product = $this->entityManager->getRepository(Product::class)->findOneBy([
-                    'company' => $provider,
-                    'id'      => (int) $externalCode,
-                ]);
-            }
             if (!$product && $itemName !== '') {
                 $product = $this->entityManager->getRepository(Product::class)->findOneBy([
                     'company' => $provider,
@@ -3192,6 +3193,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             if ($product) {
                 $this->discoveryFoodCode($product, $itemId);
                 $synced++;
+                $syncedItemIds[$itemId] = true;
                 $syncedProductIds[] = (int) $product->getId();
             }
         }
@@ -3567,6 +3569,119 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
             return null;
         }
+    }
+
+    private function buildIfoodCatalogItemExternalCodeIndex(string $merchantId, array $items, bool $includeFlatRootProduct = false): array
+    {
+        $remoteByEc = [];
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $itemId = $this->normalizeString($item['id'] ?? null);
+            if ($itemId === '') {
+                continue;
+            }
+
+            $status = $this->normalizeString($item['status'] ?? 'AVAILABLE');
+            $itemProductId = $this->normalizeString($item['productId'] ?? null);
+            $categoryId = $this->normalizeString($item['_categoryId'] ?? null);
+            $this->registerIfoodCatalogExternalCode(
+                $remoteByEc,
+                $item['externalCode'] ?? null,
+                $itemId,
+                $status,
+                'item',
+                $itemProductId,
+                $categoryId
+            );
+
+            if (!$includeFlatRootProduct) {
+                continue;
+            }
+
+            $itemExternalCode = $this->normalizeString($item['externalCode'] ?? null);
+            if ($itemExternalCode !== '' && ctype_digit($itemExternalCode)) {
+                continue;
+            }
+
+            $flat = $this->fetchIfoodCatalogItemFlatV2($merchantId, $itemId);
+            if (!is_array($flat)) {
+                continue;
+            }
+
+            $flatItem = is_array($flat['item'] ?? null) ? $flat['item'] : $flat;
+            $rootProductId = $itemProductId !== '' ? $itemProductId : $this->normalizeString($flatItem['productId'] ?? null);
+            $this->registerIfoodCatalogExternalCode(
+                $remoteByEc,
+                $flatItem['externalCode'] ?? null,
+                $itemId,
+                $status,
+                'item',
+                $rootProductId,
+                $categoryId
+            );
+
+            $products = is_array($flat['products'] ?? null) ? $flat['products'] : [];
+            foreach ($products as $product) {
+                if (!is_array($product)) {
+                    continue;
+                }
+
+                $productId = $this->normalizeString($product['id'] ?? null);
+                if ($rootProductId !== '' && $productId !== $rootProductId) {
+                    continue;
+                }
+                if ($rootProductId === '' && count($products) !== 1) {
+                    continue;
+                }
+
+                $this->registerIfoodCatalogExternalCode(
+                    $remoteByEc,
+                    $product['externalCode'] ?? null,
+                    $itemId,
+                    $status,
+                    'root_product',
+                    $rootProductId !== '' ? $rootProductId : $productId,
+                    $categoryId
+                );
+            }
+        }
+
+        return $remoteByEc;
+    }
+
+    private function registerIfoodCatalogExternalCode(
+        array &$remoteByEc,
+        mixed $externalCode,
+        string $itemId,
+        string $status,
+        string $source,
+        string $productId = '',
+        string $categoryId = ''
+    ): void
+    {
+        $ec = $this->normalizeString($externalCode);
+        if ($ec === '' || $itemId === '') {
+            return;
+        }
+
+        $priority = $source === 'item' ? 2 : 1;
+        $currentPriority = (int) ($remoteByEc[$ec]['match_priority'] ?? 0);
+        if ($currentPriority > $priority) {
+            return;
+        }
+
+        $remoteByEc[$ec] = [
+            'item_id' => $itemId,
+            'product_id' => $productId,
+            'category_id' => $categoryId,
+            'status'  => $status !== '' ? $status : 'AVAILABLE',
+            'match_source' => $source,
+            'match_priority' => $priority,
+        ];
     }
 
     private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
