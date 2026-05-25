@@ -310,17 +310,14 @@ class IntegrationService
     {
         $cutoff ??= new \DateTimeImmutable('-24 hours');
         $manager = $this->getManager();
-        $openStatus = $this->statusService->discoveryStatus('open', 'open', 'integration');
         $connection = $manager->getConnection();
 
         $deleted = (int) $connection->executeStatement(
             'DELETE FROM integration
              WHERE queue_name IN (:queueNames)
-               AND queue_status_id = :statusId
                AND created_at < :cutoff',
             [
                 'queueNames' => self::EPHEMERAL_QUEUE_NAMES,
-                'statusId' => $openStatus->getId(),
                 'cutoff' => $cutoff->format('Y-m-d H:i:s'),
             ],
             [

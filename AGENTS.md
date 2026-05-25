@@ -28,7 +28,7 @@
 - Em `Food99`, os componentes de fee calculados pela integracao devem ser arredondados normalmente em centavos; nao usar `ceil` para as taxas calculadas.
 - Em pedidos filhos de logistica gerados pela integracao `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 - Alertas humanos do `MANAGER` devem usar `queue_name = PushNotification` e FCM direto; nao criar alerta humano novo como `Websocket`.
-- `Websocket` e `PushNotification` sao filas efemeras: item entregue deve ser removido da tabela `integration`, e item aberto nao entregue deve expirar em ate 24 horas pela manutencao.
+- `Websocket` e `PushNotification` sao filas efemeras: item entregue deve ser removido da tabela `integration`, e qualquer registro remanescente com mais de 24 horas deve ser removido pela manutencao.
 - O canal Android de FCM do `MANAGER` usa o som nativo `caixa.m4a` empacotado; URL de audio configurada nao toca quando o push chega com app fechado.
 
 ## iFood - negociacao e cancelamento
