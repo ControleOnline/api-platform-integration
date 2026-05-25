@@ -348,6 +348,168 @@ class iFoodServiceTest extends TestCase
         );
     }
 
+    public function testIfoodBenefitSnapshotSeparatesSponsorAndDeliveryTarget(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $snapshot = $this->invokePrivateMethod($service, 'extractOrderBenefitSnapshot', [
+            'benefits' => [
+                [
+                    'value' => 7.0,
+                    'target' => 'ITEM',
+                    'campaign' => ['code' => 'CUPOMITEM'],
+                    'sponsorshipValues' => [
+                        ['name' => 'IFOOD', 'value' => 2.0],
+                        ['name' => 'MERCHANT', 'value' => 3.0],
+                        ['name' => 'CHAIN', 'value' => 2.0],
+                    ],
+                ],
+                [
+                    'value' => 5.0,
+                    'target' => 'DELIVERY_FEE',
+                    'voucherCode' => 'ENTREGA',
+                    'sponsorshipValues' => [
+                        ['name' => 'IFOOD', 'value' => 1.5],
+                        ['name' => 'MERCHANT', 'value' => 2.5],
+                        ['name' => 'EXTERNAL', 'value' => 1.0],
+                    ],
+                ],
+            ],
+        ]);
+
+        self::assertSame('12', $snapshot['discount_total']);
+        self::assertSame('6.5', $snapshot['ifood_subsidy']);
+        self::assertSame('5.5', $snapshot['merchant_subsidy']);
+        self::assertSame('2.5', $snapshot['store_delivery_discount_total']);
+        self::assertSame('3', $snapshot['store_non_delivery_discount_total']);
+        self::assertSame('2.5', $snapshot['platform_delivery_discount_total']);
+        self::assertSame('4', $snapshot['platform_non_delivery_discount_total']);
+        self::assertSame('CUPOMITEM, ENTREGA', $snapshot['voucher_code']);
+    }
+
+    public function testIfoodAdditionalFeeSnapshotUsesMerchantLiabilityOnly(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $snapshot = $this->invokePrivateMethod($service, 'extractAdditionalFeeSnapshot', [
+            [
+                'type' => 'SMALL_ORDER_FEE',
+                'value' => 10.0,
+                'liabilities' => [
+                    ['name' => 'IFOOD', 'percentage' => 60],
+                    ['name' => 'MERCHANT', 'percentage' => 40],
+                ],
+            ],
+            [
+                'type' => 'MERCHANT_SUBSCRIPTION_FEE',
+                'value' => 5.0,
+                'liabilities' => [
+                    ['name' => 'IFOOD', 'percentage' => 100],
+                ],
+            ],
+            [
+                'type' => 'OTHER_FEE',
+                'value' => 7.0,
+            ],
+        ]);
+
+        self::assertSame(22.0, $snapshot['total']);
+        self::assertSame(4.0, $snapshot['merchant_total']);
+        self::assertSame(0.0, $snapshot['merchant_service_fee']);
+        self::assertSame(4.0, $snapshot['merchant_small_order_fee']);
+        self::assertSame(0.0, $snapshot['merchant_meal_top_up_fee']);
+    }
+
+    public function testIfoodOrderHomologationSnapshotBuildsStoreReceivableFromMerchantRevenue(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $loggerService = $this->createMock(\ControleOnline\Service\LoggerService::class);
+        $loggerService->method('getLogger')->willReturn($this->createNullLoggerStub());
+        $this->setObjectProperty($service, 'loggerService', $loggerService);
+
+        $order = $this->createMock(Order::class);
+        $order->method('getOtherInformations')->willReturn((object) [
+            'iFood' => [
+                'latest_event_type' => 'PLACED',
+                'PLACED' => [
+                    'orderId' => 'ifood-order-financial',
+                    'order' => [
+                        'displayId' => 'FIN-1',
+                        'total' => [
+                            'subTotal' => 100.0,
+                            'deliveryFee' => 10.0,
+                            'additionalFees' => 7.0,
+                            'benefits' => 15.0,
+                            'orderAmount' => 102.0,
+                        ],
+                        'additionalFees' => [
+                            [
+                                'type' => 'SMALL_ORDER_FEE',
+                                'value' => 5.0,
+                                'liabilities' => [
+                                    ['name' => 'IFOOD', 'percentage' => 100],
+                                ],
+                            ],
+                            [
+                                'type' => 'MERCHANT_SUBSCRIPTION_FEE',
+                                'value' => 2.0,
+                                'liabilities' => [
+                                    ['name' => 'MERCHANT', 'percentage' => 50],
+                                    ['name' => 'IFOOD', 'percentage' => 50],
+                                ],
+                            ],
+                        ],
+                        'benefits' => [
+                            [
+                                'value' => 11.0,
+                                'target' => 'ITEM',
+                                'sponsorshipValues' => [
+                                    ['name' => 'MERCHANT', 'value' => 11.0],
+                                ],
+                            ],
+                            [
+                                'value' => 4.0,
+                                'target' => 'DELIVERY_FEE',
+                                'sponsorshipValues' => [
+                                    ['name' => 'IFOOD', 'value' => 4.0],
+                                ],
+                            ],
+                        ],
+                        'payments' => [
+                            'prepaid' => 102.0,
+                            'pending' => 0.0,
+                            'methods' => [
+                                [
+                                    'method' => 'CREDIT',
+                                    'type' => 'ONLINE',
+                                    'value' => 102.0,
+                                ],
+                            ],
+                        ],
+                        'delivery' => [
+                            'deliveredBy' => 'IFOOD',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $snapshot = $service->getOrderHomologationSnapshot($order);
+
+        self::assertSame(102.0, $snapshot['financial']['customer_total']);
+        self::assertSame(117.0, $snapshot['financial']['subtotal_before_discounts']);
+        self::assertSame(88.0, $snapshot['financial']['store_receivable_total']);
+        self::assertSame(1.0, $snapshot['financial']['service_fee']);
+        self::assertSame(0.0, $snapshot['financial']['small_order_fee']);
+        self::assertSame(7.0, $snapshot['financial']['additional_fees_total']);
+        self::assertSame(1.0, $snapshot['financial']['merchant_additional_fee_total']);
+        self::assertSame(11.0, $snapshot['financial']['store_non_delivery_discount_total']);
+        self::assertSame(4.0, $snapshot['financial']['platform_delivery_discount_total']);
+        self::assertSame(4.0, $snapshot['financial']['delivery_discount_total']);
+        self::assertTrue($snapshot['payment']['is_paid_online']);
+        self::assertTrue($snapshot['delivery']['is_platform_delivery']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);

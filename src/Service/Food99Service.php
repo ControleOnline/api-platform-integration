@@ -398,7 +398,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function getFood99BaseUrl(): string
     {
-        return 'https://openapi.didi-food.com';
+        return 'https://openapi.99food.com';
     }
 
     private function getFood99BorderBaseUrl(): string

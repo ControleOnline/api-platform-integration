@@ -1002,6 +1002,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $discountTotal = 0.0;
         $ifoodSubsidy = 0.0;
         $merchantSubsidy = 0.0;
+        $ifoodDeliverySubsidy = 0.0;
+        $merchantDeliverySubsidy = 0.0;
+        $ifoodNonDeliverySubsidy = 0.0;
+        $merchantNonDeliverySubsidy = 0.0;
         $voucherCodes = [];
 
         foreach ($benefits as $benefit) {
@@ -1009,7 +1013,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 continue;
             }
 
-            $discountTotal += (float) ($benefit['value'] ?? 0.0);
+            $benefitValue = (float) ($benefit['value'] ?? 0.0);
+            $discountTotal += $benefitValue;
             $campaign = is_array($benefit['campaign'] ?? null) ? $benefit['campaign'] : [];
             $code = $this->normalizeString(
                 $benefit['code']
@@ -1031,13 +1036,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
                 $sponsorName = strtoupper($this->normalizeString($sponsorship['name'] ?? null));
                 $value = (float) ($sponsorship['value'] ?? 0.0);
-                if ($sponsorName === 'IFOOD') {
+                $isDeliveryTarget = strtoupper($this->normalizeString($benefit['target'] ?? null)) === 'DELIVERY_FEE';
+                if ($sponsorName !== '' && $sponsorName !== 'MERCHANT') {
                     $ifoodSubsidy += $value;
+                    if ($isDeliveryTarget) {
+                        $ifoodDeliverySubsidy += $value;
+                    } else {
+                        $ifoodNonDeliverySubsidy += $value;
+                    }
                     continue;
                 }
 
-                if ($sponsorName !== '') {
+                if ($sponsorName === 'MERCHANT') {
                     $merchantSubsidy += $value;
+                    if ($isDeliveryTarget) {
+                        $merchantDeliverySubsidy += $value;
+                    } else {
+                        $merchantNonDeliverySubsidy += $value;
+                    }
                 }
             }
         }
@@ -1047,12 +1063,89 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'discount_total' => (string) $discountTotal,
             'ifood_subsidy' => (string) $ifoodSubsidy,
             'merchant_subsidy' => (string) $merchantSubsidy,
+            'platform_discount_total' => (string) $ifoodSubsidy,
+            'store_discount_total' => (string) $merchantSubsidy,
+            'platform_delivery_discount_total' => (string) $ifoodDeliverySubsidy,
+            'store_delivery_discount_total' => (string) $merchantDeliverySubsidy,
+            'platform_non_delivery_discount_total' => (string) $ifoodNonDeliverySubsidy,
+            'store_non_delivery_discount_total' => (string) $merchantNonDeliverySubsidy,
         ];
 
         return array_filter(
             $snapshot,
             static fn($value) => $value !== null && $value !== '' && $value !== '0'
         );
+    }
+
+    private function extractAdditionalFeeSnapshot(array $additionalFees): array
+    {
+        $total = 0.0;
+        $merchantTotal = 0.0;
+        $merchantServiceFee = 0.0;
+        $merchantSmallOrderFee = 0.0;
+        $merchantMealTopUpFee = 0.0;
+
+        foreach ($additionalFees as $fee) {
+            if (!is_array($fee)) {
+                continue;
+            }
+
+            $feeValue = round((float) ($fee['value'] ?? 0.0), 2);
+            if ($feeValue <= 0) {
+                continue;
+            }
+
+            $total += $feeValue;
+            $merchantShare = $this->resolveIfoodMerchantFeeShare($fee, $feeValue);
+            if ($merchantShare <= 0) {
+                continue;
+            }
+
+            $merchantTotal += $merchantShare;
+            $type = strtoupper($this->normalizeString($fee['type'] ?? null));
+            if ($type === 'SMALL_ORDER_FEE') {
+                $merchantSmallOrderFee += $merchantShare;
+                continue;
+            }
+
+            if (in_array($type, ['MEAL_TOP_UP_FEE', 'MEAL_VOUCHER_TOP_UP_FEE'], true)) {
+                $merchantMealTopUpFee += $merchantShare;
+                continue;
+            }
+
+            $merchantServiceFee += $merchantShare;
+        }
+
+        return [
+            'total' => round($total, 2),
+            'merchant_total' => round($merchantTotal, 2),
+            'merchant_service_fee' => round($merchantServiceFee, 2),
+            'merchant_small_order_fee' => round($merchantSmallOrderFee, 2),
+            'merchant_meal_top_up_fee' => round($merchantMealTopUpFee, 2),
+        ];
+    }
+
+    private function resolveIfoodMerchantFeeShare(array $fee, float $feeValue): float
+    {
+        $liabilities = is_array($fee['liabilities'] ?? null) ? $fee['liabilities'] : [];
+        if ($liabilities === []) {
+            return 0.0;
+        }
+
+        $merchantPercentage = 0.0;
+        foreach ($liabilities as $liability) {
+            if (!is_array($liability)) {
+                continue;
+            }
+
+            if (strtoupper($this->normalizeString($liability['name'] ?? null)) !== 'MERCHANT') {
+                continue;
+            }
+
+            $merchantPercentage += (float) ($liability['percentage'] ?? 0.0);
+        }
+
+        return round($feeValue * min(100.0, max(0.0, $merchantPercentage)) / 100, 2);
     }
 
     private function extractOrderDetailSnapshot(array $orderPayload): array
@@ -2176,20 +2269,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $total = is_array($orderPayload['total'] ?? null) ? $orderPayload['total'] : [];
         $additionalFees = is_array($orderPayload['additionalFees'] ?? null) ? $orderPayload['additionalFees'] : [];
         $benefitSnapshot = $this->extractOrderBenefitSnapshot($orderPayload);
+        $additionalFeeSnapshot = $this->extractAdditionalFeeSnapshot($additionalFees);
 
         $itemsTotal = round((float) ($total['subTotal'] ?? 0), 2);
         $deliveryFee = round((float) ($total['deliveryFee'] ?? 0), 2);
-        $serviceFee = round(array_reduce($additionalFees, function (float $sum, mixed $fee): float {
-            if (!is_array($fee)) {
-                return $sum;
-            }
-
-            return $sum + (float) ($fee['value'] ?? 0);
-        }, 0.0), 2);
+        $additionalFeesTotal = round(
+            (float) ($total['additionalFees'] ?? $additionalFeeSnapshot['total']),
+            2
+        );
+        $serviceFee = $additionalFeeSnapshot['merchant_service_fee'];
+        $smallOrderFee = $additionalFeeSnapshot['merchant_small_order_fee'];
+        $mealTopUpFee = $additionalFeeSnapshot['merchant_meal_top_up_fee'];
         $discountTotal = round((float) (($total['benefits'] ?? null) ?: ($benefitSnapshot['discount_total'] ?? 0)), 2);
         $ifoodSubsidy = round((float) ($benefitSnapshot['ifood_subsidy'] ?? 0), 2);
         $merchantSubsidy = round((float) ($benefitSnapshot['merchant_subsidy'] ?? 0), 2);
-        $customerTotal = round((float) ($total['orderAmount'] ?? 0), 2);
+        $customerTotal = round(
+            (float) ($total['orderAmount'] ?? max(0, $itemsTotal + $deliveryFee + $additionalFeesTotal - $discountTotal)),
+            2
+        );
         $amountPaid = round((float) ($payments['prepaid'] ?? 0), 2);
         $amountPending = round((float) ($payments['pending'] ?? 0), 2);
         $customerNeedPayingMoney = $amountPending > 0 ? $amountPending : $customerTotal;
@@ -2201,6 +2298,14 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $deliveredBy = strtoupper($this->normalizeString($delivery['deliveredBy'] ?? null));
         $deliveryMode = $this->normalizeString($delivery['mode'] ?? ($delivery['deliveryMode'] ?? null));
         $isStoreDelivery = $this->isMerchantDeliveryContext($deliveredBy, $deliveryMode);
+        $merchantAdditionalFeeTotal = $additionalFeeSnapshot['merchant_total'];
+        $storeReceivableTotal = round(max(
+            0,
+            $itemsTotal
+                + ($isStoreDelivery ? $deliveryFee : 0.0)
+                - $merchantSubsidy
+                - $merchantAdditionalFeeTotal
+        ), 2);
 
         return [
             'financial' => [
@@ -2208,20 +2313,30 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'items_total' => $itemsTotal,
                 'delivery_fee' => $deliveryFee,
                 'service_fee' => $serviceFee,
-                'small_order_fee' => 0.0,
-                'meal_top_up_fee' => 0.0,
+                'small_order_fee' => $smallOrderFee,
+                'meal_top_up_fee' => $mealTopUpFee,
+                'additional_fees_total' => $additionalFeesTotal,
+                'merchant_additional_fee_total' => $merchantAdditionalFeeTotal,
                 'tip_total' => 0.0,
-                'subtotal_before_discounts' => round($itemsTotal + $deliveryFee + $serviceFee, 2),
+                'subtotal_before_discounts' => round($itemsTotal + $deliveryFee + $additionalFeesTotal, 2),
                 'discount_total' => $discountTotal,
                 'store_discount_total' => $merchantSubsidy,
                 'platform_discount_total' => $ifoodSubsidy,
+                'store_non_delivery_discount_total' => round((float) ($benefitSnapshot['store_non_delivery_discount_total'] ?? 0), 2),
+                'platform_non_delivery_discount_total' => round((float) ($benefitSnapshot['platform_non_delivery_discount_total'] ?? 0), 2),
+                'store_delivery_discount_total' => round((float) ($benefitSnapshot['store_delivery_discount_total'] ?? 0), 2),
+                'platform_delivery_discount_total' => round((float) ($benefitSnapshot['platform_delivery_discount_total'] ?? 0), 2),
                 'promotions_total' => $discountTotal,
                 'items_discount_total' => 0.0,
-                'delivery_discount_total' => 0.0,
+                'delivery_discount_total' => round(
+                    (float) ($benefitSnapshot['store_delivery_discount_total'] ?? 0)
+                        + (float) ($benefitSnapshot['platform_delivery_discount_total'] ?? 0),
+                    2
+                ),
                 'coupon_discount_total' => 0.0,
                 'customer_total' => $customerTotal,
                 'customer_need_paying_money' => $customerNeedPayingMoney,
-                'store_receivable_total' => $customerTotal,
+                'store_receivable_total' => $storeReceivableTotal,
                 'real_pay_total' => $amountPaid,
                 'refund_total' => 0.0,
                 'store_charged_delivery_price' => $deliveryFee,

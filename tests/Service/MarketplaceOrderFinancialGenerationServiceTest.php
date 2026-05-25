@@ -295,6 +295,127 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         self::assertSame(73.51, $context['weekly_settlement_amount']);
     }
 
+    public function testIfoodBuildContextUsesSnapshotReceivableAndMerchantFees(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $provider = $this->createConfiguredMock(\ControleOnline\Entity\People::class, [
+            'getId' => 3,
+        ]);
+        $marketplacePeople = $this->createConfiguredMock(\ControleOnline\Entity\People::class, [
+            'getId' => 143802,
+        ]);
+
+        $providerWallet = new \ControleOnline\Entity\Wallet();
+        $providerWallet->setId(21);
+        $providerWallet->setWallet(Order::APP_IFOOD);
+        $providerWallet->setPeople($provider);
+
+        $marketplaceWallet = new \ControleOnline\Entity\Wallet();
+        $marketplaceWallet->setId(99);
+        $marketplaceWallet->setWallet(Order::APP_IFOOD);
+        $marketplaceWallet->setPeople($marketplacePeople);
+
+        $order = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_IFOOD,
+            'getProvider' => $provider,
+            'getPrice' => 102.0,
+            'getOrderDate' => new DateTime('2026-05-25 10:00:00'),
+            'getId' => 1518,
+        ]);
+
+        $snapshot = [
+            'financial' => [
+                'items_total' => 100.0,
+                'delivery_fee' => 10.0,
+                'customer_total' => 102.0,
+                'store_receivable_total' => 88.0,
+                'service_fee' => 1.0,
+                'small_order_fee' => 2.0,
+                'meal_top_up_fee' => 3.0,
+                'store_discount_total' => 11.0,
+                'platform_discount_total' => 4.0,
+            ],
+            'payment' => [
+                'is_paid_online' => true,
+                'amount_paid' => 102.0,
+                'pay_method_label' => 'Online',
+            ],
+            'delivery' => [
+                'is_platform_delivery' => true,
+            ],
+        ];
+
+        $iFoodService = $this->createMock(\ControleOnline\Service\iFoodService::class);
+        $iFoodService
+            ->expects(self::once())
+            ->method('getOrderHomologationSnapshot')
+            ->with($order)
+            ->willReturn($snapshot);
+        $iFoodService
+            ->expects(self::once())
+            ->method('getStoredOrderIntegrationState')
+            ->with($order)
+            ->willReturn([]);
+
+        $peopleService = $this->createMock(\ControleOnline\Service\PeopleService::class);
+        $peopleService
+            ->expects(self::once())
+            ->method('discoveryPeople')
+            ->willReturn($marketplacePeople);
+
+        $paymentType = $this->createMock(\ControleOnline\Entity\PaymentType::class);
+        $walletService = $this->createMock(\ControleOnline\Service\WalletService::class);
+        $walletService
+            ->method('discoverWallet')
+            ->willReturnCallback(static function (\ControleOnline\Entity\People $people) use (
+                $provider,
+                $providerWallet,
+                $marketplaceWallet
+            ): \ControleOnline\Entity\Wallet {
+                return $people === $provider ? $providerWallet : $marketplaceWallet;
+            });
+        $walletService
+            ->method('discoverPaymentType')
+            ->willReturn($paymentType);
+        $walletService
+            ->method('discoverWalletPaymentType')
+            ->willReturn($this->createMock(\ControleOnline\Entity\WalletPaymentType::class));
+
+        $pendingStatus = $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+            'getId' => 1,
+        ]);
+        $paidStatus = $this->createConfiguredMock(\ControleOnline\Entity\Status::class, [
+            'getId' => 2,
+        ]);
+        $statusService = $this->createMock(\ControleOnline\Service\StatusService::class);
+        $statusService
+            ->expects(self::exactly(2))
+            ->method('discoveryStatus')
+            ->willReturnOnConsecutiveCalls($pendingStatus, $paidStatus);
+
+        $this->setObjectProperty($service, 'iFoodService', $iFoodService);
+        $this->setObjectProperty($service, 'food99Service', $this->createMock(Food99Service::class));
+        $this->setObjectProperty($service, 'peopleService', $peopleService);
+        $this->setObjectProperty($service, 'walletService', $walletService);
+        $this->setObjectProperty($service, 'statusService', $statusService);
+        $this->setObjectProperty($service, 'entityManager', $this->createMock(\Doctrine\ORM\EntityManagerInterface::class));
+        $this->setObjectProperty($service, 'invoiceService', $this->createMock(\ControleOnline\Service\InvoiceService::class));
+        $this->setObjectProperty($service, 'orderService', $this->createMock(\ControleOnline\Service\OrderService::class));
+
+        $context = $this->invokePrivateMethod($service, 'buildContext', $order);
+
+        self::assertSame(88.0, $context['weekly_settlement_amount']);
+        self::assertSame(102.0, $context['customer_marketplace_payment_amount']);
+        self::assertSame(10.0, $context['courier_payment_amount']);
+        self::assertSame(1.0, $context['service_fee_amount']);
+        self::assertSame(2.0, $context['small_order_fee_amount']);
+        self::assertSame(3.0, $context['meal_top_up_fee_amount']);
+        self::assertSame(11.0, $context['merchant_discount_amount']);
+        self::assertSame(4.0, $context['platform_discount_amount']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
