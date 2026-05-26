@@ -3876,6 +3876,53 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return is_string($ascii) ? trim($ascii) : $lower;
     }
 
+    private function patchIfoodCatalogCategoryV2(
+        string $merchantId,
+        string $catalogId,
+        string $categoryId,
+        array $categoryBody,
+        string $token
+    ): array {
+        try {
+            $response = $this->httpClient->request('PATCH',
+                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($categoryId),
+                [
+                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
+                    'json'    => $categoryBody,
+                ]
+            );
+
+            $statusCode = $response->getStatusCode();
+            $body = $statusCode >= 200 && $statusCode < 300 ? '' : substr($response->getContent(false), 0, 2000);
+
+            return [
+                'ok' => $statusCode >= 200 && $statusCode < 300,
+                'status' => $statusCode,
+                'body' => $body,
+                'error' => null,
+                'not_found' => $this->isIfoodCatalogCategoryNotFound($statusCode, $body),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'status' => null,
+                'body' => null,
+                'error' => $e->getMessage(),
+                'not_found' => $this->isIfoodCatalogCategoryNotFound(null, null, $e->getMessage()),
+            ];
+        }
+    }
+
+    private function isIfoodCatalogCategoryNotFound(?int $status, ?string $body = null, ?string $error = null): bool
+    {
+        if ($status === 404) {
+            return true;
+        }
+
+        $message = strtolower((string) ($body ?: $error));
+        return str_contains($message, 'notfound') || str_contains($message, 'not found');
+    }
+
     private function resolveIfoodCatalogCategoryId(
         string $merchantId,
         string $catalogId,
@@ -3898,54 +3945,69 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'template' => 'DEFAULT',
             'sequence' => max(0, $sequence),
         ];
+        $knownRemoteCategoryIds = array_values(array_unique(array_filter(array_map(
+            fn($id) => $this->normalizeString($id),
+            array_values($remoteCategoriesByName)
+        ))));
 
         // Prioridade 1: ID remoto ja armazenado localmente — atualiza via PATCH
         if ($storedIfoodId !== '') {
-            try {
-                $this->httpClient->request('PATCH',
-                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($storedIfoodId),
-                    [
-                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                        'json'    => $categoryBody,
-                    ]
-                );
-            } catch (\Throwable $e) {
+            $storedIdKnownRemotely = in_array($storedIfoodId, $knownRemoteCategoryIds, true);
+            if ($storedIdKnownRemotely || empty($knownRemoteCategoryIds)) {
+                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $storedIfoodId, $categoryBody, $token);
+                if ($patchResult['ok']) {
+                    $remoteCategoriesByName[$normalizedName] = $storedIfoodId;
+                    return $storedIfoodId;
+                }
+
                 self::$logger->warning('iFood PATCH category failed', [
-                    'merchant_id'        => $merchantId,
-                    'catalog_id'         => $catalogId,
-                    'ifood_category_id'  => $storedIfoodId,
-                    'local_category_id'  => $localCategoryId,
-                    'category_name'      => $effectiveName,
-                    'error'              => $e->getMessage(),
+                    'merchant_id'       => $merchantId,
+                    'catalog_id'        => $catalogId,
+                    'ifood_category_id' => $storedIfoodId,
+                    'local_category_id' => $localCategoryId,
+                    'category_name'     => $effectiveName,
+                    'status_code'       => $patchResult['status'],
+                    'body'              => $patchResult['body'],
+                    'error'             => $patchResult['error'],
+                ]);
+
+                if (!$patchResult['not_found']) {
+                    return $storedIfoodId;
+                }
+            } else {
+                self::$logger->warning('iFood stored category id not found in remote category list', [
+                    'merchant_id'       => $merchantId,
+                    'catalog_id'        => $catalogId,
+                    'ifood_category_id' => $storedIfoodId,
+                    'local_category_id' => $localCategoryId,
+                    'category_name'     => $effectiveName,
                 ]);
             }
-            return $storedIfoodId;
         }
 
         // Prioridade 2: Sem ID armazenado — busca por nome para evitar duplicatas
         if ($normalizedName !== '' && isset($remoteCategoriesByName[$normalizedName])) {
-            $existingId = $remoteCategoriesByName[$normalizedName];
+            $existingId = $this->normalizeString($remoteCategoriesByName[$normalizedName]);
             // Persiste vinculo local → remoto para proximas publicacoes
-            $this->persistIfoodCategoryCode($localCategoryId, $existingId);
-            try {
-                $this->httpClient->request('PATCH',
-                    self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($existingId),
-                    [
-                        'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                        'json'    => $categoryBody,
-                    ]
-                );
-            } catch (\Throwable $e) {
+            if ($existingId !== '') {
+                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $existingId, $categoryBody, $token);
+                if ($patchResult['ok'] || !$patchResult['not_found']) {
+                    $this->persistIfoodCategoryCode($localCategoryId, $existingId);
+                    return $existingId;
+                }
+
                 self::$logger->warning('iFood PATCH category (por nome) failed', [
                     'merchant_id'        => $merchantId,
                     'catalog_id'         => $catalogId,
                     'ifood_category_id'  => $existingId,
                     'local_category_id'  => $localCategoryId,
                     'category_name'      => $effectiveName,
-                    'error'              => $e->getMessage(),
+                    'status_code'        => $patchResult['status'],
+                    'body'               => $patchResult['body'],
+                    'error'              => $patchResult['error'],
                 ]);
+                unset($remoteCategoriesByName[$normalizedName]);
             }
-            return $existingId;
         }
 
         // Prioridade 3: Categoria nova — cria via POST e armazena vinculo
@@ -3957,6 +4019,19 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     'json'    => $categoryBody,
                 ]
             );
+
+            $statusCode = $response->getStatusCode();
+            if ($statusCode < 200 || $statusCode >= 300) {
+                self::$logger->error('iFood create category failed', [
+                    'merchant_id'       => $merchantId,
+                    'catalog_id'        => $catalogId,
+                    'local_category_id' => $localCategoryId,
+                    'category_name'     => $effectiveName,
+                    'status_code'       => $statusCode,
+                    'body'              => substr($response->getContent(false), 0, 2000),
+                ]);
+                return null;
+            }
 
             $data = $response->toArray(false);
             $id   = $this->normalizeString($data['id'] ?? null);
