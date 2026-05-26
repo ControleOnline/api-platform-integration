@@ -81,6 +81,8 @@ class ManagerOrderPushService
                     'orderId' => $orderId,
                     'companyId' => $company->getId(),
                     'tokenHash' => hash('sha256', $token),
+                    'exceptionClass' => $throwable::class,
+                    'exceptionMessage' => $throwable->getMessage(),
                     'exception' => $throwable,
                 ]);
             }
@@ -124,6 +126,8 @@ class ManagerOrderPushService
                     'event' => $eventName,
                     'companyId' => $company->getId(),
                     'tokenHash' => hash('sha256', $token),
+                    'exceptionClass' => $throwable::class,
+                    'exceptionMessage' => $throwable->getMessage(),
                     'exception' => $throwable,
                 ]);
             }
