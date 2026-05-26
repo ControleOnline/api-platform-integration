@@ -12,6 +12,7 @@ use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Entity\PaymentType;
 use ControleOnline\Entity\ExtraData;
+use ControleOnline\Entity\File;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
@@ -35,6 +36,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
     private const SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
     private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB
+    private const IMAGE_UPLOAD_PAYLOAD_MARGIN_BYTES = 512;
+    private const IMAGE_UPLOAD_MAX_DIMENSION = 3000;
     private const CATALOG_CONCURRENT_RETRY_DELAYS_US = [500000, 1500000, 3000000, 5000000];
     private static array $authTokenCache = [];
     private static array $catalogImagePathCache = [];
@@ -4204,9 +4207,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         $childProductBody['quantity'] = $childQuantity;
                     }
 
-                    $childSourceImageUrl = $this->buildPublicFileDownloadUrl($option['cover_file_id'] ?? null);
+                    $childCoverFileId = $option['cover_file_id'] ?? null;
+                    $childSourceImageUrl = $this->buildPublicFileDownloadUrl($childCoverFileId);
                     if ($childSourceImageUrl) {
-                        $uploadedChildImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $childSourceImageUrl);
+                        $uploadedChildImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $childCoverFileId, $childSourceImageUrl);
                         if ($uploadedChildImagePath) {
                             $childProductBody['imagePath'] = $uploadedChildImagePath;
                         } else {
@@ -4283,14 +4287,245 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $normalized = explode(';', $normalized)[0] ?? $normalized;
         $normalized = trim($normalized);
 
-        if ($normalized === 'image/jpg') {
+        if ($normalized === 'image/jpg' || $normalized === 'image/pjpeg') {
             return 'image/jpeg';
+        }
+
+        if ($normalized === 'image/x-png') {
+            return 'image/png';
         }
 
         return in_array($normalized, ['image/jpeg', 'image/png'], true) ? $normalized : null;
     }
 
-    private function buildIfoodUploadImageDataUri(string $imageUrl): ?string
+    private function detectIfoodImageMimeType(string $binary, ?string $declaredMimeType): ?string
+    {
+        $detectedMimeType = null;
+
+        if ($binary !== '' && class_exists(\finfo::class)) {
+            $finfo = new \finfo(FILEINFO_MIME_TYPE);
+            $detected = $finfo->buffer($binary);
+            $detectedMimeType = is_string($detected) ? $detected : null;
+        }
+
+        if (!$detectedMimeType && function_exists('getimagesizefromstring')) {
+            $info = @getimagesizefromstring($binary);
+            $detectedMimeType = is_array($info) ? ($info['mime'] ?? null) : null;
+        }
+
+        $normalizedDetectedMimeType = $this->normalizeImageMimeType($detectedMimeType);
+        if ($normalizedDetectedMimeType) {
+            return $normalizedDetectedMimeType;
+        }
+
+        $detectedMimeType = strtolower(trim((string) $detectedMimeType));
+        if ($detectedMimeType !== '' && $detectedMimeType !== 'application/octet-stream') {
+            return null;
+        }
+
+        return $this->normalizeImageMimeType($declaredMimeType);
+    }
+
+    private function buildIfoodImageDataUri(string $binary, string $mimeType): string
+    {
+        return 'data:' . $mimeType . ';base64,' . base64_encode($binary);
+    }
+
+    private function isIfoodUploadImageWithinLimits(string $binary, string $mimeType): bool
+    {
+        $sizeBytes = strlen($binary);
+        if ($sizeBytes <= 0 || $sizeBytes > self::MAX_IMAGE_UPLOAD_BYTES) {
+            return false;
+        }
+
+        $dataUriBytes = strlen('data:' . $mimeType . ';base64,') + (4 * (int) ceil($sizeBytes / 3));
+
+        return ($dataUriBytes + self::IMAGE_UPLOAD_PAYLOAD_MARGIN_BYTES) <= self::MAX_IMAGE_UPLOAD_BYTES;
+    }
+
+    private function resizeIfoodGdImageToUploadCanvas(mixed $image): ?\GdImage
+    {
+        $width = imagesx($image);
+        $height = imagesy($image);
+        if ($width <= 0 || $height <= 0) {
+            return null;
+        }
+
+        $scale = min(1, self::IMAGE_UPLOAD_MAX_DIMENSION / $width, self::IMAGE_UPLOAD_MAX_DIMENSION / $height);
+        $targetWidth = (int) max(1, floor($width * $scale));
+        $targetHeight = (int) max(1, floor($height * $scale));
+
+        $canvas = imagecreatetruecolor($targetWidth, $targetHeight);
+        if (!$canvas) {
+            return null;
+        }
+
+        imagealphablending($canvas, true);
+        imagesavealpha($canvas, false);
+        $white = imagecolorallocate($canvas, 255, 255, 255);
+        imagefilledrectangle($canvas, 0, 0, $targetWidth, $targetHeight, $white);
+        imagecopyresampled($canvas, $image, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height);
+
+        return $canvas;
+    }
+
+    private function encodeIfoodGdImageAsJpeg(mixed $image): ?string
+    {
+        $canvas = $this->resizeIfoodGdImageToUploadCanvas($image);
+        if (!$canvas) {
+            return null;
+        }
+
+        $jpeg = null;
+        for ($quality = 90; $quality >= 60; $quality -= 5) {
+            ob_start();
+            $saved = imagejpeg($canvas, null, $quality);
+            $candidate = ob_get_clean();
+            if ($saved && is_string($candidate) && $this->isIfoodUploadImageWithinLimits($candidate, 'image/jpeg')) {
+                $jpeg = $candidate;
+                break;
+            }
+        }
+
+        imagedestroy($canvas);
+
+        return $jpeg;
+    }
+
+    private function convertIfoodImageToJpegWithGd(string $binary): ?string
+    {
+        if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
+            return null;
+        }
+
+        $image = @imagecreatefromstring($binary);
+        if (!$image) {
+            return null;
+        }
+
+        $jpeg = $this->encodeIfoodGdImageAsJpeg($image);
+        imagedestroy($image);
+
+        return $jpeg;
+    }
+
+    private function convertIfoodImageToJpegWithImagick(string $binary): ?string
+    {
+        if (!class_exists('Imagick')) {
+            return null;
+        }
+
+        try {
+            $imagick = new \Imagick();
+            $imagick->setResolution(150, 150);
+            $imagick->readImageBlob($binary);
+            $imagick->setImageBackgroundColor(new \ImagickPixel('white'));
+
+            if (defined('Imagick::LAYERMETHOD_FLATTEN')) {
+                $flattened = $imagick->mergeImageLayers(\Imagick::LAYERMETHOD_FLATTEN);
+                if ($flattened instanceof \Imagick) {
+                    $imagick->clear();
+                    $imagick = $flattened;
+                }
+            }
+
+            $width = $imagick->getImageWidth();
+            $height = $imagick->getImageHeight();
+            if ($width <= 0 || $height <= 0) {
+                $imagick->clear();
+                return null;
+            }
+
+            $scale = min(1, self::IMAGE_UPLOAD_MAX_DIMENSION / $width, self::IMAGE_UPLOAD_MAX_DIMENSION / $height);
+            if ($scale < 1) {
+                $imagick->resizeImage(
+                    (int) max(1, floor($width * $scale)),
+                    (int) max(1, floor($height * $scale)),
+                    \Imagick::FILTER_LANCZOS,
+                    1
+                );
+            }
+
+            $imagick->setImageFormat('jpeg');
+            $jpeg = null;
+            for ($quality = 90; $quality >= 60; $quality -= 5) {
+                $imagick->setImageCompressionQuality($quality);
+                $candidate = $imagick->getImageBlob();
+                if (is_string($candidate) && $this->isIfoodUploadImageWithinLimits($candidate, 'image/jpeg')) {
+                    $jpeg = $candidate;
+                    break;
+                }
+            }
+
+            $imagick->clear();
+
+            return $jpeg;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function convertIfoodImageToJpeg(string $binary): ?string
+    {
+        return $this->convertIfoodImageToJpegWithGd($binary)
+            ?: $this->convertIfoodImageToJpegWithImagick($binary);
+    }
+
+    private function buildIfoodUploadImageDataUriFromBinary(string $binary, ?string $contentType, array $logContext): ?string
+    {
+        $mimeType = $this->detectIfoodImageMimeType($binary, $contentType);
+        if ($mimeType && $this->isIfoodUploadImageWithinLimits($binary, $mimeType)) {
+            return $this->buildIfoodImageDataUri($binary, $mimeType);
+        }
+
+        $jpeg = $this->convertIfoodImageToJpeg($binary);
+        if ($jpeg && $this->isIfoodUploadImageWithinLimits($jpeg, 'image/jpeg')) {
+            return $this->buildIfoodImageDataUri($jpeg, 'image/jpeg');
+        }
+
+        if (self::$logger) {
+            self::$logger->warning('iFood image could not be normalized to upload requirements', $logContext + [
+                'content_type' => $contentType,
+                'detected_mime_type' => $mimeType,
+                'size_bytes' => strlen($binary),
+                'max_request_bytes' => self::MAX_IMAGE_UPLOAD_BYTES,
+            ]);
+        }
+
+        return null;
+    }
+
+    private function fetchIfoodLocalImageData(mixed $fileId): ?array
+    {
+        if ($fileId === null || $fileId === '') {
+            return null;
+        }
+
+        $normalizedFileId = preg_replace('/\D+/', '', (string) $fileId);
+        if ($normalizedFileId === '') {
+            return null;
+        }
+
+        $file = $this->entityManager->getRepository(File::class)->find((int) $normalizedFileId);
+        if (!$file instanceof File) {
+            return null;
+        }
+
+        $fileType = trim((string) $file->getFileType());
+        $extension = strtolower(ltrim(trim((string) $file->getExtension()), '.'));
+        $contentType = $fileType !== '' && $extension !== '' ? $fileType . '/' . $extension : null;
+
+        return [
+            'binary' => $file->getContent(true),
+            'content_type' => $contentType,
+            'log_context' => [
+                'file_id' => (int) $normalizedFileId,
+                'source' => 'local_file',
+            ],
+        ];
+    }
+
+    private function fetchIfoodRemoteImageData(string $imageUrl): ?array
     {
         try {
             $response = $this->httpClient->request('GET', $imageUrl);
@@ -4305,27 +4540,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $headers = $response->getHeaders(false);
             $contentType = $headers['content-type'][0] ?? null;
-            $mimeType = $this->normalizeImageMimeType($contentType);
-            if (!$mimeType) {
-                self::$logger->warning('iFood image fetch returned unsupported mime type', [
-                    'image_url' => $imageUrl,
-                    'content_type' => $contentType,
-                ]);
-                return null;
-            }
-
             $binary = $response->getContent(false);
-            $sizeBytes = strlen($binary);
-            if ($sizeBytes <= 0 || $sizeBytes > self::MAX_IMAGE_UPLOAD_BYTES) {
+            if ($binary === '') {
                 self::$logger->warning('iFood image fetch returned invalid size for upload', [
                     'image_url' => $imageUrl,
-                    'size_bytes' => $sizeBytes,
+                    'size_bytes' => 0,
                     'max_bytes' => self::MAX_IMAGE_UPLOAD_BYTES,
                 ]);
                 return null;
             }
 
-            return 'data:' . $mimeType . ';base64,' . base64_encode($binary);
+            return [
+                'binary' => $binary,
+                'content_type' => $contentType,
+                'log_context' => [
+                    'image_url' => $imageUrl,
+                    'source' => 'remote_url',
+                ],
+            ];
         } catch (\Throwable $e) {
             self::$logger->warning('iFood image fetch exception before upload', [
                 'image_url' => $imageUrl,
@@ -4333,6 +4565,24 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             ]);
             return null;
         }
+    }
+
+    private function buildIfoodUploadImageDataUri(mixed $fileId, ?string $imageUrl = null): ?string
+    {
+        $imageData = $this->fetchIfoodLocalImageData($fileId);
+        if (!$imageData && $imageUrl) {
+            $imageData = $this->fetchIfoodRemoteImageData($imageUrl);
+        }
+
+        if (!$imageData) {
+            return null;
+        }
+
+        return $this->buildIfoodUploadImageDataUriFromBinary(
+            (string) ($imageData['binary'] ?? ''),
+            $imageData['content_type'] ?? null,
+            is_array($imageData['log_context'] ?? null) ? $imageData['log_context'] : []
+        );
     }
 
     private function resolveIfoodUploadedImagePath(mixed $responseBody): ?string
@@ -4360,7 +4610,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return null;
     }
 
-    private function uploadIfoodCatalogImageAndResolvePath(string $merchantId, string $sourceImageUrl): ?string
+    private function uploadIfoodCatalogImageAndResolvePath(string $merchantId, mixed $fileId, string $sourceImageUrl): ?string
     {
         $cacheKey = $merchantId . '|' . $sourceImageUrl;
         if (array_key_exists($cacheKey, self::$catalogImagePathCache)) {
@@ -4373,7 +4623,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return null;
         }
 
-        $dataUri = $this->buildIfoodUploadImageDataUri($sourceImageUrl);
+        $dataUri = $this->buildIfoodUploadImageDataUri($fileId, $sourceImageUrl);
         if (!$dataUri) {
             self::$catalogImagePathCache[$cacheKey] = '';
             return null;
@@ -4469,9 +4719,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
         $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product, $existingItemFlat);
         $productBody['optionGroups'] = $modifierPayload['product_option_groups'];
-        $sourceImageUrl = $this->buildPublicFileDownloadUrl($product['cover_file_id'] ?? null);
+        $coverFileId = $product['cover_file_id'] ?? null;
+        $sourceImageUrl = $this->buildPublicFileDownloadUrl($coverFileId);
         if ($sourceImageUrl) {
-            $uploadedImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $sourceImageUrl);
+            $uploadedImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $coverFileId, $sourceImageUrl);
             if ($uploadedImagePath) {
                 $productBody['imagePath'] = $uploadedImagePath;
             } else {

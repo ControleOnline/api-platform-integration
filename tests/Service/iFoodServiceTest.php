@@ -559,6 +559,35 @@ class iFoodServiceTest extends TestCase
         self::assertSame('remote-chas', $remoteCategoriesByName['chas']);
     }
 
+    public function testIfoodImageMimeTypeNormalizesUploadAliases(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        self::assertSame('image/jpeg', $this->invokePrivateMethod($service, 'normalizeImageMimeType', 'image/jpg'));
+        self::assertSame('image/jpeg', $this->invokePrivateMethod($service, 'normalizeImageMimeType', 'image/pjpeg'));
+        self::assertSame('image/png', $this->invokePrivateMethod($service, 'normalizeImageMimeType', 'image/x-png; charset=UTF-8'));
+        self::assertNull($this->invokePrivateMethod($service, 'normalizeImageMimeType', 'image/webp'));
+    }
+
+    public function testIfoodImageLimitIncludesBase64PayloadSize(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        self::assertTrue($this->invokePrivateMethod(
+            $service,
+            'isIfoodUploadImageWithinLimits',
+            str_repeat('a', 3 * 1024 * 1024),
+            'image/jpeg'
+        ));
+
+        self::assertFalse($this->invokePrivateMethod(
+            $service,
+            'isIfoodUploadImageWithinLimits',
+            str_repeat('a', 4 * 1024 * 1024),
+            'image/jpeg'
+        ));
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);
