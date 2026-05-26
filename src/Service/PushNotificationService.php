@@ -40,7 +40,11 @@ class PushNotificationService
             throw new \RuntimeException('Manager push notification company was not found.');
         }
 
-        $sentCount = $this->managerOrderPushService->sendCompanyEventNotification($company, $payload);
+        $sentCount = $this->managerOrderPushService->sendCompanyEventNotification(
+            $company,
+            $payload,
+            $integration->getDevice()
+        );
         if ($sentCount <= 0) {
             throw new \RuntimeException('Manager push notification was not sent to any token.');
         }
@@ -63,7 +67,10 @@ class PushNotificationService
             throw new \RuntimeException('Manager order push notification order was not found.');
         }
 
-        $sentCount = $this->managerOrderPushService->sendOrderCreatedNotification($order);
+        $sentCount = $this->managerOrderPushService->sendOrderCreatedNotification(
+            $order,
+            $integration->getDevice()
+        );
         if ($sentCount <= 0) {
             throw new \RuntimeException('Manager order push notification was not sent to any token.');
         }

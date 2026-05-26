@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\DeviceConfig;
+use ControleOnline\Entity\Device;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use Doctrine\ORM\EntityManagerInterface;
@@ -26,7 +27,7 @@ class ManagerOrderPushService
         private LoggerInterface $logger
     ) {}
 
-    public function sendOrderCreatedNotification(Order $order): int
+    public function sendOrderCreatedNotification(Order $order, ?Device $targetDevice = null): int
     {
         $orderId = $order->getId();
         $company = $order->getProvider();
@@ -34,7 +35,7 @@ class ManagerOrderPushService
             return 0;
         }
 
-        $tokens = $this->resolveManagerDeviceTokens($order);
+        $tokens = $this->resolveManagerDeviceTokens($order, $targetDevice);
         if (empty($tokens)) {
             return 0;
         }
@@ -91,14 +92,14 @@ class ManagerOrderPushService
         return $sentCount;
     }
 
-    public function sendCompanyEventNotification(People $company, array $event): int
+    public function sendCompanyEventNotification(People $company, array $event, ?Device $targetDevice = null): int
     {
         $eventName = trim((string) ($event['event'] ?? ''));
         if (!isset(self::MANAGER_EVENT_NAMES[$eventName]) || !$company->getId()) {
             return 0;
         }
 
-        $tokens = $this->resolveManagerDeviceTokens($company);
+        $tokens = $this->resolveManagerDeviceTokens($company, $targetDevice);
         if (empty($tokens)) {
             return 0;
         }
@@ -136,8 +137,14 @@ class ManagerOrderPushService
         return $sentCount;
     }
 
-    private function resolveManagerDeviceTokens(Order|People $target): array
+    private function resolveManagerDeviceTokens(Order|People $target, ?Device $targetDevice = null): array
     {
+        if ($targetDevice instanceof Device) {
+            $token = $this->extractManagerAndroidToken($targetDevice->getMetadata());
+
+            return $token !== '' ? [$token] : [];
+        }
+
         $company = $target instanceof Order ? $target->getProvider() : $target;
         if (!$company) {
             return [];
@@ -245,9 +252,7 @@ class ManagerOrderPushService
         }
 
         return trim((string) (
-            $metadata['pushTokens']['manager']['android']['deviceToken'] ??
-            $metadata['push_tokens']['manager']['android']['deviceToken'] ??
-            ''
+            $metadata['pushTokens']['manager']['android']['deviceToken'] ?? ''
         ));
     }
 
