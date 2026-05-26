@@ -14,6 +14,7 @@ use ControleOnline\Service\iFoodService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class iFoodServiceTest extends TestCase
 {
@@ -510,6 +511,54 @@ class iFoodServiceTest extends TestCase
         self::assertTrue($snapshot['delivery']['is_platform_delivery']);
     }
 
+    public function testResolveIfoodCatalogCategoryIdIgnoresStoredIdMissingFromRemoteCategoryList(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(iFoodService::class, 'authTokenCache', [
+            'token' => 'token-1',
+            'expires_at' => time() + 300,
+        ]);
+
+        $createdResponse = $this->createMock(ResponseInterface::class);
+        $createdResponse->method('getStatusCode')->willReturn(201);
+        $createdResponse->method('toArray')->with(false)->willReturn([
+            'id' => 'remote-chas',
+        ]);
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects(self::once())
+            ->method('request')
+            ->with(
+                'POST',
+                self::stringContains('/categories'),
+                self::callback(static function (array $options): bool {
+                    return ($options['json']['name'] ?? null) === 'Chas'
+                        && ($options['json']['template'] ?? null) === 'DEFAULT';
+                })
+            )
+            ->willReturn($createdResponse);
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        $remoteCategoriesByName = [
+            'refrigerantes' => 'remote-refrigerantes',
+        ];
+
+        $resolvedId = $this->invokeResolveIfoodCatalogCategoryId(
+            $service,
+            $remoteCategoriesByName,
+            'merchant-1',
+            'catalog-1',
+            'Chas',
+            1,
+            0,
+            'stale-category'
+        );
+
+        self::assertSame('remote-chas', $resolvedId);
+        self::assertSame('remote-chas', $remoteCategoriesByName['chas']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);
@@ -517,6 +566,32 @@ class iFoodServiceTest extends TestCase
         $method->setAccessible(true);
 
         return $method->invokeArgs($object, $arguments);
+    }
+
+    private function invokeResolveIfoodCatalogCategoryId(
+        iFoodService $service,
+        array &$remoteCategoriesByName,
+        string $merchantId,
+        string $catalogId,
+        string $categoryName,
+        int $sequence,
+        int $localCategoryId,
+        string $storedIfoodId
+    ): ?string {
+        $reflection = new \ReflectionClass($service);
+        $method = $reflection->getMethod('resolveIfoodCatalogCategoryId');
+        $method->setAccessible(true);
+        $arguments = [
+            $merchantId,
+            $catalogId,
+            $categoryName,
+            &$remoteCategoriesByName,
+            $sequence,
+            $localCategoryId,
+            $storedIfoodId,
+        ];
+
+        return $method->invokeArgs($service, $arguments);
     }
 
     private function setObjectProperty(object $object, string $propertyName, mixed $value): void
