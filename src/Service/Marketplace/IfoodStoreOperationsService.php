@@ -55,6 +55,27 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
     }
 
+    private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
+    {
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName
+        );
+    }
+
+    private function upsertIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName, mixed $value): void
+    {
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $value
+        );
+    }
+
     private function decodeOrderOtherInformationsValue(mixed $value): array
     {
         $decoded = $this->callIfoodServiceMethod(__FUNCTION__, [$value]);

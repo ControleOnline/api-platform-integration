@@ -23,6 +23,7 @@
 - Em `Food99`, o financeiro deve ser materializado apenas a partir dos dados persistidos no snapshot; nao recalcular settlement, comissoes ou taxas a partir de campos brutos do webhook.
 - Em `Food99`, a carteira de repasse da loja vem da tela de integracao e precisa ser persistida como `store_settlement_wallet_id`; essa carteira e a unica fonte valida para `provider_wallet`.
 - Em pedidos filhos de logistica gerados por `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
+- Acesso a `extra_data` nao deve ser reimplementado em services de marketplace; use `ExtraDataService` para leitura e escrita de chaves persistidas.
 
 ## iFoodService.php
 - A carteira operacional da integracao deve ser `iFood`.

@@ -71,6 +71,56 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         return round(((float) $value) / 100, 2);
     }
 
+    private function normalizeExtraDataValue(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_scalar($value)) {
+            return trim((string) $value);
+        }
+
+        $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    private function getFood99ExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
+    {
+        return $this->extraDataService->getExtraDataValue(
+            Order::APP_FOOD99,
+            $entityName,
+            $entityId,
+            $fieldName
+        );
+    }
+
+    private function upsertFood99ExtraDataValue(
+        string $entityName,
+        int $entityId,
+        string $fieldName,
+        mixed $value,
+        string $fieldType = 'text'
+    ): void {
+        $this->extraDataService->upsertExtraDataValue(
+            Order::APP_FOOD99,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $this->normalizeExtraDataValue($value),
+            $fieldType
+        );
+    }
+
     private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);

@@ -57,6 +57,16 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
     }
 
+    private function getFood99OrderExtraDataValue(int $entityId, string $fieldName): ?string
+    {
+        return $this->extraDataService->getExtraDataValue(
+            Order::APP_FOOD99,
+            'Order',
+            $entityId,
+            $fieldName
+        );
+    }
+
     private function normalizeCancelReasonId(mixed $value): ?int
     {
         $reasonId = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
