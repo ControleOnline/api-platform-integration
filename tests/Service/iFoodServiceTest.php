@@ -618,6 +618,85 @@ class iFoodServiceTest extends TestCase
         );
     }
 
+    public function testBuildIfoodCatalogModifierPayloadKeepsDistinctOptionsWithSharedChildProduct(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $product = [
+            'id' => 1001,
+            'modifier_groups' => [
+                [
+                    'id' => 55,
+                    'name' => 'Complementos',
+                    'minimum' => 0,
+                    'maximum' => 2,
+                    'group_order' => 1,
+                    'active' => true,
+                    'options' => [
+                        [
+                            'id' => 101,
+                            'child_product_id' => 9001,
+                            'name' => 'Molho',
+                            'description' => '',
+                            'sku' => '',
+                            'cover_file_id' => null,
+                            'quantity' => 1,
+                            'price' => 0,
+                            'active' => true,
+                        ],
+                        [
+                            'id' => 102,
+                            'child_product_id' => 9001,
+                            'name' => 'Molho Extra',
+                            'description' => '',
+                            'sku' => '',
+                            'cover_file_id' => null,
+                            'quantity' => 2,
+                            'price' => 1.5,
+                            'active' => true,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $existingItemFlat = [
+            'options' => [
+                [
+                    'id' => 'uuid-option-101',
+                    'externalCode' => 'option-101',
+                    'productId' => 'child-product-uuid',
+                ],
+                [
+                    'id' => 'uuid-option-102',
+                    'externalCode' => 'option-102',
+                    'productId' => 'child-product-uuid',
+                ],
+            ],
+        ];
+
+        $payload = $this->invokePrivateMethod(
+            $service,
+            'buildIfoodCatalogModifierPayload',
+            'merchant-1',
+            $product,
+            $existingItemFlat
+        );
+
+        self::assertCount(1, $payload['product_option_groups']);
+        self::assertCount(1, $payload['option_groups']);
+        self::assertCount(2, $payload['options']);
+        self::assertSame(
+            ['uuid-option-101', 'uuid-option-102'],
+            array_column($payload['options'], 'id')
+        );
+        self::assertSame(
+            ['option-101', 'option-102'],
+            array_column($payload['options'], 'externalCode')
+        );
+        self::assertSame([], $payload['products'][0]['optionGroups']);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);

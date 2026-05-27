@@ -4107,13 +4107,13 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         );
     }
 
-    private function mapIfoodOptionIdsByGroupProduct(?array $existingItemFlat): array
+    private function mapIfoodOptionIdsByExternalCode(?array $existingItemFlat): array
     {
         if (!is_array($existingItemFlat)) {
             return [];
         }
 
-        $optionsById = [];
+        $optionsByExternalCode = [];
         $existingOptions = is_array($existingItemFlat['options'] ?? null) ? $existingItemFlat['options'] : [];
         foreach ($existingOptions as $option) {
             if (!is_array($option)) {
@@ -4122,34 +4122,20 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
 
             $optionId = $this->normalizeString($option['id'] ?? null);
             if ($optionId !== '') {
-                $optionsById[$optionId] = $option;
-            }
-        }
+                $externalCode = $this->normalizeString($option['externalCode'] ?? null);
+                if ($externalCode !== '') {
+                    $optionsByExternalCode[$externalCode] = $optionId;
+                    continue;
+                }
 
-        $mapped = [];
-        $existingGroups = is_array($existingItemFlat['optionGroups'] ?? null) ? $existingItemFlat['optionGroups'] : [];
-        foreach ($existingGroups as $group) {
-            if (!is_array($group)) {
-                continue;
-            }
-
-            $groupId = $this->normalizeString($group['id'] ?? null);
-            $optionIds = is_array($group['optionIds'] ?? null) ? $group['optionIds'] : [];
-            if ($groupId === '' || empty($optionIds)) {
-                continue;
-            }
-
-            foreach ($optionIds as $optionId) {
-                $normalizedOptionId = $this->normalizeString($optionId);
-                $option = $optionsById[$normalizedOptionId] ?? null;
-                $productId = $this->normalizeString(is_array($option) ? ($option['productId'] ?? null) : null);
-                if ($normalizedOptionId !== '' && $productId !== '') {
-                    $mapped[$groupId . '|' . $productId] = $normalizedOptionId;
+                $productId = $this->normalizeString($option['productId'] ?? null);
+                if ($productId !== '') {
+                    $optionsByExternalCode['option-product-' . $productId] = $optionId;
                 }
             }
         }
 
-        return $mapped;
+        return $optionsByExternalCode;
     }
 
     private function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null): array
@@ -4157,7 +4143,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
         if (empty($modifierGroups)) {
             return [
-                'product_option_groups' => null,
+                'product_option_groups' => [],
                 'products' => [],
                 'option_groups' => [],
                 'options' => [],
@@ -4168,7 +4154,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $productsById = [];
         $optionGroups = [];
         $options = [];
-        $existingOptionIds = $this->mapIfoodOptionIdsByGroupProduct($existingItemFlat);
+        $existingOptionIds = $this->mapIfoodOptionIdsByExternalCode($existingItemFlat);
 
         foreach ($modifierGroups as $groupIndex => $group) {
             $groupId = (int) ($group['id'] ?? 0);
@@ -4197,7 +4183,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'name' => $childName,
                         'description' => (string) ($option['description'] ?? ''),
                         'serving' => 'SERVES_1',
-                        'optionGroups' => null,
+                        'optionGroups' => [],
                     ];
 
                     $childSku = trim((string) ($option['sku'] ?? ''));
@@ -4229,12 +4215,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     $productsById[$childProductUuid] = $childProductBody;
                 }
 
-                $optionMapKey = $groupUuid . '|' . $childProductUuid;
-                $optionSeed = is_array($existingItemFlat)
-                    ? 'catalog:option:' . $groupId . ':' . $childProductId
-                    : 'catalog:option:' . $relationId;
-                $optionUuid = $existingOptionIds[$optionMapKey]
-                    ?? $this->generateStableUuidFromSeed($optionSeed);
+                $optionExternalCode = 'option-' . $relationId;
+                $legacyOptionExternalCode = 'option-product-' . $childProductId;
+                $optionUuid = $existingOptionIds[$optionExternalCode]
+                    ?? $existingOptionIds[$legacyOptionExternalCode]
+                    ?? $this->generateStableUuidFromSeed('catalog:option:' . $relationId);
                 $optionIds[] = $optionUuid;
                 $optionPrice = round((float) ($option['price'] ?? 0), 2);
 
@@ -4247,7 +4232,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                         'value' => $optionPrice,
                         'originalValue' => $optionPrice,
                     ],
-                    'externalCode' => 'option-' . $relationId,
+                    'externalCode' => $optionExternalCode,
                 ];
             }
 
@@ -4273,7 +4258,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         return [
-            'product_option_groups' => !empty($productOptionGroups) ? $productOptionGroups : null,
+            'product_option_groups' => array_values($productOptionGroups),
             'products' => array_values($productsById),
             'option_groups' => $optionGroups,
             'options' => $options,
