@@ -68,6 +68,7 @@ class ManagerOrderPushService
         ];
 
         $sentCount = 0;
+        $lastFailure = null;
         foreach ($tokens as $token) {
             try {
                 $this->firebaseCloudMessagingService->sendNotificationToToken(
@@ -86,7 +87,16 @@ class ManagerOrderPushService
                     'exceptionMessage' => $throwable->getMessage(),
                     'exception' => $throwable,
                 ]);
+                $lastFailure = $throwable;
             }
+        }
+
+        if ($sentCount <= 0 && $lastFailure instanceof Throwable) {
+            throw new \RuntimeException(
+                'Unable to send manager order push notification to any token.',
+                0,
+                $lastFailure
+            );
         }
 
         return $sentCount;
@@ -113,6 +123,7 @@ class ManagerOrderPushService
         ]);
 
         $sentCount = 0;
+        $lastFailure = null;
         foreach ($tokens as $token) {
             try {
                 $this->firebaseCloudMessagingService->sendNotificationToToken(
@@ -131,7 +142,16 @@ class ManagerOrderPushService
                     'exceptionMessage' => $throwable->getMessage(),
                     'exception' => $throwable,
                 ]);
+                $lastFailure = $throwable;
             }
+        }
+
+        if ($sentCount <= 0 && $lastFailure instanceof Throwable) {
+            throw new \RuntimeException(
+                'Unable to send manager event push notification to any token.',
+                0,
+                $lastFailure
+            );
         }
 
         return $sentCount;

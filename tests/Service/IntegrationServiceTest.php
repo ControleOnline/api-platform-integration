@@ -3,22 +3,141 @@
 namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Device;
+use ControleOnline\Entity\DeviceConfig;
+use ControleOnline\Entity\People;
 use ControleOnline\Entity\Status;
 use ControleOnline\Service\IntegrationService;
+use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\StatusService;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\SharedLockInterface;
+use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 
 class IntegrationServiceTest extends TestCase
 {
+    public function testAddManagerPushIntegrationsQueuesOnlyManagerDevicesWithToken(): void
+    {
+        $company = $this->createMock(People::class);
+        $targetDevice = new Device();
+        $targetDevice->setDevice('android-manager');
+        $targetDevice->setMetadata([
+            'pushTokens' => [
+                'manager' => [
+                    'android' => [
+                        'deviceToken' => 'fcm-token-1',
+                    ],
+                ],
+            ],
+        ]);
+
+        $duplicateTokenDevice = new Device();
+        $duplicateTokenDevice->setDevice('android-manager-duplicate');
+        $duplicateTokenDevice->setMetadata([
+            'pushTokens' => [
+                'manager' => [
+                    'android' => [
+                        'deviceToken' => 'fcm-token-1',
+                    ],
+                ],
+            ],
+        ]);
+
+        $deviceWithoutToken = new Device();
+        $deviceWithoutToken->setDevice('android-manager-no-token');
+
+        $pdvDevice = new Device();
+        $pdvDevice->setDevice('pdv');
+        $pdvDevice->setMetadata([
+            'pushTokens' => [
+                'manager' => [
+                    'android' => [
+                        'deviceToken' => 'fcm-token-pdv',
+                    ],
+                ],
+            ],
+        ]);
+
+        $targetConfig = (new DeviceConfig())
+            ->setPeople($company)
+            ->setDevice($targetDevice)
+            ->setType('MANAGER');
+        $duplicateConfig = (new DeviceConfig())
+            ->setPeople($company)
+            ->setDevice($duplicateTokenDevice)
+            ->setType('MANAGER');
+        $noTokenConfig = (new DeviceConfig())
+            ->setPeople($company)
+            ->setDevice($deviceWithoutToken)
+            ->setType('MANAGER');
+        $pdvConfig = (new DeviceConfig())
+            ->setPeople($company)
+            ->setDevice($pdvDevice)
+            ->setType('PDV');
+
+        $repository = $this->getMockBuilder(EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['findBy'])
+            ->getMock();
+        $repository
+            ->expects(self::once())
+            ->method('findBy')
+            ->with(['people' => $company])
+            ->willReturn([$targetConfig, $duplicateConfig, $noTokenConfig, $pdvConfig]);
+
+        $openStatus = $this->createStub(Status::class);
+        $statusService = $this->createMock(StatusService::class);
+        $statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('open', 'open', 'integration')
+            ->willReturn($openStatus);
+
+        $persistedIntegrations = [];
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->method('isOpen')->willReturn(true);
+        $entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(DeviceConfig::class)
+            ->willReturn($repository);
+        $entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->willReturnCallback(function (Integration $integration) use (&$persistedIntegrations): void {
+                $this->setEntityId($integration, 555);
+                $persistedIntegrations[] = $integration;
+            });
+        $entityManager
+            ->expects(self::once())
+            ->method('flush');
+
+        $bus = $this->createMock(MessageBusInterface::class);
+        $bus
+            ->expects(self::once())
+            ->method('dispatch')
+            ->willReturnCallback(static fn(object $message, array $stamps = []): Envelope => new Envelope($message, $stamps));
+
+        $service = $this->buildService($entityManager, $statusService, $bus);
+
+        $count = $service->addManagerPushIntegrations('{"event":"order.created"}', $company);
+
+        self::assertSame(1, $count);
+        self::assertCount(1, $persistedIntegrations);
+        self::assertSame('PushNotification', $persistedIntegrations[0]->getQueueName());
+        self::assertSame($targetDevice, $persistedIntegrations[0]->getDevice());
+        self::assertSame($company, $persistedIntegrations[0]->getPeople());
+    }
+
     public function testExecuteIntegrationResetsClosedEntityManagerBeforePersistingRetryFailure(): void
     {
         $integration = new Integration();
@@ -134,6 +253,28 @@ class IntegrationServiceTest extends TestCase
         $bus = $this->createMock(MessageBusInterface::class);
         $bus->expects(self::never())->method('dispatch');
 
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->with(
+                'Integration queue execution failed',
+                self::callback(static function (array $context) use ($reloadedIntegration): bool {
+                    return $context['logEntity'] === $reloadedIntegration
+                        && $context['integrationId'] === 77
+                        && $context['queueName'] === 'iFood'
+                        && $context['retry'] === 1
+                        && $context['class'] === \RuntimeException::class
+                        && $context['message'] === 'downstream failure'
+                        && $context['body'] === '{"orderId":"6557f98b-1926-41bc-99a6-7f2d49d1fe3d"}';
+                })
+            );
+
+        $loggerService = $this->createMock(LoggerService::class);
+        $loggerService->expects(self::once())
+            ->method('getLogger')
+            ->with('integration')
+            ->willReturn($logger);
+
         $security = $this->createStub(TokenStorageInterface::class);
 
         $service = new IntegrationService(
@@ -143,7 +284,8 @@ class IntegrationServiceTest extends TestCase
             $statusService,
             $lockFactory,
             $container,
-            $bus
+            $bus,
+            $loggerService
         );
 
         $service->executeIntegration($integration);
@@ -151,6 +293,29 @@ class IntegrationServiceTest extends TestCase
         self::assertSame(1, $reloadedIntegration->getRetry());
         self::assertSame('pending', $reloadedIntegration->getStatus()->getStatus());
         self::assertSame('error', $reloadedIntegration->getStatus()->getRealStatus());
+    }
+
+    private function buildService(
+        EntityManagerInterface $entityManager,
+        StatusService $statusService,
+        ?MessageBusInterface $bus = null
+    ): IntegrationService {
+        $lock = $this->createStub(SharedLockInterface::class);
+        $lockFactory = $this->createMock(LockFactory::class);
+        $lockFactory
+            ->method('createLock')
+            ->with('integration:start')
+            ->willReturn($lock);
+
+        return new IntegrationService(
+            $entityManager,
+            $this->createStub(ManagerRegistry::class),
+            $this->createStub(TokenStorageInterface::class),
+            $statusService,
+            $lockFactory,
+            $this->createStub(ContainerInterface::class),
+            $bus ?? $this->createMock(MessageBusInterface::class)
+        );
     }
 
     private function setEntityId(object $entity, int $id): void

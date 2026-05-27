@@ -67,15 +67,12 @@ class DefaultFoodServiceTest extends TestCase
 
         $integrationService
             ->expects(self::once())
-            ->method('addIntegration')
+            ->method('addManagerPushIntegrations')
             ->with(
                 json_encode($payload[0], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                'PushNotification',
-                null,
-                null,
                 $company
             )
-            ->willReturn(new Integration());
+            ->willReturn(1);
 
         $websocketClient
             ->expects(self::exactly(2))

@@ -3,6 +3,7 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Device;
+use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
@@ -34,7 +35,7 @@ class IntegrationService
         private LockFactory $lockFactory,
         private ContainerInterface $container,
         private MessageBusInterface $bus,
-
+        private ?LoggerService $loggerService = null,
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
     }
@@ -196,13 +197,13 @@ class IntegrationService
             $manager->persist($managedIntegration);
             $manager->flush();
         } catch (Throwable $exception) {
-            $this->handleRetryableFailure($integration);
+            $this->handleRetryableFailure($integration, $exception);
         } finally {
             $this->releaseIntegrationExecutionLock($integrationId);
         }
     }
 
-    private function handleRetryableFailure(Integration $integration): void
+    private function handleRetryableFailure(Integration $integration, ?Throwable $exception = null): void
     {
         $integrationId = (int) $integration->getId();
         if ($integrationId <= 0) {
@@ -215,6 +216,7 @@ class IntegrationService
         }
 
         $managedIntegration->incrementRetry();
+        $this->logIntegrationFailure($managedIntegration, $exception);
 
         if (
             !$this->isIfoodOrderWebhook($managedIntegration)
@@ -238,6 +240,34 @@ class IntegrationService
         $manager->persist($managedIntegration);
         $manager->flush();
     }
+
+    private function logIntegrationFailure(Integration $integration, ?Throwable $exception): void
+    {
+        if (!$exception instanceof Throwable || !$this->loggerService instanceof LoggerService) {
+            return;
+        }
+
+        $previous = $exception->getPrevious();
+        $context = array_filter([
+            'logEntity' => $integration,
+            'integrationId' => $integration->getId(),
+            'queueName' => $integration->getQueueName(),
+            'retry' => $integration->getRetry(),
+            'deviceId' => $integration->getDevice()?->getId(),
+            'peopleId' => $integration->getPeople()?->getId(),
+            'userId' => $integration->getUser()?->getId(),
+            'class' => $exception::class,
+            'message' => $exception->getMessage(),
+            'previousClass' => $previous ? $previous::class : null,
+            'previousMessage' => $previous?->getMessage(),
+            'body' => substr($integration->getBody(), 0, 2000),
+        ], static fn($value) => $value !== null && $value !== '');
+
+        $this->loggerService
+            ->getLogger('integration')
+            ->error('Integration queue execution failed', $context);
+    }
+
     private function isIfoodOrderWebhook(Integration $integration): bool
     {
         if (strcasecmp((string) $integration->getQueueName(), 'iFood') !== 0) {
@@ -384,6 +414,53 @@ class IntegrationService
         }
 
         return $integration;
+    }
+
+    public function addManagerPushIntegrations(string $message, People $people, ?User $user = null): int
+    {
+        $count = 0;
+        foreach ($this->resolveManagerPushTargetDevices($people) as $device) {
+            $this->addIntegration($message, 'PushNotification', $device, $user, $people);
+            $count++;
+        }
+
+        return $count;
+    }
+
+    private function resolveManagerPushTargetDevices(People $people): array
+    {
+        $deviceConfigs = $this->getManager()->getRepository(DeviceConfig::class)->findBy([
+            'people' => $people,
+        ]);
+
+        $devices = [];
+        foreach ($deviceConfigs as $deviceConfig) {
+            if (
+                !$deviceConfig instanceof DeviceConfig
+                || strtoupper(trim((string) $deviceConfig->getType())) !== 'MANAGER'
+            ) {
+                continue;
+            }
+
+            $device = $deviceConfig->getDevice();
+            $token = $this->extractManagerAndroidPushToken($device);
+            if ($token === '') {
+                continue;
+            }
+
+            $devices[$token] ??= $device;
+        }
+
+        return array_values($devices);
+    }
+
+    private function extractManagerAndroidPushToken(Device $device): string
+    {
+        $metadata = $device->getMetadata();
+
+        return trim((string) (
+            $metadata['pushTokens']['manager']['android']['deviceToken'] ?? ''
+        ));
     }
 
     public function addIntegrationWithHeaders(

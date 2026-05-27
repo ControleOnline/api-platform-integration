@@ -147,11 +147,8 @@ class DefaultFoodService
                 $integrationService instanceof IntegrationService &&
                 in_array((string) ($event['event'] ?? ''), ['store.opened', 'store.closed'], true)
             ) {
-                $integrationService->addIntegration(
+                $integrationService->addManagerPushIntegrations(
                     json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
-                    'PushNotification',
-                    null,
-                    null,
                     $company
                 );
             }
