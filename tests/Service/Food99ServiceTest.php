@@ -439,7 +439,7 @@ class Food99ServiceTest extends TestCase
         $link->method('getProductGroup')->willReturn($productGroup);
         $repository->expects(self::once())
             ->method('findLinkedGroupItemForParent')
-            ->with($parentProduct, $product)
+            ->with($parentProduct, $product, null, 1.0)
             ->willReturn($link);
 
         $this->entityManager
@@ -460,6 +460,29 @@ class Food99ServiceTest extends TestCase
         );
 
         self::assertSame($productGroup, $resolvedGroup);
+    }
+
+    public function testFetchMenuProductsUsesSharedRequiredModifierJoin(): void
+    {
+        $connection = $this->createMock(\Doctrine\DBAL\Connection::class);
+        $connection->expects(self::once())
+            ->method('fetchAllAssociative')
+            ->willReturnCallback(static function (string $sql, array $params): array {
+                self::assertStringContainsString('ON pgp_req.product_group_id = pg_req.id', $sql);
+                self::assertStringNotContainsString('pgp_req.product_id = p.id', $sql);
+                self::assertSame(7, $params['providerId']);
+
+                return [];
+            });
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->method('getConnection')->willReturn($connection);
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'entityManager', $entityManager);
+
+        self::assertSame(
+            [],
+            $this->invokePrivateMethod($this->service, 'fetchMenuProducts', $this->createConfiguredMock(People::class, ['getId' => 7]))
+        );
     }
 
     public function testResolveFood99RemoteClientIdUsesReceiveAddressUidOnly(): void
