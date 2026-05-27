@@ -3412,8 +3412,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 ON group_parent.product_group_id = pg.id
                AND group_parent.active = 1
             INNER JOIN product_group_product pgp
-                ON pgp.product_group_id = pg.id
-               AND pgp.product_id = group_parent.parent_product_id
+                ON %s
             INNER JOIN product parent
                 ON parent.id = group_parent.parent_product_id
             INNER JOIN product child
@@ -3436,7 +3435,11 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 child.id ASC
         SQL;
 
-        $sql = sprintf($sql, implode(', ', $placeholders));
+        $sql = sprintf(
+            $sql,
+            'pgp.product_group_id = pg.id',
+            implode(', ', $placeholders)
+        );
 
         return $connection->fetchAllAssociative($sql, $params);
     }
@@ -7322,14 +7325,21 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->entityManager->flush();
             if ($parentProduct && isset($item['groupName'])) {
                 $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct, $item['groupName']);
-                $productGroupProduct = new ProductGroupProduct();
-                $productGroupProduct->setProduct($parentProduct);
-                $productGroupProduct->setProductChild($product);
-                $productGroupProduct->setProductType($productType);
-                $productGroupProduct->setProductGroup($productGroup);
-                $productGroupProduct->setQuantity($item['quantity']);
-                $productGroupProduct->setPrice($item['unitPrice']);
-                $this->entityManager->persist($productGroupProduct);
+                $productGroupProduct = $this->entityManager
+                    ->getRepository(ProductGroupProduct::class)
+                    ->findSharedGroupItem($productGroup, $product, $productType);
+
+                if (!$productGroupProduct instanceof ProductGroupProduct) {
+                    $productGroupProduct = new ProductGroupProduct();
+                    $productGroupProduct->setProduct($parentProduct);
+                    $productGroupProduct->setProductChild($product);
+                    $productGroupProduct->setProductType($productType);
+                    $productGroupProduct->setProductGroup($productGroup);
+                    $this->entityManager->persist($productGroupProduct);
+                }
+
+                $productGroupProduct->setQuantity((float) ($item['quantity'] ?? 1));
+                $productGroupProduct->setPrice((float) ($item['unitPrice'] ?? 0));
                 $this->entityManager->flush();
             }
         }

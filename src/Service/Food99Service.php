@@ -6560,8 +6560,7 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 ON group_parent.product_group_id = pg.id
                AND group_parent.active = 1
             INNER JOIN product_group_product pgp
-                ON pgp.product_group_id = pg.id
-               AND pgp.product_id = group_parent.parent_product_id
+                ON %s
             INNER JOIN product parent
                 ON parent.id = group_parent.parent_product_id
             INNER JOIN product child
@@ -6593,7 +6592,11 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                 child.id ASC
         SQL;
 
-        $sql = sprintf($sql, implode(', ', $placeholders));
+        $sql = sprintf(
+            $sql,
+            'pgp.product_group_id = pg.id',
+            implode(', ', $placeholders)
+        );
 
         return $connection->fetchAllAssociative($sql, $params);
     }
@@ -8331,24 +8334,22 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         if ($parentProduct && $this->hasIncomingProductGroupReference($item)) {
             $group = $this->resolveIncomingProductGroup($parentProduct, $product, $item);
 
-            $exists = $this->entityManager
-                ->getRepository(ProductGroupProduct::class)
-                ->findOneBy([
-                    'product' => $parentProduct,
-                    'productChild' => $product,
-                    'productGroup' => $group
-                ]);
+            if ($group instanceof ProductGroup) {
+                $pgpRepository = $this->entityManager->getRepository(ProductGroupProduct::class);
+                $pgp = $pgpRepository->findSharedGroupItem($group, $product, $productType);
 
-            if ($group instanceof ProductGroup && !$exists) {
-                $pgp = new ProductGroupProduct();
-                $pgp->setProduct($parentProduct);
-                $pgp->setProductChild($product);
-                $pgp->setProductGroup($group);
-                $pgp->setProductType($productType);
+                if (!$pgp instanceof ProductGroupProduct) {
+                    $pgp = new ProductGroupProduct();
+                    $pgp->setProduct($parentProduct);
+                    $pgp->setProductChild($product);
+                    $pgp->setProductGroup($group);
+                    $pgp->setProductType($productType);
+                    $this->entityManager->persist($pgp);
+                }
+
                 $pgp->setQuantity($item['amount'] ?? 1);
                 $pgp->setPrice(isset($item['sku_price']) ? ((float) $item['sku_price']) / 100 : 0);
 
-                $this->entityManager->persist($pgp);
                 $this->entityManager->flush();
             }
         }
@@ -8389,15 +8390,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
 
     private function findProductGroupProductLink(Product $parentProduct, Product $product): ?ProductGroupProduct
     {
-        $repository = $this->entityManager->getRepository(ProductGroupProduct::class);
-        $link = $repository->findOneBy([
-            'product' => $parentProduct,
-            'productChild' => $product,
-            'active' => true,
-        ]) ?: $repository->findOneBy([
-            'product' => $parentProduct,
-            'productChild' => $product,
-        ]);
+        $link = $this->entityManager
+            ->getRepository(ProductGroupProduct::class)
+            ->findLinkedGroupItemForParent($parentProduct, $product);
 
         if (!$link instanceof ProductGroupProduct || !$link->getProductGroup() instanceof ProductGroup) {
             return null;

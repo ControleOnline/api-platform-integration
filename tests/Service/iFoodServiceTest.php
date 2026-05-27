@@ -6,13 +6,16 @@ use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Cep;
 use ControleOnline\Entity\City;
 use ControleOnline\Entity\District;
+use ControleOnline\Entity\People;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\State;
 use ControleOnline\Entity\Street;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\iFoodService;
+use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\NullLogger;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -247,7 +250,7 @@ class iFoodServiceTest extends TestCase
         ];
 
         $order = $this->createMock(Order::class);
-        $order->expects(self::exactly(2))
+        $order->expects(self::once())
             ->method('getOtherInformations')
             ->with(true)
             ->willReturn($storedEvent);
@@ -287,7 +290,7 @@ class iFoodServiceTest extends TestCase
         $this->setObjectProperty($service, 'httpClient', $httpClient);
 
         $order = $this->createMock(Order::class);
-        $order->expects(self::exactly(2))
+        $order->expects(self::once())
             ->method('getOtherInformations')
             ->willReturn((object) [
                 'iFood' => (object) [
@@ -588,6 +591,33 @@ class iFoodServiceTest extends TestCase
         ));
     }
 
+    public function testCatalogModifierRowsUseSharedJoin(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $provider = $this->createMock(People::class);
+        $provider->method('getId')->willReturn(7);
+
+        $connection = $this->createMock(Connection::class);
+        $connection->expects(self::once())
+            ->method('fetchAllAssociative')
+            ->willReturnCallback(static function (string $sql, array $params): array {
+                self::assertStringContainsString('ON pgp.product_group_id = pg.id', $sql);
+                self::assertStringNotContainsString('pgp.product_id = group_parent.parent_product_id', $sql);
+                self::assertSame(7, $params['providerId']);
+
+                return [];
+            });
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->method('getConnection')->willReturn($connection);
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        self::assertSame(
+            [],
+            $this->invokePrivateMethod($service, 'fetchCatalogModifierRows', $provider, [1001, 1002])
+        );
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $reflection = new \ReflectionClass($object);
@@ -638,21 +668,9 @@ class iFoodServiceTest extends TestCase
         $property->setValue(null, $value);
     }
 
-    private function createNullLoggerStub(): object
+    private function createNullLoggerStub(): NullLogger
     {
-        return new class() {
-            public function info(mixed ...$arguments): void
-            {
-            }
-
-            public function warning(mixed ...$arguments): void
-            {
-            }
-
-            public function error(mixed ...$arguments): void
-            {
-            }
-        };
+        return new NullLogger();
     }
 
     private function createComparableAddressStub(): Address

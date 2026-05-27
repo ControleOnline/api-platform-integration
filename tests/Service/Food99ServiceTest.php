@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
+use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Invoice;
@@ -416,6 +417,45 @@ class Food99ServiceTest extends TestCase
             [
                 'app_content_id' => '',
                 'content_name' => 'Esolha o tempero da sua Batata',
+            ]
+        );
+
+        self::assertSame($productGroup, $resolvedGroup);
+    }
+
+    public function testIncomingProductGroupFallsBackToSharedCatalogLink(): void
+    {
+        $company = $this->createConfiguredMock(People::class, [
+            'getId' => 7,
+        ]);
+        $parentProduct = $this->createConfiguredMock(Product::class, [
+            'getCompany' => $company,
+        ]);
+        $product = $this->createMock(Product::class);
+        $productGroup = $this->createMock(ProductGroup::class);
+        $link = $this->createMock(ProductGroupProduct::class);
+        $repository = $this->createMock(\ControleOnline\Repository\ProductGroupProductRepository::class);
+
+        $link->method('getProductGroup')->willReturn($productGroup);
+        $repository->expects(self::once())
+            ->method('findLinkedGroupItemForParent')
+            ->with($parentProduct, $product)
+            ->willReturn($link);
+
+        $this->entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(ProductGroupProduct::class)
+            ->willReturn($repository);
+
+        $resolvedGroup = $this->invokePrivateMethod(
+            $this->service,
+            'resolveIncomingProductGroup',
+            $parentProduct,
+            $product,
+            [
+                'app_content_id' => '',
+                'content_name' => '',
             ]
         );
 
