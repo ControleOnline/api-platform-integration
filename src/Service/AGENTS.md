@@ -42,4 +42,7 @@
 ## Marketplace contracts
 - `AbstractMarketplaceService` concentra bootstrap e utilitarios comuns dos providers de marketplace.
 - `MarketplaceProviderRegistry` e as interfaces de capability resolvem handlers, estados e snapshots por contrato; callers nao devem concatenar nomes de classe.
-- Consultas novas devem ficar em repositórios ou resolvers dedicados; services de marketplace so orquestram e persistem estado.
+- Consultas novas devem ficar em repositórios ou resolvers dedicados; helpers compartilhados devem virar classes de apoio, nao metodo solto em service.
+- O bloco grande de marketplace foi separado por capacidade em classes dedicadas em `Service/Marketplace`; nao reintroduzir catalogo, people, financeiro, pedido e store/admin no mesmo arquivo.
+- `iFoodService` deve permanecer como orquestrador das classes `IfoodStoreOperationsService`, `IfoodCatalogOperationsService`, `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService` e `IfoodOrderOperationsService`; o service principal nao deve voltar a concentrar esses blocos.
+- `Food99Service` deve permanecer como orquestrador das classes `Food99StoreOperationsService`, `Food99CatalogOperationsService`, `Food99PeopleOperationsService`, `Food99FinancialOperationsService` e `Food99OrderOperationsService`; as responsabilidades nao devem voltar a se misturar no mesmo arquivo.

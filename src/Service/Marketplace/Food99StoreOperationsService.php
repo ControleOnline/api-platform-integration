@@ -1,0 +1,1575 @@
+<?php
+
+namespace ControleOnline\Service\Marketplace;
+
+use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Address;
+use ControleOnline\Entity\Invoice;
+use ControleOnline\Entity\Order;
+use ControleOnline\Entity\OrderProduct;
+use ControleOnline\Entity\OrderProductQueue;
+use ControleOnline\Entity\PaymentType;
+use ControleOnline\Entity\People;
+use ControleOnline\Entity\Product;
+use ControleOnline\Entity\ProductGroup;
+use ControleOnline\Entity\ProductGroupProduct;
+use ControleOnline\Entity\ProductUnity;
+use ControleOnline\Entity\Status;
+use ControleOnline\Entity\Wallet;
+use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
+use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface;
+use ControleOnline\Event\EntityChangedEvent;
+use DateTime;
+use DateTimeInterface;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\Mime\Part\DataPart;
+use Symfony\Component\Mime\Part\Multipart\FormDataPart;
+
+class Food99StoreOperationsService extends AbstractMarketplaceService
+{
+    private const APP_CONTEXT = Order::APP_FOOD99;
+
+    protected function getMarketplaceApp(): string
+    {
+        return self::APP_CONTEXT;
+    }
+
+    private function normalizeIncomingFood99Value(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        return trim((string) $value);
+    }
+
+    private function normalizeFood99Money(mixed $value): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+
+        return round(((float) $value) / 100, 2);
+    }
+
+    private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
+    {
+        $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
+        if (!is_object($service)) {
+            return null;
+        }
+
+        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+    }
+
+    private function decodeOrderOtherInformationsValue(mixed $value): array
+    {
+        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function getDecodedOrderOtherInformations(Order $order): array
+    {
+        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function resolveFood99QuoteSourceOrder(Order $order): Order
+    {
+        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+
+        return $resolved instanceof Order ? $resolved : $order;
+    }
+
+    private function resolveFood99QuotePickupAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $sourceOrder]);
+
+        return $resolved instanceof Address ? $resolved : null;
+    }
+
+    private function resolveFood99QuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
+    {
+        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $sourceOrder]);
+
+        return $resolved instanceof Address ? $resolved : null;
+    }
+
+    private function resolveFood99PrimaryAddress(?People $people): ?Address
+    {
+        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$people]);
+
+        return $resolved instanceof Address ? $resolved : null;
+    }
+
+    private function getStoredFood99QuoteState(Order $order): array
+    {
+        $state = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+
+        return is_array($state) ? $state : [];
+    }
+
+    private function resolveFood99CatalogOperationsService(): ?Food99CatalogOperationsService
+    {
+        $service = $this->resolveMarketplaceServiceInstance(Food99CatalogOperationsService::class);
+
+        return $service instanceof Food99CatalogOperationsService ? $service : null;
+    }
+
+    public function markProductsCatalogSynced(People $provider, array $productIds): void
+    {
+        $catalogService = $this->resolveFood99CatalogOperationsService();
+        if ($catalogService instanceof Food99CatalogOperationsService) {
+            $catalogService->markProductsCatalogSynced($provider, $productIds);
+        }
+    }
+
+    public function syncIntegrationState(People $provider): array
+    {
+        $catalogService = $this->resolveFood99CatalogOperationsService();
+
+        return $catalogService instanceof Food99CatalogOperationsService
+            ? $catalogService->syncIntegrationState($provider)
+            : [];
+    }
+
+    private function persistProviderIntegrationState(People $provider, array $fields): void
+    {
+        foreach ($fields as $fieldName => $value) {
+            $this->upsertFood99ExtraDataValue('People', (int) $provider->getId(), (string) $fieldName, $value);
+        }
+    }
+
+    private function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
+    {
+        $this->persistProviderIntegrationState($provider, [
+            'last_error_code' => $code,
+            'last_error_message' => $message,
+        ]);
+    }
+
+    private function persistProviderStoreState(People $provider, array $storeData): void
+    {
+        $shopId = isset($storeData['shop_id']) ? (string) $storeData['shop_id'] : $this->getIntegratedStoreCode($provider);
+        $bizStatus = isset($storeData['biz_status']) ? (int) $storeData['biz_status'] : null;
+        $subBizStatus = isset($storeData['sub_biz_status']) ? (int) $storeData['sub_biz_status'] : null;
+        $storeStatus = isset($storeData['store_status']) ? (int) $storeData['store_status'] : null;
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => $shopId,
+            'biz_status' => $bizStatus,
+            'sub_biz_status' => $subBizStatus,
+            'store_status' => $storeStatus,
+            'remote_connected' => 1,
+            'online' => $bizStatus === 1 ? 1 : 0,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function persistProviderMenuState(People $provider, array $menuData, mixed $taskId = null): void
+    {
+        $menus = is_array($menuData['menus'] ?? null) ? $menuData['menus'] : [];
+        $items = is_array($menuData['items'] ?? null) ? $menuData['items'] : [];
+
+        $this->persistProviderIntegrationState($provider, [
+            'menu_count' => count($menus),
+            'menu_item_count' => count($items),
+            'last_menu_task_id' => $taskId,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'remote_connected' => 1,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function syncPublishedProductsForProvider(People $provider, array $publishedItemIds): void
+    {
+        $publishedItemIds = array_values(array_unique(array_filter(array_map(
+            fn(mixed $itemId) => $this->normalizeExtraDataValue($itemId),
+            $publishedItemIds
+        ))));
+        $publishedItemIdSet = array_flip($publishedItemIds);
+        $localCandidateIds = [];
+        $syncedProductIds = [];
+
+        foreach ($this->fetchMenuProducts($provider) as $row) {
+            $productId = (int) ($row['id'] ?? 0);
+            if ($productId <= 0) {
+                continue;
+            }
+
+            $candidateId = trim((string) ($row['food99_code'] ?? '')) ?: (string) $productId;
+            $localCandidateIds[] = $candidateId;
+            $published = isset($publishedItemIdSet[$candidateId]);
+
+            if ($published && empty($row['food99_code'])) {
+                $this->persistLocalFoodCodeByEntity('Product', $productId, $candidateId);
+            }
+
+            $this->upsertFood99ExtraDataValue('Product', $productId, 'published', $published ? '1' : '0');
+            if ($published) {
+                $syncedProductIds[] = $productId;
+            }
+        }
+
+        $remoteOnlyItemCount = count(array_diff($publishedItemIds, array_unique($localCandidateIds)));
+        $this->persistProviderIntegrationState($provider, [
+            'remote_only_item_count' => $remoteOnlyItemCount,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+        ]);
+
+        $this->markProductsCatalogSynced($provider, $syncedProductIds);
+    }
+
+    private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
+    {
+        $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $taskStatus = isset($taskData['status']) ? (string) $taskData['status'] : '0';
+        $taskMessage = trim((string) ($taskData['message'] ?? 'waiting'));
+        $publishState = $this->resolveMenuTaskProgressState($taskData);
+
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_task_id' => $taskId,
+            'last_menu_task_status' => $taskStatus,
+            'last_menu_task_message' => $taskMessage,
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_publish_state' => $publishState === 'completed' ? 'submitted' : $publishState,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function extractMenuTaskFailureMessage(array $taskData): ?string
+    {
+        foreach (($taskData['operationList'] ?? []) as $operation) {
+            if (!is_array($operation)) {
+                continue;
+            }
+
+            foreach (($operation['failedList'] ?? []) as $failedItem) {
+                if (!is_array($failedItem)) {
+                    continue;
+                }
+
+                $message = trim((string) ($failedItem['message'] ?? ''));
+                if ($message !== '') {
+                    return $message;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
+    {
+        if (!is_array($response['data'] ?? null)) {
+            return $response;
+        }
+
+        $taskData = $response['data'];
+
+        if (array_key_exists('taskID', $taskData) && $taskData['taskID'] !== null && $taskData['taskID'] !== '') {
+            $taskData['taskID'] = (string) $taskData['taskID'];
+        } elseif ($fallbackTaskId !== null && $fallbackTaskId !== '') {
+            $taskData['taskID'] = (string) $fallbackTaskId;
+        }
+
+        if (array_key_exists('taskId', $taskData) && $taskData['taskId'] !== null && $taskData['taskId'] !== '') {
+            $taskData['taskId'] = (string) $taskData['taskId'];
+        }
+
+        if (array_key_exists('appShopID', $taskData) && $taskData['appShopID'] !== null && $taskData['appShopID'] !== '') {
+            $taskData['appShopID'] = (string) $taskData['appShopID'];
+        }
+
+        if (array_key_exists('app_shop_id', $taskData) && $taskData['app_shop_id'] !== null && $taskData['app_shop_id'] !== '') {
+            $taskData['app_shop_id'] = (string) $taskData['app_shop_id'];
+        }
+
+        $response['data'] = $taskData;
+
+        return $response;
+    }
+
+    private function resolveMenuTaskProgressState(array $taskData): string
+    {
+        if (empty($taskData)) {
+            return 'submitted';
+        }
+
+        $status = isset($taskData['status']) ? (int) $taskData['status'] : null;
+        $message = strtolower(trim((string) ($taskData['message'] ?? '')));
+        $failureMessage = strtolower(trim((string) ($this->extractMenuTaskFailureMessage($taskData) ?? '')));
+
+        if ($status === 2 || $failureMessage !== '' || str_contains($message, 'fail') || str_contains($message, 'error')) {
+            return 'failed';
+        }
+
+        if (
+            $status === 1
+            || str_contains($message, 'success')
+            || str_contains($message, 'complete')
+            || str_contains($message, 'done')
+        ) {
+            return 'completed';
+        }
+
+        if ($message === 'waiting' || str_contains($message, 'wait') || $status === 0) {
+            return 'processing';
+        }
+
+        if (str_contains($message, 'process') || str_contains($message, 'running')) {
+            return 'processing';
+        }
+
+        return 'completed';
+    }
+
+    private function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
+    {
+        $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $taskId = $taskData['taskID'] ?? $taskData['taskId'] ?? $fallbackTaskId;
+        $taskStatus = isset($taskData['status']) ? (string) $taskData['status'] : '';
+        $taskMessage = trim((string) ($this->extractMenuTaskFailureMessage($taskData) ?: ($taskData['message'] ?? $response['errmsg'] ?? '')));
+        $publishState = $this->resolveMenuTaskProgressState($taskData);
+
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_task_id' => $taskId,
+            'last_menu_task_status' => $taskStatus,
+            'last_menu_task_message' => $taskMessage,
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_publish_state' => $publishState,
+        ]);
+
+        if ($publishState === 'failed') {
+            $this->persistProviderLastError(
+                $provider,
+                $taskStatus !== '' ? 'menu_task:' . $taskStatus : 'menu_task:failed',
+                $taskMessage !== '' ? $taskMessage : 'A publicacao do cardapio falhou na 99Food.'
+            );
+        }
+
+        return $publishState;
+    }
+
+    private function markProviderMenuPublished(People $provider, ?string $message = null): void
+    {
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_publish_state' => 'published',
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_task_message' => $message ?: 'Cardapio publicado com sucesso no catalogo remoto.',
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function markProviderMenuSyncError(People $provider, ?string $message = null): void
+    {
+        $syncMessage = trim((string) ($message ?? ''));
+
+        $this->persistProviderIntegrationState($provider, [
+            'last_menu_publish_state' => 'sync_error',
+            'last_menu_task_checked_at' => date('Y-m-d H:i:s'),
+            'last_menu_task_message' => $syncMessage !== '' ? $syncMessage : 'A task concluiu, mas nao foi possivel confirmar o cardapio remoto.',
+        ]);
+    }
+
+    private function persistProviderDeliveryAreaState(People $provider, array $deliveryAreaData): void
+    {
+        $areaGroups = is_array($deliveryAreaData['area_group'] ?? null) ? $deliveryAreaData['area_group'] : [];
+
+        $this->persistProviderIntegrationState($provider, [
+            'delivery_area_count' => count($areaGroups),
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'remote_connected' => 1,
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ]);
+    }
+
+    private function syncStoreStateFromResponse(People $provider, ?array $response): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderStoreState($provider, $data);
+            return $response;
+        }
+
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
+    }
+
+    private function syncMenuStateFromResponse(People $provider, ?array $response, mixed $taskId = null): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderMenuState($provider, $data, $taskId);
+            $this->syncPublishedProductsForProvider($provider, $this->resolvePublishedRemoteItemIds([
+                'data' => $data,
+            ]));
+            return $response;
+        }
+
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
+    }
+
+    private function syncDeliveryAreaStateFromResponse(People $provider, ?array $response): ?array
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : null;
+        $errno = isset($response['errno']) ? (int) $response['errno'] : null;
+
+        if ($errno === 0 && is_array($data)) {
+            $this->persistProviderDeliveryAreaState($provider, $data);
+            return $response;
+        }
+
+        $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+
+        return $response;
+    }
+
+    private function syncStoreStatusWebhook(array $json): void
+    {
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $candidateShopIds = array_values(array_unique(array_filter([
+            $this->normalizeIncomingFood99Value($json['app_shop_id'] ?? null),
+            $this->normalizeIncomingFood99Value($data['shop_id'] ?? null),
+        ], static fn(string $value): bool => $value !== '')));
+
+        if ($candidateShopIds === []) {
+            self::$logger->warning('Food99 shopStatus webhook ignored because no shop identifier was provided', [
+                'payload' => $json,
+            ]);
+            return;
+        }
+
+        $provider = null;
+        foreach ($candidateShopIds as $candidateShopId) {
+            $provider = $this->findFood99EntityByExtraData('People', 'code', $candidateShopId, People::class);
+            if ($provider instanceof People) {
+                break;
+            }
+
+            if (ctype_digit($candidateShopId)) {
+                $provider = $this->entityManager->getRepository(People::class)->find((int) $candidateShopId);
+                if ($provider instanceof People) {
+                    break;
+                }
+            }
+        }
+
+        if (!$provider instanceof People) {
+            self::$logger->warning('Food99 shopStatus webhook ignored because provider was not found', [
+                'candidate_shop_ids' => $candidateShopIds,
+            ]);
+            return;
+        }
+
+        $previousState = $this->getStoredIntegrationState($provider);
+        $previousOnline = (bool) ($previousState['online'] ?? false);
+        $currentOnline = $this->resolveFood99WebhookOnlineState($data);
+
+        $this->persistProviderStoreState($provider, $data);
+
+        if ($currentOnline === null) {
+            return;
+        }
+
+        if ($previousOnline === $currentOnline) {
+            return;
+        }
+
+        $providerName = trim((string) ($provider->getName() ?? ''));
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $events = [[
+            'store' => 'orders',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
+    }
+
+    private function resolveFood99WebhookOnlineState(array $data): ?bool
+    {
+        if (array_key_exists('biz_status', $data) && is_numeric($data['biz_status'])) {
+            return (int) $data['biz_status'] === 1;
+        }
+
+        if (array_key_exists('online', $data)) {
+            return filter_var($data['online'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+        }
+
+        return null;
+    }
+
+    public function listProvidersWithFood99Binding(int $limit = 100): array
+    {
+        $this->init();
+
+        $safeLimit = max(1, min($limit, 1000));
+        $sql = <<<SQL
+            SELECT DISTINCT ed.entity_id
+            FROM extra_data ed
+            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
+            WHERE ef.context = :context
+              AND LOWER(ed.entity_name) = 'people'
+              AND (
+                    (ef.field_name = 'code' AND ed.data_value <> '')
+                    OR (ef.field_name = 'remote_connected' AND ed.data_value = '1')
+              )
+            ORDER BY ed.entity_id ASC
+            LIMIT {$safeLimit}
+        SQL;
+
+        $rows = $this->entityManager->getConnection()->fetchFirstColumn($sql, [
+            'context' => self::APP_CONTEXT,
+        ]);
+
+        $providers = [];
+        foreach ($rows as $row) {
+            if (!is_numeric($row)) {
+                continue;
+            }
+
+            $provider = $this->entityManager->getRepository(People::class)->find((int) $row);
+            if ($provider instanceof People) {
+                $providers[] = $provider;
+            }
+        }
+
+        return $providers;
+    }
+
+    public function reconcileProviderState(People $provider, string $source = 'manual'): array
+    {
+        $this->init();
+
+        $startedAt = microtime(true);
+        $sync = $this->syncIntegrationState($provider);
+        $errors = is_array($sync['errors'] ?? null) ? $sync['errors'] : [];
+        $status = empty($errors) ? 'ok' : 'partial_error';
+        $message = empty($errors)
+            ? 'Reconciliacao concluida com sucesso.'
+            : 'Reconciliacao concluida com inconsistencias em: ' . implode(', ', array_keys($errors));
+
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        $this->persistProviderIntegrationState($provider, [
+            'last_reconcile_at' => date('Y-m-d H:i:s'),
+            'last_reconcile_status' => $status,
+            'last_reconcile_message' => $message,
+            'last_reconcile_source' => $source,
+            'last_reconcile_duration_ms' => $durationMs,
+        ]);
+
+        return [
+            'provider_id' => $provider->getId(),
+            'status' => $status,
+            'message' => $message,
+            'duration_ms' => $durationMs,
+            'errors' => $errors,
+            'sync' => $sync,
+        ];
+    }
+
+    public function getStoredOperationalSettings(People $provider): array
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        $normalize = static fn(mixed $value): ?string => (trim((string) $value) === '' ? null : trim((string) $value));
+
+        return [
+            'delivery_radius' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_radius')),
+            'open_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_open_time')),
+            'close_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_close_time')),
+            'delivery_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_method')),
+            'confirm_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_confirm_method')),
+            'delivery_area_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_area_id')),
+            'settlement_wallet_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settlement_wallet_id')),
+            'settings_synced_at' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at')),
+        ];
+    }
+
+    public function persistOperationalSettings(People $provider, array $settings, bool $allowEmpty = false): void
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        $fieldMap = [
+            'delivery_radius' => 'store_delivery_radius',
+            'open_time' => 'store_open_time',
+            'close_time' => 'store_close_time',
+            'delivery_method' => 'store_delivery_method',
+            'confirm_method' => 'store_confirm_method',
+            'delivery_area_id' => 'store_delivery_area_id',
+            'settlement_wallet_id' => 'store_settlement_wallet_id',
+        ];
+
+        $persisted = false;
+        foreach ($fieldMap as $settingKey => $fieldName) {
+            if (!array_key_exists($settingKey, $settings)) {
+                continue;
+            }
+
+            $normalized = trim((string) $settings[$settingKey]);
+            if ($normalized === '' && !$allowEmpty) {
+                continue;
+            }
+
+            $existing = trim((string) ($this->getFood99ExtraDataValue('People', $providerId, $fieldName) ?? ''));
+            if ($existing === $normalized) {
+                continue;
+            }
+
+            $this->upsertFood99ExtraDataValue('People', $providerId, $fieldName, $normalized);
+            $persisted = true;
+        }
+
+        if ($persisted) {
+            $this->upsertFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at', date('Y-m-d H:i:s'));
+        }
+    }
+
+    public function resolveFood99SettlementWallet(People $provider, mixed $walletId): ?Wallet
+    {
+        $this->init();
+
+        $normalizedWalletId = trim((string) $walletId);
+        if ($normalizedWalletId === '' || !ctype_digit($normalizedWalletId)) {
+            return null;
+        }
+
+        $wallet = $this->entityManager->getRepository(Wallet::class)->find((int) $normalizedWalletId);
+        if (!$wallet instanceof Wallet) {
+            return null;
+        }
+
+        $walletPeople = $wallet->getPeople();
+        if (!$walletPeople instanceof People) {
+            return null;
+        }
+
+        if ((int) $walletPeople->getId() !== (int) $provider->getId()) {
+            return null;
+        }
+
+        return $wallet;
+    }
+
+    public function getStoredSettlementWallet(People $provider): ?Wallet
+    {
+        $settings = $this->getStoredOperationalSettings($provider);
+
+        return $this->resolveFood99SettlementWallet($provider, $settings['settlement_wallet_id'] ?? null);
+    }
+
+    public function getLatestProviderOrderDeliveryType(People $provider): ?string
+    {
+        $this->init();
+
+        $providerId = (int) $provider->getId();
+        if ($providerId <= 0) {
+            return null;
+        }
+
+        $sql = <<<SQL
+            SELECT ed.data_value
+            FROM orders o
+            INNER JOIN extra_data ed
+                ON ed.entity_id = o.id
+               AND LOWER(ed.entity_name) = 'order'
+            INNER JOIN extra_fields ef
+                ON ef.id = ed.extra_fields_id
+            WHERE o.provider_id = :providerId
+              AND ef.context = :context
+              AND ef.field_name = 'delivery_type'
+            ORDER BY o.order_date DESC, o.id DESC, ed.id DESC
+            LIMIT 1
+        SQL;
+
+        $value = $this->entityManager->getConnection()->fetchOne($sql, [
+            'providerId' => $providerId,
+            'context' => self::APP_CONTEXT,
+        ]);
+
+        if ($value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if (!in_array($normalized, ['1', '2'], true)) {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    public function getStoredIntegrationState(People $provider): array
+    {
+        $this->init();
+
+        $bizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'biz_status');
+        $subBizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'sub_biz_status');
+        $storeStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'store_status');
+        $food99Code = $this->getIntegratedStoreCode($provider);
+        $menuCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_count');
+        $menuItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_item_count');
+        $deliveryAreaCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'delivery_area_count');
+        $remoteOnlyItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_only_item_count');
+
+        return [
+            'connected' => !empty($food99Code),
+            'food99_code' => $food99Code,
+            'app_shop_id' => (string) $provider->getId(),
+            'biz_status' => is_numeric($bizStatus) ? (int) $bizStatus : null,
+            'sub_biz_status' => is_numeric($subBizStatus) ? (int) $subBizStatus : null,
+            'store_status' => is_numeric($storeStatus) ? (int) $storeStatus : null,
+            'remote_connected' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_connected') === '1',
+            'online' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'online') === '1',
+            'last_sync_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_sync_at'),
+            'last_menu_task_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_id'),
+            'last_menu_task_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_status'),
+            'last_menu_task_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_message'),
+            'last_menu_task_checked_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_checked_at'),
+            'last_menu_publish_state' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_publish_state'),
+            'menu_count' => is_numeric($menuCount) ? (int) $menuCount : 0,
+            'menu_item_count' => is_numeric($menuItemCount) ? (int) $menuItemCount : 0,
+            'delivery_area_count' => is_numeric($deliveryAreaCount) ? (int) $deliveryAreaCount : 0,
+            'remote_only_item_count' => is_numeric($remoteOnlyItemCount) ? (int) $remoteOnlyItemCount : 0,
+            'last_error_code' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
+            'last_error_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
+            'last_webhook_event_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_id'),
+            'last_webhook_event_type' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_type'),
+            'last_webhook_event_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_at'),
+            'last_webhook_received_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_received_at'),
+            'last_webhook_processed_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_processed_at'),
+            'last_webhook_order_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_order_id'),
+            'last_webhook_shop_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_shop_id'),
+            'last_reconcile_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_at'),
+            'last_reconcile_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_status'),
+            'last_reconcile_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_message'),
+            'last_reconcile_source' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
+            'last_reconcile_duration_ms' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
+        ];
+    }
+
+    public function quoteDelivery(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem provider vinculado.');
+        }
+
+        $sourceOrder = $this->resolveFood99QuoteSourceOrder($order);
+        $stored = $this->getStoredIntegrationState($provider);
+        if (empty($stored['connected'])) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', '99 Food nao esta conectada.');
+        }
+
+        $pickupAddress = $this->resolveFood99QuotePickupAddress($order, $sourceOrder);
+        if (!$pickupAddress instanceof Address) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem endereco de coleta valido.');
+        }
+
+        $dropoffAddress = $this->resolveFood99QuoteDropoffAddress($order, $sourceOrder);
+        if (!$dropoffAddress instanceof Address) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Pedido sem endereco de entrega valido.');
+        }
+
+        $deliveryAreasResponse = $this->listDeliveryAreas($provider);
+        if (!is_array($deliveryAreasResponse) || !$this->isSuccessfulErrno($deliveryAreasResponse['errno'] ?? null)) {
+            $message = $this->normalizeIncomingFood99Value($deliveryAreasResponse['errmsg'] ?? null);
+            if ($message === '') {
+                $message = 'Nao foi possivel consultar as areas de entrega da 99 Food.';
+            }
+
+            return $this->persistFood99QuoteFailure($order, 'error', $message, [
+                'provider_key' => 'food99',
+                'provider_label' => '99 Food',
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'pickup_address_id' => $pickupAddress->getId(),
+                'dropoff_address_id' => $dropoffAddress->getId(),
+                'main_order_id' => $order->getMainOrderId(),
+                'source_order_id' => $sourceOrder->getId(),
+                'quote_response' => $deliveryAreasResponse,
+            ]);
+        }
+
+        $deliveryAreaMatch = $this->resolveFood99QuoteDeliveryAreaMatch($deliveryAreasResponse, $dropoffAddress);
+        if (!$deliveryAreaMatch) {
+            return $this->persistFood99QuoteFailure($order, 'unavailable', 'Endereco de entrega fora da area de cobertura da 99 Food.', [
+                'provider_key' => 'food99',
+                'provider_label' => '99 Food',
+                'quote_requested_at' => date('Y-m-d H:i:s'),
+                'quote_updated_at' => date('Y-m-d H:i:s'),
+                'pickup_address_id' => $pickupAddress->getId(),
+                'dropoff_address_id' => $dropoffAddress->getId(),
+                'main_order_id' => $order->getMainOrderId(),
+                'source_order_id' => $sourceOrder->getId(),
+                'quote_response' => $deliveryAreasResponse['data'] ?? $deliveryAreasResponse,
+            ]);
+        }
+
+        $now = date('Y-m-d H:i:s');
+        $price = $deliveryAreaMatch['price'];
+        $eta = $deliveryAreaMatch['eta'];
+        $deliveryAreaId = $deliveryAreaMatch['delivery_area_id'];
+        $deliveryAreaLabel = $deliveryAreaMatch['delivery_area_label'];
+        $matchedArea = $deliveryAreaMatch['area'];
+        $quoteResponse = [
+            'delivery_areas' => $deliveryAreasResponse['data'] ?? $deliveryAreasResponse,
+            'matched_delivery_area' => $matchedArea,
+            'matched_delivery_area_id' => $deliveryAreaId,
+            'matched_delivery_area_label' => $deliveryAreaLabel,
+            'price' => $price,
+            'eta' => $eta,
+        ];
+
+        $storedState = array_merge($this->getStoredFood99QuoteState($order), [
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => 'ready',
+            'quote_message' => 'Cotacao pronta',
+            'quote_requested_at' => $now,
+            'quote_updated_at' => $now,
+            'price' => $price,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'remote_order_id' => null,
+            'pickup_address_id' => $pickupAddress->getId(),
+            'dropoff_address_id' => $dropoffAddress->getId(),
+            'main_order_id' => $order->getMainOrderId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'delivery_area_id' => $deliveryAreaId,
+            'delivery_area_label' => $deliveryAreaLabel,
+            'delivery_area_match' => $matchedArea,
+            'quote_response' => $quoteResponse,
+        ]);
+        $this->persistFood99QuoteState($order, $storedState, [
+            'flow' => 'quote',
+            'provider_key' => 'food99',
+            'provider_label' => '99 Food',
+            'quote_state' => 'ready',
+            'quote_message' => 'Cotacao pronta',
+            'quote_requested_at' => $now,
+            'quote_updated_at' => $now,
+            'price' => $price,
+            'eta' => $eta,
+            'tracking_url' => null,
+            'quote_response' => $quoteResponse,
+            'pickup_address_id' => $pickupAddress->getId(),
+            'dropoff_address_id' => $dropoffAddress->getId(),
+            'main_order_id' => $order->getMainOrderId(),
+            'source_order_id' => $sourceOrder->getId(),
+            'delivery_area_id' => $deliveryAreaId,
+            'delivery_area_label' => $deliveryAreaLabel,
+        ]);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'quote_state' => 'ready',
+                'quote_message' => 'Cotacao pronta',
+                'price' => $price,
+                'eta' => $eta,
+                'delivery_area_id' => $deliveryAreaId,
+                'delivery_area_label' => $deliveryAreaLabel,
+                'quote_response' => $quoteResponse,
+            ],
+        ];
+    }
+
+    public function requestDeliveryFromQuote(Order $order): array
+    {
+        $this->init();
+
+        $provider = $order->getProvider();
+        if (!$provider instanceof People) {
+            return [
+                'errno' => 400,
+                'errmsg' => 'Pedido sem provider vinculado.',
+            ];
+        }
+
+        $state = $this->getStoredFood99QuoteState($order);
+        if ($this->normalizeIncomingFood99Value($state['remote_order_id'] ?? null) !== '') {
+            return [
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'already_requested' => true,
+                'data' => [
+                    'order_id' => $order->getId(),
+                    'remote_order_id' => $state['remote_order_id'] ?? null,
+                    'tracking_url' => $state['tracking_url'] ?? null,
+                ],
+            ];
+        }
+
+        $quoteState = strtolower(trim((string) ($state['quote_state'] ?? '')));
+        if (!in_array($quoteState, ['ready', 'selected', 'requested'], true)) {
+            return [
+                'errno' => 422,
+                'errmsg' => 'Cotacao 99 Food ainda nao esta pronta.',
+            ];
+        }
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'order_id' => $order->getId(),
+                'remote_order_id' => $state['remote_order_id'] ?? null,
+                'tracking_url' => $state['tracking_url'] ?? null,
+                'quote_state' => 'selected',
+                'quote_price' => isset($state['price']) ? (float) $state['price'] : null,
+                'quote_eta' => $state['eta'] ?? null,
+            ],
+        ];
+    }
+
+    private function resolveFood99QuoteDeliveryAreaMatch(array $deliveryAreasResponse, Address $dropoffAddress): ?array
+    {
+        $latitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLatitude());
+        $longitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLongitude());
+        if ($latitude === null || $longitude === null) {
+            return null;
+        }
+
+        $deliveryAreaGroups = $this->extractFood99DeliveryAreaGroups($deliveryAreasResponse);
+        $matches = [];
+
+        foreach ($deliveryAreaGroups as $index => $deliveryAreaGroup) {
+            if (!is_array($deliveryAreaGroup)) {
+                continue;
+            }
+
+            $polygon = $this->normalizeFood99DeliveryAreaPolygon($deliveryAreaGroup['points'] ?? null);
+            if ($polygon === []) {
+                continue;
+            }
+
+            if (!$this->isFood99PointInsidePolygon($latitude, $longitude, $polygon)) {
+                continue;
+            }
+
+            $matches[] = [
+                'index' => (int) $index,
+                'area' => $deliveryAreaGroup,
+                'polygon_area' => abs($this->calculateFood99PolygonArea($polygon)),
+                'delivery_area_id' => $this->resolveFood99DeliveryAreaValue($deliveryAreaGroup, 'id', 'delivery_area_id', 'area_id', 'deliveryAreaId'),
+                'delivery_area_label' => $this->resolveFood99DeliveryAreaValue($deliveryAreaGroup, 'name', 'title', 'description', 'area_name', 'delivery_area_name'),
+                'price' => $this->resolveFood99DeliveryAreaPrice($deliveryAreaGroup),
+                'eta' => $this->formatFood99QuoteEta($this->resolveFood99DeliveryAreaEtaSeconds($deliveryAreaGroup)),
+            ];
+        }
+
+        if ($matches === []) {
+            return null;
+        }
+
+        usort($matches, static function (array $left, array $right): int {
+            $areaComparison = ($left['polygon_area'] ?? 0) <=> ($right['polygon_area'] ?? 0);
+            if ($areaComparison !== 0) {
+                return $areaComparison;
+            }
+
+            $priceComparison = ($left['price'] ?? 0) <=> ($right['price'] ?? 0);
+            if ($priceComparison !== 0) {
+                return $priceComparison;
+            }
+
+            return ($left['index'] ?? 0) <=> ($right['index'] ?? 0);
+        });
+
+        $match = $matches[0];
+
+        return [
+            'delivery_area_id' => $match['delivery_area_id'] ?? null,
+            'delivery_area_label' => $match['delivery_area_label'] ?? null,
+            'price' => isset($match['price']) ? (float) $match['price'] : null,
+            'eta' => $match['eta'] ?? null,
+            'area' => $match['area'] ?? [],
+        ];
+    }
+
+    private function extractFood99DeliveryAreaGroups(array $deliveryAreasResponse): array
+    {
+        $data = is_array($deliveryAreasResponse['data'] ?? null) ? $deliveryAreasResponse['data'] : [];
+        $deliveryAreaGroups = $data['area_group'] ?? $deliveryAreasResponse['area_group'] ?? [];
+
+        if (is_string($deliveryAreaGroups)) {
+            $decoded = json_decode($deliveryAreaGroups, true);
+            $deliveryAreaGroups = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($deliveryAreaGroups)) {
+            return [];
+        }
+
+        return array_values(array_filter($deliveryAreaGroups, static fn(mixed $deliveryAreaGroup): bool => is_array($deliveryAreaGroup)));
+    }
+
+    private function normalizeFood99DeliveryAreaPolygon(mixed $points): array
+    {
+        if (is_string($points)) {
+            $decoded = json_decode($points, true);
+            $points = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($points)) {
+            return [];
+        }
+
+        $polygon = [];
+        foreach ($points as $point) {
+            $normalizedPoint = $this->normalizeFood99DeliveryAreaPoint($point);
+            if ($normalizedPoint !== null) {
+                $polygon[] = $normalizedPoint;
+            }
+        }
+
+        return $polygon;
+    }
+
+    private function normalizeFood99DeliveryAreaPoint(mixed $point): ?array
+    {
+        if (is_object($point)) {
+            $point = json_decode(json_encode($point, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), true);
+        }
+
+        if (is_string($point)) {
+            $decoded = json_decode($point, true);
+            $point = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($point)) {
+            return null;
+        }
+
+        $latitude = $this->normalizeFood99CoordinateValue($point['latitude'] ?? $point['lat'] ?? $point['y'] ?? $point['point_lat'] ?? $point['pointLatitude'] ?? null);
+        $longitude = $this->normalizeFood99CoordinateValue($point['longitude'] ?? $point['lng'] ?? $point['lon'] ?? $point['x'] ?? $point['point_lng'] ?? $point['pointLongitude'] ?? null);
+
+        if ($latitude === null || $longitude === null) {
+            $values = array_values(array_filter(array_map(
+                [$this, 'normalizeFood99CoordinateValue'],
+                $point
+            ), static fn(mixed $value): bool => $value !== null));
+
+            if (count($values) >= 2) {
+                $first = (float) $values[0];
+                $second = (float) $values[1];
+
+                if (abs($first) <= 90 && abs($second) <= 180) {
+                    $latitude = $first;
+                    $longitude = $second;
+                } elseif (abs($second) <= 90 && abs($first) <= 180) {
+                    $latitude = $second;
+                    $longitude = $first;
+                }
+            }
+        }
+
+        if ($latitude === null || $longitude === null) {
+            return null;
+        }
+
+        return [
+            'latitude' => $latitude,
+            'longitude' => $longitude,
+        ];
+    }
+
+    private function normalizeFood99CoordinateValue(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    private function isFood99PointInsidePolygon(float $latitude, float $longitude, array $polygon): bool
+    {
+        $count = count($polygon);
+        if ($count < 3) {
+            return false;
+        }
+
+        $inside = false;
+        for ($i = 0, $j = $count - 1; $i < $count; $j = $i++) {
+            $yi = (float) ($polygon[$i]['latitude'] ?? 0);
+            $xi = (float) ($polygon[$i]['longitude'] ?? 0);
+            $yj = (float) ($polygon[$j]['latitude'] ?? 0);
+            $xj = (float) ($polygon[$j]['longitude'] ?? 0);
+
+            $intersects = (($yi > $latitude) !== ($yj > $latitude))
+                && ($longitude < (($xj - $xi) * ($latitude - $yi) / (($yj - $yi) ?: 1.0)) + $xi);
+
+            if ($intersects) {
+                $inside = !$inside;
+            }
+        }
+
+        return $inside;
+    }
+
+    private function calculateFood99PolygonArea(array $polygon): float
+    {
+        $count = count($polygon);
+        if ($count < 3) {
+            return 0.0;
+        }
+
+        $sum = 0.0;
+        for ($i = 0, $j = $count - 1; $i < $count; $j = $i++) {
+            $xi = (float) ($polygon[$i]['longitude'] ?? 0);
+            $yi = (float) ($polygon[$i]['latitude'] ?? 0);
+            $xj = (float) ($polygon[$j]['longitude'] ?? 0);
+            $yj = (float) ($polygon[$j]['latitude'] ?? 0);
+
+            $sum += ($xj * $yi) - ($xi * $yj);
+        }
+
+        return $sum / 2.0;
+    }
+
+    private function resolveFood99DeliveryAreaValue(array $deliveryAreaGroup, string ...$keys): ?string
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $this->normalizeIncomingFood99Value($deliveryAreaGroup[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveFood99DeliveryAreaPrice(array $deliveryAreaGroup): ?float
+    {
+        foreach (['price', 'delivery_price', 'deliveryPrice', 'fee', 'delivery_fee'] as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $deliveryAreaGroup[$key];
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            return $this->normalizeFood99Money($value);
+        }
+
+        return null;
+    }
+
+    private function resolveFood99DeliveryAreaEtaSeconds(array $deliveryAreaGroup): ?int
+    {
+        foreach (['avg_delivery_eta', 'delivery_eta', 'eta'] as $key) {
+            if (!array_key_exists($key, $deliveryAreaGroup)) {
+                continue;
+            }
+
+            $value = $deliveryAreaGroup[$key];
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            if (!is_numeric($value)) {
+                continue;
+            }
+
+            return max(0, (int) round((float) $value));
+        }
+
+        return null;
+    }
+
+    private function formatFood99QuoteEta(?int $etaSeconds): ?string
+    {
+        if ($etaSeconds === null || $etaSeconds <= 0) {
+            return null;
+        }
+
+        $minutes = max(1, (int) ceil($etaSeconds / 60));
+
+        if ($minutes >= 60) {
+            $hours = intdiv($minutes, 60);
+            $remainingMinutes = $minutes % 60;
+
+            if ($remainingMinutes === 0) {
+                return sprintf('%dh', $hours);
+            }
+
+            return sprintf('%dh %d min', $hours, $remainingMinutes);
+        }
+
+        return sprintf('%d min', $minutes);
+    }
+
+    public function getAuthorizationPage(array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99AppEndpointWithResponse('POST', '/v1/auth/authorizationpage/getUrl', $payload);
+    }
+
+    public function bindStore(array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99AppEndpointWithResponse('POST', '/v3/auth/authorization/shopBind', $payload);
+    }
+
+    public function listAuthorizedStores(array $payload = []): ?array
+    {
+        $this->init();
+
+        return $this->call99AppEndpointWithResponse('POST', '/v3/auth/authorization/getAuthorizedShops', $payload);
+    }
+
+    public function listBindStores(array $payload = []): ?array
+    {
+        $this->init();
+
+        return $this->call99AppEndpointWithResponse('POST', '/v1/shop/shop/list', $payload);
+    }
+
+    public function unbindStore(People $provider, array $payload = []): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/unbind', $payload, $provider);
+    }
+
+    public function setStoreOrderConfirmationMethod(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setconfirmmethod', $payload, $provider);
+    }
+
+    public function getStoreOrderConfirmationMethod(People $provider): ?array
+    {
+        $this->init();
+
+        $postResponse = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($postResponse['errno'] ?? null)) {
+            return $postResponse;
+        }
+
+        $getResponse = $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($getResponse['errno'] ?? null)) {
+            return $getResponse;
+        }
+
+        return $postResponse ?: $getResponse;
+    }
+
+    public function getStoreDetails(People $provider): ?array
+    {
+        $this->init();
+
+        return $this->syncStoreStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/detail', [], $provider)
+        );
+    }
+
+    public function updateStoreInformation(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/update', $payload, $provider);
+    }
+
+    public function getStoreCategories(People $provider): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/validCategories', [], $provider);
+    }
+
+    public function setStoreStatus(People $provider, int $bizStatus, ?int $autoSwitch = null): ?array
+    {
+        $this->init();
+
+        $payload = [
+            'biz_status' => $bizStatus,
+        ];
+
+        if ($autoSwitch !== null) {
+            $payload['auto_switch'] = $autoSwitch;
+        }
+
+        $response = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
+        if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
+            $this->persistProviderIntegrationState($provider, [
+                'biz_status' => $bizStatus,
+                'online' => $bizStatus === 1 ? 1 : 0,
+                'remote_connected' => 1,
+                'last_sync_at' => date('Y-m-d H:i:s'),
+                'last_error_code' => '',
+                'last_error_message' => '',
+            ]);
+        } else {
+            $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
+        }
+
+        return $response;
+    }
+
+    public function setStoreCancellationRefund(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/apply/set', $payload, $provider);
+    }
+
+    public function markProviderConnected(People $provider, ?string $shopId = null): void
+    {
+        $this->init();
+
+        $normalizedShopId = $this->normalizeIncomingFood99Value($shopId);
+        $fields = [
+            'remote_connected' => 1,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => '',
+            'last_error_message' => '',
+        ];
+
+        if ($normalizedShopId !== '') {
+            $fields['code'] = $normalizedShopId;
+        }
+
+        $this->persistProviderIntegrationState($provider, $fields);
+    }
+
+    public function clearProviderBindingState(People $provider): void
+    {
+        $this->init();
+
+        $this->persistProviderIntegrationState($provider, [
+            'code' => null,
+            'remote_connected' => 0,
+            'online' => 0,
+            'biz_status' => null,
+            'sub_biz_status' => null,
+            'store_status' => null,
+            'last_sync_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    public function getStoreMenuDetails(People $provider): ?array
+    {
+        $this->init();
+
+        return $this->syncMenuStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider)
+        );
+    }
+
+    public function updateMenuItem(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateItem', $payload, $provider);
+    }
+
+    public function updateMenuItemStatus(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateItemStatus', $payload, $provider);
+    }
+
+    public function updateModifierGroup(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateModifierGroup', $payload, $provider);
+    }
+
+    public function uploadImage(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreMultipartEndpointWithResponse('POST', '/v3/image/image/uploadImage', $payload, $provider);
+    }
+
+    public function getImageUploadInfoPageList(People $provider, array $payload = []): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('GET', '/v3/image/image/getImageUploadInfoPageList', $payload, $provider);
+    }
+
+    public function getOrderDetails(People $provider, string $orderId): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('GET', '/v1/order/order/detail', [
+            'order_id' => $orderId,
+        ], $provider);
+    }
+
+    public function confirmRemoteOrder(string $orderId, ?People $provider = null): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/confirm', [
+            'order_id' => $orderId,
+        ], $provider);
+    }
+
+    public function handleCancellationRequest(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/apply/cancel', $payload, $provider);
+    }
+
+    public function handleRefundRequest(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/apply/refund', $payload, $provider);
+    }
+
+    public function verifyOrder(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/verify', $payload, $provider);
+    }
+
+    public function confirmCashPayment(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/payConfirm', $payload, $provider);
+    }
+
+    public function listDeliveryAreas(People $provider): ?array
+    {
+        $this->init();
+
+        return $this->syncDeliveryAreaStateFromResponse(
+            $provider,
+            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/deliveryArea/list', [], $provider)
+        );
+    }
+
+    public function addDeliveryArea(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/add', $payload, $provider);
+    }
+
+    public function updateDeliveryArea(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/update', $payload, $provider);
+    }
+
+    public function deleteDeliveryArea(People $provider, array $payload): ?array
+    {
+        $this->init();
+
+        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/delete', $payload, $provider);
+    }
+
+    public function getFinancialApiAuthtoken(array $payload): ?array
+    {
+        $this->init();
+
+        return $this->request99WithResponse('POST', '/v3/auth/authtoken/signIn', $payload);
+    }
+
+    public function getBillData(array $payload): ?array
+    {
+        $this->init();
+
+        return $this->request99WithResponse('POST', '/v3/finance/finance/getShopBillDetail', $payload);
+    }
+
+    public function getSettlementsData(array $payload): ?array
+    {
+        $this->init();
+
+        return $this->request99WithResponse('POST', '/v3/finance/finance/getShopBillWeek', $payload);
+    }
+
+}
+

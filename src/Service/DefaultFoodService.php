@@ -97,6 +97,47 @@ class DefaultFoodService
         return $this->whatsAppService;
     }
 
+    protected function resolveMarketplaceServiceInstance(string $serviceClass): ?object
+    {
+        if (isset($this->container) && $this->container instanceof ContainerInterface && $this->container->has($serviceClass)) {
+            $service = $this->container->get($serviceClass);
+            if (is_object($service)) {
+                return $service;
+            }
+        }
+
+        if (!class_exists($serviceClass)) {
+            return null;
+        }
+
+        $reflection = new \ReflectionClass($serviceClass);
+        $service = $reflection->newInstanceWithoutConstructor();
+        $sourceReflection = new \ReflectionObject($this);
+
+        foreach ($sourceReflection->getProperties() as $property) {
+            if ($property->isStatic()) {
+                continue;
+            }
+
+            $property->setAccessible(true);
+            if (method_exists($property, 'isInitialized') && !$property->isInitialized($this)) {
+                continue;
+            }
+
+            $property->setValue($service, $property->getValue($this));
+        }
+
+        return $service;
+    }
+
+    protected function invokeMarketplaceServiceMethod(object $service, string $method, array $arguments = []): mixed
+    {
+        $reflection = new \ReflectionMethod($service, $method);
+        $reflection->setAccessible(true);
+
+        return $reflection->invokeArgs($service, $arguments);
+    }
+
     protected function resolveAddressCandidate(mixed $candidate): ?Address
     {
         if ($candidate instanceof Address) {
