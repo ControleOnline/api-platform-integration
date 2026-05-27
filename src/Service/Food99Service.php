@@ -42,25 +42,6 @@ class Food99Service extends AbstractMarketplaceService implements
     EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
-    private const LEGACY_ORDER_CONTEXT = 'iFood';
-    private const FOOD99_COMMISSION_RATE = 0.0790207;
-    private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
-    private const FOOD99_LOGISTICS_COST_RATE = 0.60;
-    private const FOOD99_MIN_LOGISTICS_COST = 4.50;
-    private const SHOP_CANCEL_REASONS = [
-        ['reason_id' => 1010, 'description' => 'Item sold out', 'applicable_to' => 'all'],
-        ['reason_id' => 1020, 'description' => 'Store closed for the day', 'applicable_to' => 'all'],
-        ['reason_id' => 1030, 'description' => 'Store too busy to prepare order', 'applicable_to' => 'all'],
-        ['reason_id' => 1040, 'description' => 'Major accident or utility outage', 'applicable_to' => 'all'],
-        ['reason_id' => 1050, 'description' => 'Canceled due to customer issue', 'applicable_to' => 'all'],
-        ['reason_id' => 1060, 'description' => 'No courier available', 'applicable_to' => 'self_delivery'],
-        ['reason_id' => 1070, 'description' => 'Menu needs to be updated', 'applicable_to' => 'all'],
-        ['reason_id' => 1071, 'description' => 'Order is outside the delivery area', 'applicable_to' => 'self_delivery'],
-        ['reason_id' => 1072, 'description' => 'Order address is in an unsafe area', 'applicable_to' => 'self_delivery'],
-        ['reason_id' => 1073, 'description' => 'Suspected fraud or prank', 'applicable_to' => 'all'],
-        ['reason_id' => 1074, 'description' => 'Questions about fees or promotions', 'applicable_to' => 'all'],
-        ['reason_id' => 1080, 'description' => 'Other reason', 'applicable_to' => 'all'],
-    ];
     private static array $authTokenCache = [];
     private const MARKETPLACE_CAPABILITY_SERVICES = [
         Food99StoreOperationsService::class,
@@ -516,62 +497,6 @@ class Food99Service extends AbstractMarketplaceService implements
                 'quote_message' => $message,
             ],
         ];
-    }
-
-    private function normalizeCancelReasonId(mixed $value): ?int
-    {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        $normalized = preg_replace('/\D+/', '', (string) $value);
-        if ($normalized === '' || !is_numeric($normalized)) {
-            return null;
-        }
-
-        $reasonId = (int) $normalized;
-
-        return $reasonId > 0 ? $reasonId : null;
-    }
-
-    private function findShopCancelReasonDefinition(int $reasonId): ?array
-    {
-        foreach (self::SHOP_CANCEL_REASONS as $reason) {
-            if ((int) ($reason['reason_id'] ?? 0) === $reasonId) {
-                return $reason;
-            }
-        }
-
-        return null;
-    }
-
-    private function isCancelReasonApplicableToState(array $reason, array $state): bool
-    {
-        $scope = strtolower(trim((string) ($reason['applicable_to'] ?? 'all')));
-        if ($scope === 'all') {
-            return true;
-        }
-
-        if ($scope === 'self_delivery') {
-            return !empty($state['is_store_delivery']);
-        }
-
-        return true;
-    }
-
-    private function buildShopCancelReasonListForState(array $state): array
-    {
-        return array_map(function (array $reason) use ($state) {
-            $isApplicable = $this->isCancelReasonApplicableToState($reason, $state);
-
-            return [
-                'reason_id' => (int) $reason['reason_id'],
-                'description' => (string) $reason['description'],
-                'applicable_to' => (string) $reason['applicable_to'],
-                'requires_description' => (int) $reason['reason_id'] === 1080,
-                'applicable' => $isApplicable,
-            ];
-        }, self::SHOP_CANCEL_REASONS);
     }
 
     private function buildOrderIntegrationLockKey(string $orderId): string
@@ -1454,15 +1379,28 @@ class Food99Service extends AbstractMarketplaceService implements
 
     public function getOrderCancelReasons(Order $order): array
     {
-        $state = $this->getStoredOrderIntegrationState($order);
+        $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
+        if (!$storeService instanceof Food99StoreOperationsService) {
+            return [
+                'errno' => 1,
+                'errmsg' => 'Servico de cancelamento da 99Food nao esta disponivel.',
+                'data' => [
+                    'delivery_type' => '',
+                    'delivery_label' => 'Indefinido',
+                    'reasons' => [],
+                ],
+            ];
+        }
 
-        return [
-            'errno' => 0,
-            'errmsg' => 'ok',
+        $result = $storeService->getOrderCancelReasons($order);
+
+        return is_array($result) ? $result : [
+            'errno' => 1,
+            'errmsg' => 'Servico de cancelamento da 99Food retornou uma resposta invalida.',
             'data' => [
-                'delivery_type' => $state['delivery_type'] ?? '',
-                'delivery_label' => $state['delivery_label'] ?? 'Indefinido',
-                'reasons' => $this->buildShopCancelReasonListForState($state),
+                'delivery_type' => '',
+                'delivery_label' => 'Indefinido',
+                'reasons' => [],
             ],
         ];
     }
@@ -1488,9 +1426,27 @@ class Food99Service extends AbstractMarketplaceService implements
             return $this->buildUnavailableOrderActionResponse('Pedido 99Food sem identificador remoto.');
         }
 
-        $state = $this->getStoredOrderIntegrationState($order);
         $resolvedReasonId = $reasonId ?: 1080;
-        $definition = $this->findShopCancelReasonDefinition($resolvedReasonId);
+        $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
+        if (!$storeService instanceof Food99StoreOperationsService) {
+            return $this->persistOrderActionResult(
+                $order,
+                'cancel',
+                $this->buildUnavailableOrderActionResponse('O service de catalogo da 99Food nao esta disponivel.')
+            );
+        }
+
+        $cancelReasonsResponse = $storeService->getOrderCancelReasons($order);
+        $cancelReasons = is_array($cancelReasonsResponse['data']['reasons'] ?? null)
+            ? $cancelReasonsResponse['data']['reasons']
+            : [];
+        $definition = null;
+        foreach ($cancelReasons as $reasonDefinition) {
+            if ((int) ($reasonDefinition['reason_id'] ?? 0) === $resolvedReasonId) {
+                $definition = $reasonDefinition;
+                break;
+            }
+        }
 
         if (!$definition) {
             return $this->persistOrderActionResult(
@@ -1500,7 +1456,7 @@ class Food99Service extends AbstractMarketplaceService implements
             );
         }
 
-        if (!$this->isCancelReasonApplicableToState($definition, $state)) {
+        if (!($definition['applicable'] ?? false)) {
             return $this->persistOrderActionResult(
                 $order,
                 'cancel',
@@ -2159,7 +2115,7 @@ class Food99Service extends AbstractMarketplaceService implements
             WHERE ef.field_name = :fieldName
               AND LOWER(ed.entity_name) = 'order'
               AND ed.data_value = :value
-              AND (ef.context = :primaryContext OR ef.context = :legacyContext)
+              AND ef.context = :primaryContext
               AND o.app = :orderApp
             ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
             LIMIT 1
@@ -2169,7 +2125,6 @@ class Food99Service extends AbstractMarketplaceService implements
             'fieldName' => $fieldName,
             'value' => $normalizedValue,
             'primaryContext' => self::APP_CONTEXT,
-            'legacyContext' => self::LEGACY_ORDER_CONTEXT,
             'orderApp' => self::APP_CONTEXT,
         ]);
 
@@ -2192,7 +2147,7 @@ class Food99Service extends AbstractMarketplaceService implements
             WHERE ef.field_name = :fieldName
               AND LOWER(ed.entity_name) = 'order'
               AND ed.entity_id = :entityId
-              AND (ef.context = :primaryContext OR ef.context = :legacyContext)
+              AND ef.context = :primaryContext
               AND o.app = :orderApp
             ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
             LIMIT 1
@@ -2202,7 +2157,6 @@ class Food99Service extends AbstractMarketplaceService implements
             'fieldName' => $fieldName,
             'entityId' => $entityId,
             'primaryContext' => self::APP_CONTEXT,
-            'legacyContext' => self::LEGACY_ORDER_CONTEXT,
             'orderApp' => self::APP_CONTEXT,
         ]);
 

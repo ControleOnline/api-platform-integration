@@ -308,21 +308,48 @@ class IntegrationService
             return false;
         }
 
-        if (strcasecmp((string) $result->getApp(), Order::APP_FOOD99) !== 0) {
-            return false;
+        $app = strtolower(trim((string) $result->getApp()));
+        $queueName = strtolower(trim((string) $integration->getQueueName()));
+
+        if ($app === strtolower(Order::APP_FOOD99) && $queueName === strtolower(Order::APP_FOOD99)) {
+            $body = json_decode((string) $integration->getBody(), true);
+            if (!is_array($body)) {
+                return false;
+            }
+
+            return strtolower(trim((string) ($body['type'] ?? ''))) === 'ordernew';
         }
 
-        if (strcasecmp((string) $integration->getQueueName(), 'Food99') !== 0) {
-            return false;
+        if ($app === strtolower(Order::APP_IFOOD) && $queueName === strtolower(Order::APP_IFOOD)) {
+            return $this->isIfoodFinancialGenerationEvent($integration);
         }
 
+        return false;
+    }
+
+    private function isIfoodFinancialGenerationEvent(Integration $integration): bool
+    {
         $body = json_decode((string) $integration->getBody(), true);
         if (!is_array($body)) {
             return false;
         }
 
-        return strtolower(trim((string) ($body['type'] ?? ''))) === 'ordernew';
+        $eventCode = strtoupper(trim((string) (
+            $body['fullCode']
+                ?? $body['code']
+                ?? $body['type']
+                ?? $body['eventType']
+                ?? ''
+        )));
+
+        return in_array($eventCode, [
+            'CONCLUDED',
+            'ORDER_CONCLUDED',
+            'ORDER_FINISHED',
+            'DELIVERY_CONCLUDED',
+        ], true);
     }
+
     public function getWebsocketOpen(array $devices = [], $limit = 100): array
     {
         $manager = $this->getManager();

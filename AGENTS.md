@@ -17,15 +17,17 @@
 - Pagamento online do cliente ao marketplace deve virar invoice explicita com `payer = cliente` e `receiver = marketplace`.
 - Os canais de pagamento do cliente devem permanecer nas invoices; a wallet operacional do `99 Food` nao deve receber espelho desses canais.
 - Ajustes e descontos que ja nascem compensados dentro do repasse do marketplace, sem cobranca separada para a loja, devem ser modelados como fluxo interno do marketplace com `payer = marketplace` e `receiver = marketplace`.
-- Recebimentos vindos de marketplace para `Food99` e `iFood` devem ser agrupados em uma invoice semanal unica, com vencimento na quarta-feira e vinculacao por `order_invoice` para todos os pedidos incluidos no repasse.
-- Em `Food99`, a invoice de repasse/cobranca deve usar `receiver = 99 Food`, nunca `iFood` ou estado compartilhado do fluxo legado.
+- Recebimentos vindos de marketplace devem ser agrupados em uma invoice semanal unica e vinculados por `order_invoice` aos pedidos incluidos no repasse.
+- Em `Food99`, a invoice de repasse/cobranca deve usar `receiver = 99 Food`, nunca `iFood` ou estado compartilhado do fluxo legado, e o vencimento e na quarta-feira seguinte ao fechamento semanal.
+- Em `iFood`, a invoice de repasse/cobranca deve usar `receiver = iFood`, com fechamento semanal e vencimento um mes depois do fechamento, sem compartilhar o fluxo de `Food99`.
+- `Food99Service` deve permanecer como fachada fina; catalogo de cancelamento e outros detalhes operacionais devem viver nos services de capacidade (`Food99FinancialOperationsService` e `Food99StoreOperationsService`).
+- `Food99FinancialOperationsService` deve tratar o JSON como fonte canônica e apenas materializar os blocos já gravados; nao calcular comissoes, logisticas, settlement ou percentuais a partir de `price`/`promotions` ou outros campos brutos.
 - Em `Food99`, a carteira de repasse da loja vem somente de `store_settlement_wallet_id` configurado na tela de integracao; `provider_wallet` nao pode ser inferido nem cair em `99 Food`.
 - Em `Food99`, a geracao financeira deve ler somente `order.otherInformations.Food99`; o legado `iFood` nao pode ser usado para criar ou recriar invoices.
 - Em `Food99`, pedidos de segunda a domingo entram na mesma invoice semanal, com vencimento na quarta-feira seguinte ao fechamento.
 - Em `Food99`, pedidos novos do webhook `orderNew` devem gerar esse financeiro automaticamente no pipeline de integracao. O endpoint manual de invoices fica como backfill para pedidos legados.
 - Em `Food99`, pedidos com status terminal `canceled`/`cancelled` devem ser tratados como sem geracao financeira, mas a limpeza das invoices gerenciadas do proprio pedido continua obrigatoria.
-- Em `Food99`, o repasse semanal deve abater `service_fee` do payload bruto e usar as taxas calibradas pela integracao antes de fechar a invoice semanal. A calibracao vigente e obtida pela reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e a comissao efetiva em torno de `7,9%`.
-- Em `Food99`, os componentes de fee calculados pela integracao devem ser arredondados normalmente em centavos; nao usar `ceil` para as taxas calculadas.
+- Em `Food99`, os valores financeiros devem ser lidos apenas dos campos já materializados no snapshot salvo; nao recalcular comissao, logistica, settlement ou qualquer percentual a partir de `price`, `promotions` ou outros campos brutos.
 - Em pedidos filhos de logistica gerados pela integracao `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 - Alertas humanos do `MANAGER` devem usar `queue_name = PushNotification` e FCM direto; nao criar alerta humano novo como `Websocket`.
 - `Websocket` e `PushNotification` sao filas efemeras: item entregue deve ser removido da tabela `integration`, e qualquer registro remanescente com mais de 24 horas deve ser removido pela manutencao.

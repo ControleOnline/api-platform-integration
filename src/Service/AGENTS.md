@@ -3,6 +3,8 @@
 
 ## Food99Service.php
 - A carteira operacional da integracao deve ser `99 Food`, mesmo quando o app canonico continuar sendo `Food99`.
+- `Food99Service` deve ficar como fachada fina; nao reintroduzir catalogo de cancelamento ou calculos de settlement no service principal.
+- `Food99FinancialOperationsService` nao deve calcular comissoes, logisticas ou settlement a partir de `price` e `promotions`; ele apenas materializa as seções ja gravadas no JSON (`financial`, `payment`, `customer`, `address`, `notes`, `identifiers`) ou outras seções ja persistidas.
 - O vinculo do cliente com o 99 deve usar apenas `receive_address.uid` como identificador remoto oficial.
 - Nao tentar recuperar `Food99.code` por telefone, e-mail, nome parcial ou outros heuristics.
 - Se o webhook legarado nao trouxer `uid`, o service pode tentar `nome + endereco completo` apenas para reconciliacao exata e unica de registros antigos.
@@ -14,12 +16,11 @@
 - Os meios de pagamento do cliente devem ficar apenas na invoice; nao espelhar esses canais na wallet operacional do `99 Food`.
 - O pagamento do motoboy em pedidos de entrega pela plataforma deve ser modelado com `payer = 99 Food` e `receiver = motoboy`, criando a pessoa do entregador no sistema quando houver identificacao suficiente.
 - Descontos subsidiados pela loja e pela plataforma que ja chegam compensados no repasse devem aparecer como ajustes internos do marketplace, com `payer = 99 Food` e `receiver = 99 Food`, sem criar conta separada da loja por esse desconto.
-- O valor que a loja recebe do marketplace deve entrar na invoice semanal unica, com vencimento na quarta-feira. Taxas cobradas da loja ficam em invoices especificas; descontos ja liquidados dentro do repasse seguem a regra de ajuste interno acima.
+- Em `Food99`, o valor que a loja recebe do marketplace deve entrar na invoice semanal unica, com vencimento na quarta-feira seguinte ao fechamento. Em `iFood`, a mesma invoice semanal fecha por semana e vence um mes depois do fechamento. Taxas cobradas da loja ficam em invoices especificas; descontos ja liquidados dentro do repasse seguem a regra de ajuste interno acima.
 - Em `Food99`, o receiver da invoice de repasse/cobranca precisa ser sempre `99 Food`, obtido diretamente do cadastro da marca, sem reaproveitar `iFood` nem estado estatico compartilhado.
 - Em `Food99`, o vencimento da invoice semanal segue o fechamento de segunda a domingo e cai na quarta-feira seguinte.
 - Em `Food99`, pedidos `canceled`/`cancelled` nao devem recriar financeiro; o backfill deve apenas limpar invoices gerenciadas legadas daquele pedido.
-- Em `Food99`, o weekly settlement deve considerar `service_fee` do payload bruto e as taxas calibradas da integracao. A calibracao atual vem da reconciliacao com o portal, com `payment_processing=3.2%`, `logistics=60%` com piso de `R$ 4,50` e comissao efetiva em torno de `7,9%`.
-- Em `Food99`, os componentes monetarios calculados da taxa devem usar arredondamento normal em centavos; nao usar `ceil` para inflar commission/processing/logistics em centavos.
+- Em `Food99`, o financeiro deve ser materializado apenas a partir dos dados persistidos no snapshot; nao recalcular settlement, comissoes ou taxas a partir de campos brutos do webhook.
 - Em `Food99`, a carteira de repasse da loja vem da tela de integracao e precisa ser persistida como `store_settlement_wallet_id`; essa carteira e a unica fonte valida para `provider_wallet`.
 - Em pedidos filhos de logistica gerados por `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 
@@ -46,3 +47,4 @@
 - O bloco grande de marketplace foi separado por capacidade em classes dedicadas em `Service/Marketplace`; nao reintroduzir catalogo, people, financeiro, pedido e store/admin no mesmo arquivo.
 - `iFoodService` deve permanecer como orquestrador das classes `IfoodStoreOperationsService`, `IfoodCatalogOperationsService`, `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService` e `IfoodOrderOperationsService`; o service principal nao deve voltar a concentrar esses blocos.
 - `Food99Service` deve permanecer como orquestrador das classes `Food99StoreOperationsService`, `Food99CatalogOperationsService`, `Food99PeopleOperationsService`, `Food99FinancialOperationsService` e `Food99OrderOperationsService`; as responsabilidades nao devem voltar a se misturar no mesmo arquivo.
+- `iFoodService` segue a mesma separacao por capacidades, mas com cadencia financeira propria: fechamento semanal e vencimento um mes depois do fechamento para a invoice de repasse.

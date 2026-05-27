@@ -32,10 +32,6 @@ use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 class Food99FinancialOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
-    private const FOOD99_COMMISSION_RATE = 0.0790207;
-    private const FOOD99_PAYMENT_PROCESSING_RATE = 0.032;
-    private const FOOD99_LOGISTICS_COST_RATE = 0.60;
-    private const FOOD99_MIN_LOGISTICS_COST = 4.50;
 
     protected function getMarketplaceApp(): string
     {
@@ -82,6 +78,45 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return in_array($normalized, ['1', 'true', 'yes', 'y', 'sim', 's'], true);
     }
 
+    private function resolveFood99StoredMoneyValue(array $source, string ...$keys): float
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $source)) {
+                continue;
+            }
+
+            $candidate = $source[$key];
+            if ($candidate === null || $candidate === '') {
+                continue;
+            }
+
+            return $this->normalizeFood99Money($candidate);
+        }
+
+        return 0.0;
+    }
+
+    private function resolveFood99StoredBooleanValue(array $source, ?bool $fallback, string ...$keys): bool
+    {
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $source)) {
+                continue;
+            }
+
+            $candidate = $source[$key];
+            if ($candidate === null || $candidate === '') {
+                continue;
+            }
+
+            $value = $this->normalizeFood99Boolean($candidate);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return (bool) $fallback;
+    }
+
     private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
@@ -120,13 +155,6 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return is_string($name) ? $name : $fallback;
     }
 
-    private function extractOrderPromotionList(array $payload): array
-    {
-        $promotions = $this->callFood99ServiceMethod(__FUNCTION__, [$payload]);
-
-        return is_array($promotions) ? $promotions : [];
-    }
-
     private function extractFood99StoredSnapshotSection(array $payload, string $section): array
     {
         $snapshot = $this->callFood99ServiceMethod(__FUNCTION__, [$payload, $section]);
@@ -144,34 +172,6 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         $display = $this->invokeMarketplaceServiceMethod($service, __FUNCTION__, [$address]);
 
         return is_string($display) && $display !== '' ? $display : null;
-    }
-
-    private function resolveFood99SnapshotMoneyValue(array $source, mixed $fallback, string ...$keys): float
-    {
-        $value = $this->callFood99ServiceMethod(__FUNCTION__, [$source, $fallback, ...$keys]);
-
-        return is_numeric($value) ? round((float) $value, 2) : 0.0;
-    }
-
-    private function resolveFood99SnapshotBooleanValue(array $source, ?bool $fallback, string ...$keys): bool
-    {
-        $value = $this->callFood99ServiceMethod(__FUNCTION__, [$source, $fallback, ...$keys]);
-
-        return (bool) $value;
-    }
-
-    private function sumPromotionTotalDiscount(array $promotions): float
-    {
-        $value = $this->callFood99ServiceMethod(__FUNCTION__, [$promotions]);
-
-        return is_numeric($value) ? round((float) $value, 2) : 0.0;
-    }
-
-    private function buildPromotionFundingBreakdown(array $promotions): array
-    {
-        $value = $this->callFood99ServiceMethod(__FUNCTION__, [$promotions]);
-
-        return is_array($value) ? $value : [];
     }
 
     private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
@@ -597,9 +597,6 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
 
         $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
         $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
-        $price = is_array($orderInfo['price'] ?? null) ? $orderInfo['price'] : (is_array($data['price'] ?? null) ? $data['price'] : []);
-        $otherFees = is_array($price['others_fees'] ?? null) ? $price['others_fees'] : [];
-        $promotions = $this->extractOrderPromotionList($payload);
         $receiveAddress = is_array($data['receive_address'] ?? null) ? $data['receive_address'] : [];
         $deliveryType = $this->normalizeIncomingFood99Value($orderInfo['delivery_type'] ?? $data['delivery_type'] ?? null);
         $payType = $this->normalizeIncomingFood99Value($orderInfo['pay_type'] ?? $data['pay_type'] ?? null);
@@ -607,72 +604,6 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         $payChannel = $this->normalizeIncomingFood99Value($orderInfo['pay_channel'] ?? $data['pay_channel'] ?? null);
         $storedFinancial = $this->extractFood99StoredSnapshotSection($payload, 'financial');
         $storedPayment = $this->extractFood99StoredSnapshotSection($payload, 'payment');
-        $promotionFundingBreakdown = $this->buildPromotionFundingBreakdown($promotions);
-        $storeDiscountTotal = $promotionFundingBreakdown['store_total'];
-        $itemsDiscountTotal = $this->normalizeFood99Money($price['items_discount'] ?? null);
-        $deliveryDiscountTotal = $this->normalizeFood99Money($price['delivery_discount'] ?? null);
-        $couponDiscountTotal = $this->normalizeFood99Money($otherFees['coupon_discount'] ?? null);
-        $promotionsTotal = $this->sumPromotionTotalDiscount($promotions);
-        $originalDeliveryFee = $this->normalizeFood99Money($price['store_charged_delivery_price'] ?? $price['delivery_price'] ?? null);
-        $changeFor = $this->normalizeFood99Money($orderInfo['change_for'] ?? $data['change_for'] ?? null);
-        $shopPaidMoney = $this->normalizeFood99Money($price['shop_paid_money'] ?? null);
-
-        $itemsTotal = $this->normalizeFood99Money($price['order_price'] ?? null);
-        $deliveryFee = $originalDeliveryFee;
-        $serviceFee = $this->normalizeFood99Money($otherFees['service_price'] ?? null);
-        $smallOrderFee = $this->normalizeFood99Money($otherFees['small_order_price'] ?? null);
-        $tipTotal = $this->normalizeFood99Money($otherFees['total_tip_money'] ?? null);
-        $mealTopUpFee = $this->normalizeFood99Money($otherFees['meal_top_up_price'] ?? null);
-        $subtotalBeforeDiscounts = round($itemsTotal + $deliveryFee + $serviceFee + $smallOrderFee + $tipTotal + $mealTopUpFee, 2);
-        $explicitCustomerTotal = $this->normalizeFood99Money(
-            $price['customer_need_paying_money'] ?? $price['real_pay_price'] ?? $price['real_price'] ?? null
-        );
-        $knownDiscountTotal = max(
-            $itemsDiscountTotal + $deliveryDiscountTotal + $couponDiscountTotal,
-            $promotionsTotal
-        );
-        $customerTotal = $explicitCustomerTotal > 0
-            ? $explicitCustomerTotal
-            : round(max(0, $subtotalBeforeDiscounts - $knownDiscountTotal), 2);
-        $discountTotal = round(max(0, $subtotalBeforeDiscounts - $customerTotal), 2);
-        $platformDiscountTotal = $promotionFundingBreakdown['platform_total'] > 0
-            ? $promotionFundingBreakdown['platform_total']
-            : round(max(0, $discountTotal - $storeDiscountTotal), 2);
-        $isPlatformDelivery = $this->resolveFood99SnapshotBooleanValue(
-            $storedPayment,
-            $deliveryType === '1',
-            'delivery_99_always_paid_rule',
-            'is_platform_delivery'
-        );
-        $isPaidOnline = $this->resolveFood99SnapshotBooleanValue(
-            $storedPayment,
-            $isPlatformDelivery,
-            'is_paid_online'
-        );
-        $chargeBaseAmount = round(max(0, $itemsTotal - $promotionFundingBreakdown['store_non_delivery_total']), 2);
-        $commissionDistributionAmount = $chargeBaseAmount > 0
-            ? round($chargeBaseAmount * self::FOOD99_COMMISSION_RATE, 2)
-            : 0.0;
-        $paymentProcessingAmount = $isPaidOnline && $chargeBaseAmount > 0
-            ? round($chargeBaseAmount * self::FOOD99_PAYMENT_PROCESSING_RATE, 2)
-            : 0.0;
-        $logisticsCostAmount = $isPlatformDelivery && $originalDeliveryFee > 0
-            ? max(
-                round($originalDeliveryFee * self::FOOD99_LOGISTICS_COST_RATE, 2),
-                self::FOOD99_MIN_LOGISTICS_COST
-            )
-            : 0.0;
-        $platformChargesAmount = round(
-            $commissionDistributionAmount
-                + $paymentProcessingAmount
-                + $serviceFee
-                + $logisticsCostAmount,
-            2
-        );
-        $weeklySettlementAmount = round(
-            max(0, $itemsTotal - $storeDiscountTotal - $platformChargesAmount),
-            2
-        );
         $paymentTypeLabel = $this->resolveFood99PaymentTypeLabel($payType, $deliveryType);
         $paymentMethodLabel = $this->resolveFood99PaymentMethodLabel($payMethod);
         $paymentChannelLabel = $this->resolveFood99PaymentChannelLabel($payChannel, $payMethod, $deliveryType);
@@ -681,127 +612,102 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
             $paymentTypeLabel,
             $paymentMethodLabel
         );
-        $itemsTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $itemsTotal, 'items_total');
-        $deliveryFee = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $deliveryFee, 'delivery_fee', 'delivery_fee_amount');
-        $serviceFee = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $serviceFee, 'service_fee_amount', 'service_fee');
-        $smallOrderFee = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $smallOrderFee, 'small_order_fee_amount', 'small_order_fee');
-        $mealTopUpFee = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $mealTopUpFee, 'meal_top_up_fee_amount', 'meal_top_up_fee');
-        $tipTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $tipTotal, 'tip_total', 'total_tip_money');
-        $subtotalBeforeDiscounts = $this->resolveFood99SnapshotMoneyValue(
+        $storedCustomer = $this->extractFood99StoredSnapshotSection($payload, 'customer');
+        $storedAddress = $this->extractFood99StoredSnapshotSection($payload, 'address');
+        $storedNotes = $this->extractFood99StoredSnapshotSection($payload, 'notes');
+        $storedIdentifiers = $this->extractFood99StoredSnapshotSection($payload, 'identifiers');
+
+        $itemsTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'items_total');
+        $deliveryFee = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $subtotalBeforeDiscounts,
-            'subtotal_before_discounts'
+            'delivery_fee',
+            'delivery_fee_amount',
+            'store_charged_delivery_price'
         );
-        $discountTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $discountTotal, 'discount_total');
-        $storeDiscountTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $storeDiscountTotal, 'store_discount_total');
-        $platformDiscountTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $platformDiscountTotal, 'platform_discount_total');
-        $promotionFundingBreakdown['store_non_delivery_total'] = $this->resolveFood99SnapshotMoneyValue(
+        $serviceFee = $this->resolveFood99StoredMoneyValue($storedFinancial, 'service_fee', 'service_fee_amount');
+        $smallOrderFee = $this->resolveFood99StoredMoneyValue($storedFinancial, 'small_order_fee', 'small_order_fee_amount');
+        $mealTopUpFee = $this->resolveFood99StoredMoneyValue($storedFinancial, 'meal_top_up_fee', 'meal_top_up_fee_amount');
+        $tipTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'tip_total', 'total_tip_money');
+        $subtotalBeforeDiscounts = $this->resolveFood99StoredMoneyValue($storedFinancial, 'subtotal_before_discounts');
+        $discountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'discount_total');
+        $storeDiscountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'store_discount_total');
+        $platformDiscountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'platform_discount_total');
+        $storeNonDeliveryDiscountTotal = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $promotionFundingBreakdown['store_non_delivery_total'],
             'store_non_delivery_discount_total'
         );
-        $promotionFundingBreakdown['platform_non_delivery_total'] = $this->resolveFood99SnapshotMoneyValue(
+        $platformNonDeliveryDiscountTotal = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $promotionFundingBreakdown['platform_non_delivery_total'],
             'platform_non_delivery_discount_total'
         );
-        $promotionFundingBreakdown['store_delivery_total'] = $this->resolveFood99SnapshotMoneyValue(
+        $storeDeliveryDiscountTotal = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $promotionFundingBreakdown['store_delivery_total'],
             'store_delivery_discount_total'
         );
-        $promotionFundingBreakdown['platform_delivery_total'] = $this->resolveFood99SnapshotMoneyValue(
+        $platformDeliveryDiscountTotal = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $promotionFundingBreakdown['platform_delivery_total'],
             'platform_delivery_discount_total'
         );
-        $promotionFundingBreakdown['store_total'] = $this->resolveFood99SnapshotMoneyValue(
+        $chargeBaseAmount = $this->resolveFood99StoredMoneyValue($storedFinancial, 'charge_base_amount');
+        $commissionDistributionAmount = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $promotionFundingBreakdown['store_total'],
-            'store_discount_total'
-        );
-        $promotionFundingBreakdown['platform_total'] = $this->resolveFood99SnapshotMoneyValue(
-            $storedFinancial,
-            $promotionFundingBreakdown['platform_total'],
-            'platform_discount_total'
-        );
-        $chargeBaseAmount = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $chargeBaseAmount, 'charge_base_amount');
-        $commissionDistributionAmount = $this->resolveFood99SnapshotMoneyValue(
-            $storedFinancial,
-            $commissionDistributionAmount,
             'commission_distribution_amount'
         );
-        $paymentProcessingAmount = $this->resolveFood99SnapshotMoneyValue(
+        $paymentProcessingAmount = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $paymentProcessingAmount,
             'payment_processing_amount'
         );
-        $logisticsCostAmount = $this->resolveFood99SnapshotMoneyValue(
+        $logisticsCostAmount = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $logisticsCostAmount,
             'logistics_cost_amount'
         );
-        $platformChargesAmount = $this->resolveFood99SnapshotMoneyValue(
+        $platformChargesAmount = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $platformChargesAmount,
             'platform_charges_amount'
         );
-        $weeklySettlementAmount = $this->resolveFood99SnapshotMoneyValue(
+        $weeklySettlementAmount = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $weeklySettlementAmount,
             'weekly_settlement_amount'
         );
-        $customerTotal = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $customerTotal, 'customer_total');
-        $customerNeedPayingMoney = $this->resolveFood99SnapshotMoneyValue(
+        $promotionsTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'promotions_total');
+        $itemsDiscountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'items_discount_total');
+        $deliveryDiscountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'delivery_discount_total');
+        $couponDiscountTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'coupon_discount_total');
+        $customerTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'customer_total');
+        $customerNeedPayingMoney = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $this->normalizeFood99Money($price['customer_need_paying_money'] ?? null),
-            'customer_need_paying_money'
+            'customer_need_paying_money',
+            'customer_need_paying_money_amount'
         );
-        $shopPaidMoney = $this->resolveFood99SnapshotMoneyValue($storedFinancial, $shopPaidMoney, 'shop_paid_money');
-        $storeReceivableTotal = $this->resolveFood99SnapshotMoneyValue(
+        $storeReceivableTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'store_receivable_total', 'real_price');
+        $realPayTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'real_pay_total', 'real_pay_price');
+        $refundTotal = $this->resolveFood99StoredMoneyValue($storedFinancial, 'refund_total', 'refund_price');
+        $storeChargedDeliveryPrice = $this->resolveFood99StoredMoneyValue(
             $storedFinancial,
-            $this->normalizeFood99Money($price['real_price'] ?? null),
-            'store_receivable_total',
-            'real_price'
+            'store_charged_delivery_price',
+            'delivery_fee',
+            'delivery_fee_amount'
         );
-        $realPayTotal = $this->resolveFood99SnapshotMoneyValue(
-            $storedFinancial,
-            $this->normalizeFood99Money($price['real_pay_price'] ?? null),
-            'real_pay_total',
-            'real_pay_price'
-        );
-        $refundTotal = $this->resolveFood99SnapshotMoneyValue(
-            $storedFinancial,
-            $this->normalizeFood99Money($price['refund_price'] ?? null),
-            'refund_total',
-            'refund_price'
-        );
-        $amountPaid = $this->resolveFood99SnapshotMoneyValue($storedPayment, $isPaidOnline ? $customerTotal : 0.0, 'amount_paid');
-        $amountPending = $this->resolveFood99SnapshotMoneyValue(
+        $shopPaidMoney = $this->resolveFood99StoredMoneyValue($storedFinancial, 'shop_paid_money');
+        $amountPaid = $this->resolveFood99StoredMoneyValue($storedPayment, 'amount_paid');
+        $amountPending = $this->resolveFood99StoredMoneyValue($storedPayment, 'amount_pending');
+        $collectOnDeliveryAmount = $this->resolveFood99StoredMoneyValue($storedPayment, 'collect_on_delivery_amount');
+        $changeFor = $this->resolveFood99StoredMoneyValue($storedPayment, 'change_for');
+        $changeAmount = $this->resolveFood99StoredMoneyValue($storedPayment, 'change_amount');
+        $isPaidOnline = $this->resolveFood99StoredBooleanValue($storedPayment, false, 'is_paid_online');
+        $isPlatformDelivery = $this->resolveFood99StoredBooleanValue(
             $storedPayment,
-            round(max(0, $customerTotal - $amountPaid), 2),
-            'amount_pending'
+            false,
+            'delivery_99_always_paid_rule',
+            'is_platform_delivery'
         );
-        $collectOnDeliveryAmount = $this->resolveFood99SnapshotMoneyValue(
-            $storedPayment,
-            $isPaidOnline ? 0.0 : ($customerNeedPayingMoney ?: $customerTotal),
-            'collect_on_delivery_amount'
-        );
-        $changeFor = $this->resolveFood99SnapshotMoneyValue($storedPayment, $changeFor, 'change_for');
-        $changeAmount = $this->resolveFood99SnapshotMoneyValue(
-            $storedPayment,
-            $changeFor > 0 && $customerNeedPayingMoney > 0
-                ? round(max(0, $changeFor - $customerNeedPayingMoney), 2)
-                : 0.0,
-            'change_amount'
-        );
-        $needsChange = $this->resolveFood99SnapshotBooleanValue($storedPayment, $changeAmount > 0.009, 'needs_change');
-        $isFullyPaid = $this->resolveFood99SnapshotBooleanValue($storedPayment, $amountPending <= 0.009, 'is_fully_paid');
-        $shouldConfirmPayment = $this->resolveFood99SnapshotBooleanValue($storedPayment, !$isPaidOnline, 'should_confirm_payment');
+        $needsChange = $this->resolveFood99StoredBooleanValue($storedPayment, false, 'needs_change');
+        $isFullyPaid = $this->resolveFood99StoredBooleanValue($storedPayment, false, 'is_fully_paid');
+        $shouldConfirmPayment = $this->resolveFood99StoredBooleanValue($storedPayment, false, 'should_confirm_payment');
 
         return [
             'financial' => [
-                'currency' => 'BRL',
+                'currency' => $this->normalizeIncomingFood99Value($storedFinancial['currency'] ?? 'BRL') ?: 'BRL',
                 'items_total' => $itemsTotal,
                 'delivery_fee' => $deliveryFee,
                 'service_fee' => $serviceFee,
@@ -812,10 +718,10 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
                 'discount_total' => $discountTotal,
                 'store_discount_total' => $storeDiscountTotal,
                 'platform_discount_total' => $platformDiscountTotal,
-                'store_non_delivery_discount_total' => $promotionFundingBreakdown['store_non_delivery_total'],
-                'platform_non_delivery_discount_total' => $promotionFundingBreakdown['platform_non_delivery_total'],
-                'store_delivery_discount_total' => $promotionFundingBreakdown['store_delivery_total'],
-                'platform_delivery_discount_total' => $promotionFundingBreakdown['platform_delivery_total'],
+                'store_non_delivery_discount_total' => $storeNonDeliveryDiscountTotal,
+                'platform_non_delivery_discount_total' => $platformNonDeliveryDiscountTotal,
+                'store_delivery_discount_total' => $storeDeliveryDiscountTotal,
+                'platform_delivery_discount_total' => $platformDeliveryDiscountTotal,
                 'charge_base_amount' => $chargeBaseAmount,
                 'commission_distribution_amount' => $commissionDistributionAmount,
                 'payment_processing_amount' => $paymentProcessingAmount,
@@ -831,15 +737,15 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
                 'store_receivable_total' => $storeReceivableTotal,
                 'real_pay_total' => $realPayTotal,
                 'refund_total' => $refundTotal,
-                'store_charged_delivery_price' => $originalDeliveryFee,
+                'store_charged_delivery_price' => $storeChargedDeliveryPrice,
                 'shop_paid_money' => $shopPaidMoney,
             ],
             'payment' => [
-                'pay_type' => $payType,
+                'pay_type' => $this->normalizeIncomingFood99Value($storedPayment['pay_type'] ?? $payType),
                 'pay_type_label' => $paymentTypeLabel,
-                'pay_method' => $payMethod,
+                'pay_method' => $this->normalizeIncomingFood99Value($storedPayment['pay_method'] ?? $payMethod),
                 'pay_method_label' => $paymentMethodLabel,
-                'pay_channel' => $payChannel,
+                'pay_channel' => $this->normalizeIncomingFood99Value($storedPayment['pay_channel'] ?? $payChannel),
                 'pay_channel_label' => $paymentChannelLabel,
                 'selected_payment_label' => $selectedPaymentLabel,
                 'amount_paid' => $amountPaid,
@@ -856,31 +762,31 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
                 'delivery_99_always_paid_rule' => $isPlatformDelivery,
             ],
             'customer' => [
-                'name' => $this->resolveFood99CustomerName($receiveAddress, ''),
+                'name' => $this->normalizeIncomingFood99Value($storedCustomer['name'] ?? '') ?: $this->resolveFood99CustomerName($receiveAddress, ''),
                 'phone' => $this->normalizeIncomingFood99Value($receiveAddress['phone'] ?? null),
             ],
             'address' => [
-                'display' => $this->buildFood99AddressDisplay($receiveAddress),
-                'street_name' => $this->normalizeIncomingFood99Value($receiveAddress['street_name'] ?? null),
-                'street_number' => $this->normalizeIncomingFood99Value($receiveAddress['street_number'] ?? null),
-                'district' => $this->normalizeIncomingFood99Value($receiveAddress['district'] ?? null),
-                'city' => $this->normalizeIncomingFood99Value($receiveAddress['city'] ?? null),
-                'state' => $this->normalizeIncomingFood99Value($receiveAddress['state'] ?? null),
-                'postal_code' => $this->normalizeIncomingFood99Value($receiveAddress['postal_code'] ?? null),
-                'reference' => $this->normalizeIncomingFood99Value($receiveAddress['reference'] ?? null),
-                'complement' => $this->normalizeIncomingFood99Value($receiveAddress['complement'] ?? null),
-                'poi_address' => $this->normalizeIncomingFood99Value($receiveAddress['poi_address'] ?? null),
+                'display' => $this->normalizeIncomingFood99Value($storedAddress['display'] ?? '') ?: $this->buildFood99AddressDisplay($receiveAddress),
+                'street_name' => $this->normalizeIncomingFood99Value($storedAddress['street_name'] ?? $receiveAddress['street_name'] ?? null),
+                'street_number' => $this->normalizeIncomingFood99Value($storedAddress['street_number'] ?? $receiveAddress['street_number'] ?? null),
+                'district' => $this->normalizeIncomingFood99Value($storedAddress['district'] ?? $receiveAddress['district'] ?? null),
+                'city' => $this->normalizeIncomingFood99Value($storedAddress['city'] ?? $receiveAddress['city'] ?? null),
+                'state' => $this->normalizeIncomingFood99Value($storedAddress['state'] ?? $receiveAddress['state'] ?? null),
+                'postal_code' => $this->normalizeIncomingFood99Value($storedAddress['postal_code'] ?? $receiveAddress['postal_code'] ?? null),
+                'reference' => $this->normalizeIncomingFood99Value($storedAddress['reference'] ?? $receiveAddress['reference'] ?? null),
+                'complement' => $this->normalizeIncomingFood99Value($storedAddress['complement'] ?? $receiveAddress['complement'] ?? null),
+                'poi_address' => $this->normalizeIncomingFood99Value($storedAddress['poi_address'] ?? $receiveAddress['poi_address'] ?? null),
             ],
             'notes' => [
-                'remark' => $this->normalizeIncomingFood99Value($orderInfo['remark'] ?? $data['remark'] ?? null),
-                'need_cutlery' => $this->normalizeFood99Boolean($orderInfo['need_cutlery'] ?? $data['need_cutlery'] ?? null),
+                'remark' => $this->normalizeIncomingFood99Value($storedNotes['remark'] ?? $orderInfo['remark'] ?? $data['remark'] ?? null),
+                'need_cutlery' => $this->normalizeFood99Boolean($storedNotes['need_cutlery'] ?? $orderInfo['need_cutlery'] ?? $data['need_cutlery'] ?? null),
             ],
             'identifiers' => [
-                'remote_order_id' => $this->normalizeIncomingFood99Value($orderInfo['order_id'] ?? $data['order_id'] ?? null),
-                'order_index' => $this->normalizeIncomingFood99Value($orderInfo['order_index'] ?? $data['order_index'] ?? null),
-                'delivery_type' => $deliveryType,
-                'pickup_code' => $this->normalizeIncomingFood99Value($data['pickup_code'] ?? $orderInfo['pickup_code'] ?? null),
-                'handover_code' => $this->normalizeIncomingFood99Value($data['handover_code'] ?? $orderInfo['handover_code'] ?? null),
+                'remote_order_id' => $this->normalizeIncomingFood99Value($storedIdentifiers['remote_order_id'] ?? $orderInfo['order_id'] ?? $data['order_id'] ?? null),
+                'order_index' => $this->normalizeIncomingFood99Value($storedIdentifiers['order_index'] ?? $orderInfo['order_index'] ?? $data['order_index'] ?? null),
+                'delivery_type' => $this->normalizeIncomingFood99Value($storedIdentifiers['delivery_type'] ?? $deliveryType),
+                'pickup_code' => $this->normalizeIncomingFood99Value($storedIdentifiers['pickup_code'] ?? $data['pickup_code'] ?? $orderInfo['pickup_code'] ?? null),
+                'handover_code' => $this->normalizeIncomingFood99Value($storedIdentifiers['handover_code'] ?? $data['handover_code'] ?? $orderInfo['handover_code'] ?? null),
             ],
             'raw_payload_available' => true,
         ];

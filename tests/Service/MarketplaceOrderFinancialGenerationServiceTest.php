@@ -137,6 +137,25 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
         self::assertSame('2026-05-20', $mondayDueDate->format('Y-m-d'));
     }
 
+    public function testIfoodWeeklyDueDateUsesMonthlySettlementAfterWeekClose(): void
+    {
+        $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
+            ->newInstanceWithoutConstructor();
+
+        $mondayOrder = $this->createConfiguredMock(Order::class, [
+            'getOrderDate' => new DateTime('2026-05-11 10:00:00'),
+            'getApp' => Order::APP_IFOOD,
+        ]);
+
+        $dueDate = $this->invokePrivateMethod(
+            $service,
+            'resolveWeeklyDueDate',
+            $mondayOrder,
+        );
+
+        self::assertSame('2026-06-20', $dueDate->format('Y-m-d'));
+    }
+
     public function testFood99CanceledOrdersAreSkippedFromFinancialGeneration(): void
     {
         $service = (new \ReflectionClass(MarketplaceOrderFinancialGenerationService::class))
@@ -234,7 +253,14 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
             ],
         ];
 
-        $food99Service = $this->createMock(Food99Service::class);
+        $food99Service = $this->getMockBuilder(Food99Service::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([
+                'getOrderHomologationSnapshot',
+                'getStoredOrderIntegrationState',
+                '__call',
+            ])
+            ->getMock();
         $food99Service
             ->expects(self::once())
             ->method('getOrderHomologationSnapshot')
@@ -246,10 +272,16 @@ class MarketplaceOrderFinancialGenerationServiceTest extends TestCase
             ->with($order)
             ->willReturn(['is_platform_delivery' => false]);
         $food99Service
-            ->expects(self::once())
-            ->method('getStoredSettlementWallet')
-            ->with($provider)
-            ->willReturn($providerWallet);
+            ->method('__call')
+            ->willReturnCallback(static function (string $method, array $arguments) use (
+                $provider,
+                $providerWallet
+            ): mixed {
+                return match ($method) {
+                    'getStoredSettlementWallet' => $arguments === [$provider] ? $providerWallet : null,
+                    default => null,
+                };
+            });
 
         $peopleService = $this->createMock(\ControleOnline\Service\PeopleService::class);
         $peopleService

@@ -57,6 +57,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
     }
 
+    private function normalizeCancelReasonId(mixed $value): ?int
+    {
+        $reasonId = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
+
+        return is_int($reasonId) ? $reasonId : null;
+    }
+
     private function callFood99PeopleServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99PeopleOperationsService::class);
@@ -150,6 +157,20 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $result = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
 
         return is_array($result) ? $result : ['errno' => 1, 'errmsg' => 'A acao ready do Food99 nao esta disponivel.'];
+    }
+
+    public function performCancelAction(Order $order, ?int $reasonId = null, ?string $reason = null): array
+    {
+        $result = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $reasonId, $reason]);
+
+        return is_array($result) ? $result : ['errno' => 1, 'errmsg' => 'A acao cancel do Food99 nao esta disponivel.'];
+    }
+
+    public function performDeliveredAction(Order $order, ?string $deliveryCode = null, ?string $locator = null): array
+    {
+        $result = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $deliveryCode, $locator]);
+
+        return is_array($result) ? $result : ['errno' => 1, 'errmsg' => 'A acao delivered do Food99 nao esta disponivel.'];
     }
 
     private function findFood99DeliveryOrder(Order $order): ?Order

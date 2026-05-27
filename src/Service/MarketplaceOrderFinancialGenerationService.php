@@ -66,7 +66,7 @@ class MarketplaceOrderFinancialGenerationService
         $reference = $referenceDate instanceof DateTimeInterface
             ? new DateTime($referenceDate->format('Y-m-d'))
             : new DateTime('now');
-        $weeklyDueDate = $this->resolveWeeklyDueDateFromReference($reference);
+        $weeklyDueDate = $this->resolveWeeklyDueDateFromReference($reference, $marketplaceApp);
         $dailySales = $this->resolveMarketplaceDailySales($provider, $marketplaceApp, $reference);
         $weeklyInvoice = $this->findWeeklySettlementInvoiceForSummary(
             $provider,
@@ -998,10 +998,10 @@ class MarketplaceOrderFinancialGenerationService
     private function resolveWeeklyDueDate(Order $order): DateTime
     {
         $reference = $this->resolveOrderReferenceDate($order);
-        return $this->resolveWeeklyDueDateFromReference($reference);
+        return $this->resolveWeeklyDueDateFromReference($reference, (string) $order->getApp());
     }
 
-    private function resolveWeeklyDueDateFromReference(DateTimeInterface $reference): DateTime
+    private function resolveWeeklyDueDateFromReference(DateTimeInterface $reference, string $app = ''): DateTime
     {
         $dueDate = new DateTime($reference->format('Y-m-d'));
         $weekday = (int) $dueDate->format('N');
@@ -1012,6 +1012,10 @@ class MarketplaceOrderFinancialGenerationService
         }
 
         $dueDate->modify('+3 days');
+
+        if (strtolower(trim($app)) === strtolower(Order::APP_IFOOD)) {
+            $dueDate->modify('+1 month');
+        }
 
         return $dueDate;
     }

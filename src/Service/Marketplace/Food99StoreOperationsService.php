@@ -33,6 +33,20 @@ use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 class Food99StoreOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
+    private const SHOP_CANCEL_REASONS = [
+        ['reason_id' => 1010, 'description' => 'Item sold out', 'applicable_to' => 'all'],
+        ['reason_id' => 1020, 'description' => 'Store closed for the day', 'applicable_to' => 'all'],
+        ['reason_id' => 1030, 'description' => 'Store too busy to prepare order', 'applicable_to' => 'all'],
+        ['reason_id' => 1040, 'description' => 'Major accident or utility outage', 'applicable_to' => 'all'],
+        ['reason_id' => 1050, 'description' => 'Canceled due to customer issue', 'applicable_to' => 'all'],
+        ['reason_id' => 1060, 'description' => 'No courier available', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1070, 'description' => 'Menu needs to be updated', 'applicable_to' => 'all'],
+        ['reason_id' => 1071, 'description' => 'Order is outside the delivery area', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1072, 'description' => 'Order address is in an unsafe area', 'applicable_to' => 'self_delivery'],
+        ['reason_id' => 1073, 'description' => 'Suspected fraud or prank', 'applicable_to' => 'all'],
+        ['reason_id' => 1074, 'description' => 'Questions about fees or promotions', 'applicable_to' => 'all'],
+        ['reason_id' => 1080, 'description' => 'Other reason', 'applicable_to' => 'all'],
+    ];
 
     protected function getMarketplaceApp(): string
     {
@@ -801,6 +815,57 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             'last_reconcile_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_message'),
             'last_reconcile_source' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
             'last_reconcile_duration_ms' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
+        ];
+    }
+
+    private function getStoredOrderIntegrationState(Order $order): array
+    {
+        $state = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+
+        return is_array($state) ? $state : [];
+    }
+
+    private function isCancelReasonApplicableToState(array $reason, array $state): bool
+    {
+        $scope = strtolower(trim((string) ($reason['applicable_to'] ?? 'all')));
+        if ($scope === 'all') {
+            return true;
+        }
+
+        if ($scope === 'self_delivery') {
+            return !empty($state['is_store_delivery']);
+        }
+
+        return true;
+    }
+
+    private function buildShopCancelReasonListForState(array $state): array
+    {
+        return array_map(function (array $reason) use ($state) {
+            $isApplicable = $this->isCancelReasonApplicableToState($reason, $state);
+
+            return [
+                'reason_id' => (int) $reason['reason_id'],
+                'description' => (string) $reason['description'],
+                'applicable_to' => (string) $reason['applicable_to'],
+                'requires_description' => (int) $reason['reason_id'] === 1080,
+                'applicable' => $isApplicable,
+            ];
+        }, self::SHOP_CANCEL_REASONS);
+    }
+
+    public function getOrderCancelReasons(Order $order): array
+    {
+        $state = $this->getStoredOrderIntegrationState($order);
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'delivery_type' => $state['delivery_type'] ?? '',
+                'delivery_label' => $state['delivery_label'] ?? 'Indefinido',
+                'reasons' => $this->buildShopCancelReasonListForState($state),
+            ],
         ];
     }
 

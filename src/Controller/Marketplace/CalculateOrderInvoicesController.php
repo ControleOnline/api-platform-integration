@@ -863,10 +863,13 @@ class CalculateOrderInvoicesController extends AbstractController
 
     private function resolveWeeklyDueDate(Order $order): DateTime
     {
-        return $this->resolveWeeklyDueDateFromReference($this->resolveOrderReferenceDate($order));
+        return $this->resolveWeeklyDueDateFromReference(
+            $this->resolveOrderReferenceDate($order),
+            (string) $order->getApp()
+        );
     }
 
-    private function resolveWeeklyDueDateFromReference(DateTimeInterface $reference): DateTime
+    private function resolveWeeklyDueDateFromReference(DateTimeInterface $reference, string $app = ''): DateTime
     {
         $dueDate = new DateTime($reference->format('Y-m-d'));
         $weekday = (int) $dueDate->format('N');
@@ -877,6 +880,10 @@ class CalculateOrderInvoicesController extends AbstractController
         }
 
         $dueDate->modify('+3 days');
+
+        if (strtolower(trim($app)) === strtolower(Order::APP_IFOOD)) {
+            $dueDate->modify('+1 month');
+        }
 
         return $dueDate;
     }

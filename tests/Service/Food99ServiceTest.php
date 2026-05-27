@@ -20,6 +20,7 @@ use ControleOnline\Service\ExtraDataService;
 use ControleOnline\Service\InvoiceService;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\PeopleService;
+use ControleOnline\Service\Marketplace\Food99StoreOperationsService;
 use ControleOnline\Service\ProductGroupService;
 use ControleOnline\Service\StatusService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -28,6 +29,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 #[AllowMockObjectsWithoutExpectations]
 class Food99ServiceTest extends TestCase
@@ -224,6 +226,45 @@ class Food99ServiceTest extends TestCase
         );
 
         self::assertSame($wallet, $resolvedWallet);
+    }
+
+    public function testGetOrderCancelReasonsDelegatesToStoreOperationsService(): void
+    {
+        $order = $this->createMock(Order::class);
+        $expected = [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => [
+                'delivery_type' => '1',
+                'delivery_label' => 'Plataforma',
+                'reasons' => [
+                    ['reason_id' => 1080, 'description' => 'Other reason', 'applicable' => true],
+                ],
+            ],
+        ];
+
+        $storeService = $this->createMock(Food99StoreOperationsService::class);
+        $storeService
+            ->expects(self::once())
+            ->method('getOrderCancelReasons')
+            ->with($order)
+            ->willReturn($expected);
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container
+            ->expects(self::once())
+            ->method('has')
+            ->with(Food99StoreOperationsService::class)
+            ->willReturn(true);
+        $container
+            ->expects(self::once())
+            ->method('get')
+            ->with(Food99StoreOperationsService::class)
+            ->willReturn($storeService);
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'container', $container);
+
+        self::assertSame($expected, $this->service->getOrderCancelReasons($order));
     }
 
     public function testResolveFood99SettlementWalletRejectsWalletFromAnotherCompany(): void
@@ -1051,6 +1092,57 @@ class Food99ServiceTest extends TestCase
                             'others_fees' => [
                                 'service_price' => 200,
                             ],
+                        ],
+                        'financial' => [
+                            'currency' => 'BRL',
+                            'items_total' => 10000,
+                            'delivery_fee' => 500,
+                            'service_fee' => 200,
+                            'small_order_fee' => 0,
+                            'meal_top_up_fee' => 0,
+                            'tip_total' => 0,
+                            'subtotal_before_discounts' => 10700,
+                            'discount_total' => 1000,
+                            'store_discount_total' => 1000,
+                            'platform_discount_total' => 0,
+                            'store_non_delivery_discount_total' => 1000,
+                            'platform_non_delivery_discount_total' => 0,
+                            'store_delivery_discount_total' => 0,
+                            'platform_delivery_discount_total' => 0,
+                            'charge_base_amount' => 9000,
+                            'commission_distribution_amount' => 711,
+                            'payment_processing_amount' => 288,
+                            'logistics_cost_amount' => 450,
+                            'platform_charges_amount' => 1649,
+                            'weekly_settlement_amount' => 7351,
+                            'promotions_total' => 1000,
+                            'items_discount_total' => 0,
+                            'delivery_discount_total' => 0,
+                            'coupon_discount_total' => 0,
+                            'customer_total' => 9700,
+                            'customer_need_paying_money' => 9700,
+                            'store_receivable_total' => 7351,
+                            'real_pay_total' => 9700,
+                            'refund_total' => 0,
+                            'store_charged_delivery_price' => 500,
+                            'shop_paid_money' => 7351,
+                        ],
+                        'payment' => [
+                            'pay_type' => '1',
+                            'pay_method' => '1',
+                            'pay_channel' => '212',
+                            'amount_paid' => 9700,
+                            'amount_pending' => 0,
+                            'customer_need_paying_money' => 9700,
+                            'collect_on_delivery_amount' => 0,
+                            'shop_paid_money' => 7351,
+                            'change_for' => 0,
+                            'change_amount' => 0,
+                            'needs_change' => false,
+                            'is_fully_paid' => true,
+                            'should_confirm_payment' => false,
+                            'is_paid_online' => true,
+                            'delivery_99_always_paid_rule' => true,
                         ],
                     ],
                 ],

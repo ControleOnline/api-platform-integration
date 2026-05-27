@@ -8,3 +8,6 @@
 - `IfoodStoreOperationsService` concentra store/admin e estado operacional da loja; `IfoodCatalogOperationsService` concentra catalogo/menu; nao voltar a misturar esses blocos no mesmo arquivo.
 - `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService` e `IfoodOrderOperationsService` existem para isolar responsabilidades do iFood; nao voltar a juntar pessoas, financeiro e pedido no mesmo service.
 - `Food99CatalogOperationsService`, `Food99PeopleOperationsService`, `Food99FinancialOperationsService` e `Food99OrderOperationsService` existem para isolar responsabilidades; nao voltar a juntar catalogo, pessoas, financeiro e pedido no mesmo service.
+- `Food99StoreOperationsService` e o dono do catalogo de cancelamento da loja; `Food99Service` nao deve reter a lista `SHOP_CANCEL_REASONS` nem outras constantes de tarifa/settlement.
+- `Food99OrderOperationsService` deve expor os forwards de acao esperados por `changeStatus` (`performReadyAction`, `performCancelAction`, `performDeliveredAction`) para nao depender de metodos inexistentes no service principal.
+- `Food99FinancialOperationsService` nao deve calcular comissoes, logisticas ou settlement a partir de `price` e `promotions`; ele so materializa as seções ja recebidas no JSON salvo (`financial`, `payment`, `customer`, `address`, `notes`, `identifiers`).

@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Device;
 use ControleOnline\Entity\DeviceConfig;
+use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Status;
 use ControleOnline\Service\IntegrationService;
@@ -295,6 +296,42 @@ class IntegrationServiceTest extends TestCase
         self::assertSame('error', $reloadedIntegration->getStatus()->getRealStatus());
     }
 
+    public function testIfoodMarketplaceFinancialGenerationTriggersOnlyForConclusionEvents(): void
+    {
+        $service = $this->buildService(
+            $this->createStub(EntityManagerInterface::class),
+            $this->createStub(StatusService::class)
+        );
+
+        $integration = new Integration();
+        $integration->setQueueName('iFood');
+        $integration->setBody('{"orderId":"ifood-order-1","type":"CONCLUDED"}');
+
+        $order = $this->createConfiguredMock(Order::class, [
+            'getApp' => Order::APP_IFOOD,
+        ]);
+
+        self::assertTrue(
+            $this->invokePrivateMethod(
+                $service,
+                'shouldGenerateMarketplaceFinancial',
+                $integration,
+                $order,
+            )
+        );
+
+        $integration->setBody('{"orderId":"ifood-order-1","type":"PLACED"}');
+
+        self::assertFalse(
+            $this->invokePrivateMethod(
+                $service,
+                'shouldGenerateMarketplaceFinancial',
+                $integration,
+                $order,
+            )
+        );
+    }
+
     private function buildService(
         EntityManagerInterface $entityManager,
         StatusService $statusService,
@@ -316,6 +353,14 @@ class IntegrationServiceTest extends TestCase
             $this->createStub(ContainerInterface::class),
             $bus ?? $this->createMock(MessageBusInterface::class)
         );
+    }
+
+    private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
+    {
+        $method = new \ReflectionMethod($object, $methodName);
+        $method->setAccessible(true);
+
+        return $method->invoke($object, ...$arguments);
     }
 
     private function setEntityId(object $entity, int $id): void
