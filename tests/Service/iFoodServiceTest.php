@@ -644,6 +644,16 @@ class iFoodServiceTest extends TestCase
                             'price' => 0,
                             'active' => true,
                         ],
+                    ],
+                ],
+                [
+                    'id' => 56,
+                    'name' => 'Complementos Extras',
+                    'minimum' => 0,
+                    'maximum' => 2,
+                    'group_order' => 2,
+                    'active' => true,
+                    'options' => [
                         [
                             'id' => 102,
                             'child_product_id' => 9001,
@@ -660,20 +670,7 @@ class iFoodServiceTest extends TestCase
             ],
         ];
 
-        $existingItemFlat = [
-            'options' => [
-                [
-                    'id' => 'uuid-option-101',
-                    'externalCode' => 'option-101',
-                    'productId' => 'child-product-uuid',
-                ],
-                [
-                    'id' => 'uuid-option-102',
-                    'externalCode' => 'option-102',
-                    'productId' => 'child-product-uuid',
-                ],
-            ],
-        ];
+        $existingItemFlat = [];
 
         $payload = $this->invokePrivateMethod(
             $service,
@@ -683,18 +680,321 @@ class iFoodServiceTest extends TestCase
             $existingItemFlat
         );
 
-        self::assertCount(1, $payload['product_option_groups']);
-        self::assertCount(1, $payload['option_groups']);
+        self::assertCount(2, $payload['product_option_groups']);
+        self::assertCount(2, $payload['option_groups']);
         self::assertCount(2, $payload['options']);
         self::assertSame(
-            ['uuid-option-101', 'uuid-option-102'],
-            array_column($payload['options'], 'id')
-        );
-        self::assertSame(
-            ['option-101', 'option-102'],
+            ['101', '102'],
             array_column($payload['options'], 'externalCode')
         );
-        self::assertSame([], $payload['products'][0]['optionGroups']);
+        self::assertCount(1, $payload['products']);
+        self::assertSame(
+            ['9001'],
+            array_column($payload['products'], 'externalCode')
+        );
+        self::assertSame(
+            ['55', '56'],
+            array_column($payload['option_groups'], 'externalCode')
+        );
+        self::assertSame(
+            [$payload['products'][0]['id'], $payload['products'][0]['id']],
+            array_column($payload['options'], 'productId')
+        );
+        self::assertSame([[]], array_column($payload['products'], 'optionGroups'));
+    }
+
+    public function testFindIfoodCatalogRemoteItemByProductFallbackPrefersSkuOverName(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $remoteItems = [
+            [
+                'id' => 'item-name',
+                'name' => 'Combo Alpha Gyros',
+                'ean' => 'OTHER-SKU',
+            ],
+            [
+                'id' => 'item-sku',
+                'name' => 'Outro nome',
+                'ean' => 'MATCH-SKU',
+            ],
+        ];
+
+        $product = [
+            'id' => 1343,
+            'name' => 'Combo Alpha Gyros',
+            'sku' => 'MATCH-SKU',
+        ];
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'findIfoodCatalogRemoteItemByProductFallback',
+            $remoteItems,
+            $product
+        );
+
+        self::assertIsArray($result);
+        self::assertSame('item-sku', $result['id']);
+    }
+
+    public function testExpandCatalogProductsWithModifierDescendantsIncludesNestedChildren(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $products = [
+            [
+                'id' => 1343,
+                'name' => 'Combo Alpha Gyros',
+                'modifier_groups' => [
+                    [
+                        'options' => [
+                            ['child_product_id' => 1337],
+                            ['child_product_id' => 1338],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'id' => 1337,
+                'name' => 'Molho Especial',
+                'modifier_groups' => [
+                    [
+                        'options' => [
+                            ['child_product_id' => 1356],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'id' => 1338,
+                'name' => 'Batata',
+                'modifier_groups' => [],
+            ],
+            [
+                'id' => 1356,
+                'name' => 'Bebida',
+                'modifier_groups' => [],
+            ],
+            [
+                'id' => 9999,
+                'name' => 'Produto fora da arvore',
+                'modifier_groups' => [],
+            ],
+        ];
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'expandCatalogProductsWithModifierDescendants',
+            $products,
+            [1343]
+        );
+
+        self::assertSame([1343, 1337, 1338, 1356], array_column($result, 'id'));
+    }
+
+    public function testBuildIfoodCatalogModifierPayloadRecursivelyIncludesChildBranches(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $catalogProductsById = [
+            1343 => [
+                'id' => 1343,
+                'name' => 'Combo Alpha Gyros',
+                'description' => 'Combo principal',
+                'sku' => '',
+                'cover_file_id' => null,
+                'modifier_groups' => [
+                    [
+                        'id' => 98,
+                        'name' => 'Adicionais',
+                        'minimum' => 0,
+                        'maximum' => 3,
+                        'group_order' => 1,
+                        'active' => true,
+                        'options' => [
+                            [
+                                'id' => 1514,
+                                'child_product_id' => 1337,
+                                'name' => 'Molho Especial',
+                                'description' => '',
+                                'sku' => '',
+                                'cover_file_id' => null,
+                                'quantity' => 1,
+                                'price' => 7.99,
+                                'active' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            1337 => [
+                'id' => 1337,
+                'name' => 'Linguica Toscana',
+                'description' => '',
+                'sku' => 'SKU-1337',
+                'cover_file_id' => null,
+                'modifier_groups' => [
+                    [
+                        'id' => 777,
+                        'name' => 'Extra',
+                        'minimum' => 0,
+                        'maximum' => 1,
+                        'group_order' => 1,
+                        'active' => true,
+                        'options' => [
+                            [
+                                'id' => 9001,
+                                'child_product_id' => 1356,
+                                'name' => 'Catupiry Original',
+                                'description' => '',
+                                'sku' => '',
+                                'cover_file_id' => null,
+                                'quantity' => 1,
+                                'price' => 0,
+                                'active' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            1356 => [
+                'id' => 1356,
+                'name' => 'Catupiry Original',
+                'description' => '',
+                'sku' => '',
+                'cover_file_id' => null,
+                'modifier_groups' => [],
+            ],
+        ];
+
+        $payload = $this->invokePrivateMethod(
+            $service,
+            'buildIfoodCatalogModifierPayload',
+            'merchant-1',
+            $catalogProductsById[1343],
+            [],
+            $catalogProductsById
+        );
+
+        self::assertEqualsCanonicalizing(['1514', '9001'], array_column($payload['options'], 'externalCode'));
+        self::assertEqualsCanonicalizing(['98', '777'], array_column($payload['option_groups'], 'externalCode'));
+        self::assertSame(['1337', '1356'], array_column($payload['products'], 'externalCode'));
+        self::assertSame(1, count($payload['products'][0]['optionGroups']));
+        self::assertSame([], $payload['products'][1]['optionGroups']);
+        self::assertIsArray($payload['products'][0]['optionGroups'][0]);
+        self::assertIsString($payload['products'][0]['optionGroups'][0]['id']);
+        self::assertNotSame('', $payload['products'][0]['optionGroups'][0]['id']);
+        self::assertSame(0, $payload['products'][0]['optionGroups'][0]['min']);
+        self::assertSame(1, $payload['products'][0]['optionGroups'][0]['max']);
+    }
+
+    public function testUpsertIfoodCatalogItemV2ForcesDefaultTypeWhenProductHasModifiers(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(iFoodService::class, 'authTokenCache', []);
+
+        $tokenResponse = $this->createStub(ResponseInterface::class);
+        $tokenResponse->method('getStatusCode')->willReturn(200);
+        $tokenResponse->method('getContent')->willReturn('{"accessToken":"token-123","expiresIn":3600}');
+        $tokenResponse->method('toArray')->willReturn([
+            'accessToken' => 'token-123',
+            'expiresIn' => 3600,
+        ]);
+
+        $putResponse = $this->createStub(ResponseInterface::class);
+        $putResponse->method('getStatusCode')->willReturn(200);
+        $putResponse->method('getContent')->willReturn('{}');
+
+        $capturedPayload = null;
+        $requestCount = 0;
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient
+            ->expects(self::exactly(2))
+            ->method('request')
+            ->willReturnCallback(function (string $method, string $url, array $options) use (&$capturedPayload, &$requestCount, $tokenResponse, $putResponse): ResponseInterface {
+                $requestCount++;
+
+                if ($requestCount === 1) {
+                    self::assertSame('POST', $method);
+                    self::assertSame('https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', $url);
+
+                    return $tokenResponse;
+                }
+
+                self::assertSame('PUT', $method);
+                self::assertSame('https://merchant-api.ifood.com.br/catalog/v2.0/merchants/merchant-1/items', $url);
+                $capturedPayload = $options['json'] ?? null;
+
+                return $putResponse;
+            });
+
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        $product = [
+            'id' => 1343,
+            'name' => 'Combo Alpha Gyros',
+            'description' => 'Combo principal',
+            'price' => 73.0,
+            'product_active' => 1,
+            'cover_file_id' => null,
+            'modifier_groups' => [
+                [
+                    'id' => 98,
+                    'name' => 'Adicionais',
+                    'minimum' => 0,
+                    'maximum' => 3,
+                    'group_order' => 1,
+                    'active' => true,
+                    'options' => [
+                        [
+                            'id' => 1514,
+                            'child_product_id' => 1337,
+                            'name' => 'Molho Especial',
+                            'description' => '',
+                            'sku' => '',
+                            'cover_file_id' => null,
+                            'quantity' => 1,
+                            'price' => 7.99,
+                            'active' => true,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $existing = [
+            'item_id' => 'item-uuid-1',
+            'product_id' => 'product-uuid-1',
+            'category_id' => 'category-uuid-1',
+        ];
+
+        $existingItemFlat = [
+            'item' => [
+                'type' => 'DEFAULT',
+            ],
+            'options' => [],
+        ];
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'upsertIfoodCatalogItemV2',
+            'merchant-1',
+            $product,
+            $existing,
+            'category-uuid-1',
+            $existingItemFlat
+        );
+
+        self::assertTrue($result['ok']);
+        self::assertIsArray($capturedPayload);
+        self::assertSame('DEFAULT', $capturedPayload['item']['type']);
+        self::assertSame('category-uuid-1', $capturedPayload['item']['categoryId']);
+        self::assertSame('1343', $capturedPayload['item']['externalCode']);
+        self::assertSame('1343', $capturedPayload['products'][0]['externalCode']);
+        self::assertCount(1, $capturedPayload['optionGroups']);
+        self::assertCount(1, $capturedPayload['options']);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed

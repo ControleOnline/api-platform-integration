@@ -2700,6 +2700,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $categoryName = $categoryId !== null ? trim((string) ($row['category_name'] ?? '')) : null;
         $modifierGroups = is_array($row['modifier_groups'] ?? null) ? $row['modifier_groups'] : [];
         $modifierGroups = $this->enrichIfoodModifierGroupsWithRemoteOptions($modifierGroups, $remoteByEc);
+        $localSyncMarker = $this->getIfoodExtraDataValue('Product', $productId, 'sync_synced_at') !== null;
         $hasRequiredModifiers = !empty(array_filter($modifierGroups, static function (array $group): bool {
             return !empty($group['required']) || (int) ($group['minimum'] ?? 0) >= 1;
         }));
@@ -2727,7 +2728,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'active'           => (int) ($row['product_active'] ?? 1) === 1,
             'eligible'         => empty($blockers),
             'blockers'         => $blockers,
-            'published_remotely' => $remoteEntry !== null,
+            'published_remotely' => $remoteEntry !== null || $localSyncMarker,
             'ifood_item_id'    => !empty($remoteEntry['option_id']) ? null : ($remoteEntry['item_id'] ?? null),
             'ifood_option_id'  => $remoteEntry['option_id'] ?? null,
             'ifood_status'     => $remoteEntry['status'] ?? null,
@@ -2735,7 +2736,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'cover_image_url'  => $this->buildPublicFileDownloadUrl($row['cover_file_id'] ?? null),
         ];
 
-        $view['sync'] = $this->buildIfoodProductSyncState($view, $remoteEntry !== null);
+        $view['sync'] = $this->buildIfoodProductSyncState($view, $remoteEntry !== null || $localSyncMarker);
 
         return $view;
     }
@@ -2746,10 +2747,9 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $options = is_array($group['options'] ?? null) ? $group['options'] : [];
             $group['options'] = array_map(function (array $option) use ($remoteByEc): array {
                 $relationId = (int) ($option['id'] ?? 0);
-                $childProductId = (int) ($option['child_product_id'] ?? 0);
                 $remoteEntry = null;
 
-                foreach (['option-' . $relationId, (string) $childProductId] as $candidate) {
+                foreach ([(string) $relationId] as $candidate) {
                     if ($candidate !== '' && !empty($remoteByEc[$candidate]['option_id'])) {
                         $remoteEntry = $remoteByEc[$candidate];
                         break;
@@ -3020,7 +3020,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     {
         $this->init();
 
-        $rows = $this->fetchCatalogProducts($provider, $this->normalizeProductIds($productIds));
+        $rows = $this->fetchCatalogProducts($provider);
+        $rows = $this->expandCatalogProductsWithModifierDescendants($rows, $this->normalizeProductIds($productIds));
         if (empty($rows)) {
             return;
         }
@@ -3029,7 +3030,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         foreach ($rows as $row) {
             $product = $this->buildIfoodMenuProductView($row, []);
             $productId = (int) ($product['id'] ?? 0);
-            if ($productId <= 0 || empty($product['eligible'])) {
+            if ($productId <= 0) {
                 continue;
             }
 
@@ -3138,6 +3139,16 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             foreach ($group['products'] as $prod) {
                 $ec       = (string) $prod['id'];
                 $existing = $byEc[$ec] ?? null;
+                if ($existing === null) {
+                    $fallbackRemoteItem = $this->findIfoodCatalogRemoteItemByProductFallback($remoteItems, $prod);
+                    if (is_array($fallbackRemoteItem)) {
+                        $existing = [
+                            'item_id' => $this->normalizeString($fallbackRemoteItem['id'] ?? null),
+                            'product_id' => $this->normalizeString($fallbackRemoteItem['productId'] ?? null),
+                            'category_id' => $this->normalizeString($fallbackRemoteItem['_categoryId'] ?? null),
+                        ];
+                    }
+                }
 
                 $existingFlat = null;
                 if (!empty($existing['item_id'])) {
@@ -3187,6 +3198,64 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 'errors'         => $errors,
             ],
         ];
+    }
+
+    private function expandCatalogProductsWithModifierDescendants(array $products, array $selectedProductIds): array
+    {
+        if (empty($selectedProductIds) || empty($products)) {
+            return $products;
+        }
+
+        $productsById = [];
+        foreach ($products as $product) {
+            $productId = (int) ($product['id'] ?? 0);
+            if ($productId > 0) {
+                $productsById[$productId] = $product;
+            }
+        }
+
+        if (empty($productsById)) {
+            return [];
+        }
+
+        $includedProductIds = [];
+        $queue = [];
+        foreach ($selectedProductIds as $selectedProductId) {
+            $productId = (int) $selectedProductId;
+            if ($productId <= 0 || !isset($productsById[$productId]) || isset($includedProductIds[$productId])) {
+                continue;
+            }
+
+            $includedProductIds[$productId] = true;
+            $queue[] = $productId;
+        }
+
+        while (!empty($queue)) {
+            $currentProductId = array_shift($queue);
+            $currentProduct = $productsById[$currentProductId] ?? null;
+            if (!is_array($currentProduct)) {
+                continue;
+            }
+
+            $modifierGroups = is_array($currentProduct['modifier_groups'] ?? null) ? $currentProduct['modifier_groups'] : [];
+            foreach ($modifierGroups as $group) {
+                $options = is_array($group['options'] ?? null) ? $group['options'] : [];
+                foreach ($options as $option) {
+                    $childProductId = (int) ($option['child_product_id'] ?? 0);
+                    if ($childProductId <= 0 || !isset($productsById[$childProductId]) || isset($includedProductIds[$childProductId])) {
+                        continue;
+                    }
+
+                    $includedProductIds[$childProductId] = true;
+                    $queue[] = $childProductId;
+                }
+            }
+        }
+
+        return array_values(array_filter(
+            $products,
+            static fn(array $product): bool => isset($includedProductIds[(int) ($product['id'] ?? 0)])
+        ));
     }
 
     public function syncCatalogFromIfood(People $provider): array
@@ -3240,14 +3309,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         foreach ($items as $item) {
             $itemId       = $this->normalizeString($item['id'] ?? null);
             $itemName     = $this->normalizeString($item['name'] ?? null);
+            $itemSku      = $this->normalizeString($item['ean'] ?? null);
             if ($itemId === '' || isset($syncedItemIds[$itemId])) continue;
 
             $product = null;
+            $matchedByFallback = false;
+            if (!$product && $itemSku !== '') {
+                $product = $this->entityManager->getRepository(Product::class)->findOneBy([
+                    'company' => $provider,
+                    'sku' => $itemSku,
+                ]);
+                $matchedByFallback = $product instanceof Product;
+            }
+
             if (!$product && $itemName !== '') {
                 $product = $this->entityManager->getRepository(Product::class)->findOneBy([
                     'company' => $provider,
                     'product' => $itemName,
                 ]);
+                $matchedByFallback = $product instanceof Product;
             }
 
             if ($product) {
@@ -3260,6 +3340,35 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $syncedItemIds[$itemId] = true;
                 $syncedProductIdSet[$productId] = true;
                 $syncedProductIds[] = $productId;
+
+                if ($matchedByFallback) {
+                    $productRows = $this->fetchCatalogProducts($provider, [$productId]);
+                    $productRow = is_array($productRows[0] ?? null) ? $productRows[0] : null;
+                    if (is_array($productRow)) {
+                        $existingItemFlat = $this->fetchIfoodCatalogItemFlatV2($merchantId, $itemId);
+                        $repairResult = $this->upsertIfoodCatalogItemV2(
+                            $merchantId,
+                            $productRow,
+                            [
+                                'item_id' => $itemId,
+                                'product_id' => $this->normalizeString($item['productId'] ?? null),
+                                'category_id' => $this->normalizeString($item['_categoryId'] ?? null),
+                            ],
+                            '',
+                            $existingItemFlat
+                        );
+
+                        if (empty($repairResult['ok'])) {
+                            self::$logger->warning('iFood catalog v2 sync republish failed while correcting externalCode', [
+                                'merchant_id' => $merchantId,
+                                'product_id' => $productId,
+                                'item_id' => $itemId,
+                                'http_status' => $repairResult['http_status'] ?? null,
+                                'error' => $repairResult['error'] ?? null,
+                            ]);
+                        }
+                    }
+                }
             }
         }
 
@@ -3275,6 +3384,37 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ];
     }
 
+    private function findIfoodCatalogRemoteItemByProductFallback(array $remoteItems, array $product): ?array
+    {
+        $localSku = $this->normalizeString($product['sku'] ?? null);
+        $localName = $this->normalizeText($this->normalizeString($product['name'] ?? null));
+        $nameMatch = null;
+
+        foreach ($remoteItems as $remoteItem) {
+            if (!is_array($remoteItem)) {
+                continue;
+            }
+
+            $remoteItemId = $this->normalizeString($remoteItem['id'] ?? null);
+            if ($remoteItemId === '') {
+                continue;
+            }
+
+            if ($localSku !== '' && $this->normalizeString($remoteItem['ean'] ?? null) === $localSku) {
+                return $remoteItem;
+            }
+
+            if ($nameMatch === null && $localName !== '') {
+                $remoteName = $this->normalizeText($this->normalizeString($remoteItem['name'] ?? null));
+                if ($remoteName !== '' && $remoteName === $localName) {
+                    $nameMatch = $remoteItem;
+                }
+            }
+        }
+
+        return $nameMatch;
+    }
+
     private function fetchCatalogProducts(People $provider, array $productIds = []): array
     {
         $connection = $this->entityManager->getConnection();
@@ -3283,6 +3423,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             SELECT
                 p.id,
                 p.product AS name,
+                p.sku,
                 p.description,
                 p.price,
                 p.type,
@@ -3834,12 +3975,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             return [];
         }
 
-        $candidates = [$ec];
-        if (preg_match('/^option-product-(\d+)$/', $ec, $matches)) {
-            $candidates[] = $matches[1];
-        }
-
-        return array_values(array_unique($candidates));
+        return [$ec];
     }
 
     private function getOrCreateDefaultCatalogCategory(string $merchantId, string $catalogId): ?string
@@ -4125,12 +4261,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                 $externalCode = $this->normalizeString($option['externalCode'] ?? null);
                 if ($externalCode !== '') {
                     $optionsByExternalCode[$externalCode] = $optionId;
-                    continue;
-                }
-
-                $productId = $this->normalizeString($option['productId'] ?? null);
-                if ($productId !== '') {
-                    $optionsByExternalCode['option-product-' . $productId] = $optionId;
                 }
             }
         }
@@ -4138,7 +4268,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $optionsByExternalCode;
     }
 
-    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null): array
+    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
     {
         $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
         if (empty($modifierGroups)) {
@@ -4155,6 +4285,8 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         $optionGroups = [];
         $options = [];
         $existingOptionIds = $this->mapIfoodOptionIdsByExternalCode($existingItemFlat);
+        $buildingProductIds = [];
+        $processedProductIds = [];
 
         foreach ($modifierGroups as $groupIndex => $group) {
             $groupId = (int) ($group['id'] ?? 0);
@@ -4175,50 +4307,27 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
                     continue;
                 }
 
-                $childProductUuid = $this->generateStableUuidFromSeed('catalog:option-product:' . $childProductId);
-                if (!isset($productsById[$childProductUuid])) {
-                    $childProductBody = [
-                        'id' => $childProductUuid,
-                        'externalCode' => 'option-product-' . $childProductId,
-                        'name' => $childName,
-                        'description' => (string) ($option['description'] ?? ''),
-                        'serving' => 'SERVES_1',
-                        'optionGroups' => [],
-                    ];
-
-                    $childSku = trim((string) ($option['sku'] ?? ''));
-                    if ($childSku !== '') {
-                        $childProductBody['ean'] = $childSku;
-                    }
-
-                    $childQuantity = (float) ($option['quantity'] ?? 0);
-                    if ($childQuantity > 0) {
-                        $childProductBody['quantity'] = $childQuantity;
-                    }
-
-                    $childCoverFileId = $option['cover_file_id'] ?? null;
-                    $childSourceImageUrl = $this->buildPublicFileDownloadUrl($childCoverFileId);
-                    if ($childSourceImageUrl) {
-                        $uploadedChildImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $childCoverFileId, $childSourceImageUrl);
-                        if ($uploadedChildImagePath) {
-                            $childProductBody['imagePath'] = $uploadedChildImagePath;
-                        } else {
-                            self::$logger->warning('iFood catalog child image upload skipped, proceeding without imagePath', [
-                                'merchant_id' => $merchantId,
-                                'product_id' => $product['id'] ?? null,
-                                'child_product_id' => $childProductId,
-                                'image_url' => $childSourceImageUrl,
-                            ]);
-                        }
-                    }
-
-                    $productsById[$childProductUuid] = $childProductBody;
+                $childProductRow = is_array($catalogProductsById[$childProductId] ?? null)
+                    ? $catalogProductsById[$childProductId]
+                    : [];
+                $childProductUuid = $this->appendIfoodCatalogModifierProductBranch(
+                    $merchantId,
+                    $childProductRow,
+                    $option,
+                    $catalogProductsById,
+                    $productsById,
+                    $optionGroups,
+                    $options,
+                    $existingOptionIds,
+                    $buildingProductIds,
+                    $processedProductIds
+                );
+                if ($childProductUuid === '') {
+                    continue;
                 }
 
-                $optionExternalCode = 'option-' . $relationId;
-                $legacyOptionExternalCode = 'option-product-' . $childProductId;
+                $optionExternalCode = (string) $relationId;
                 $optionUuid = $existingOptionIds[$optionExternalCode]
-                    ?? $existingOptionIds[$legacyOptionExternalCode]
                     ?? $this->generateStableUuidFromSeed('catalog:option:' . $relationId);
                 $optionIds[] = $optionUuid;
                 $optionPrice = round((float) ($option['price'] ?? 0), 2);
@@ -4249,7 +4358,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $optionGroups[] = [
                 'id' => $groupUuid,
                 'name' => $groupName,
-                'externalCode' => 'option-group-' . $groupId,
+                'externalCode' => (string) $groupId,
                 'status' => !empty($group['active']) ? 'AVAILABLE' : 'UNAVAILABLE',
                 'index' => max(0, (int) ($group['group_order'] ?? $groupIndex)),
                 'optionGroupType' => 'DEFAULT',
@@ -4263,6 +4372,201 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'option_groups' => $optionGroups,
             'options' => $options,
         ];
+    }
+
+    private function appendIfoodCatalogModifierProductBranch(
+        string $merchantId,
+        array $productRow,
+        array $fallbackOption,
+        ?array $catalogProductsById,
+        array &$productsById,
+        array &$optionGroups,
+        array &$options,
+        array &$existingOptionIds,
+        array &$buildingProductIds,
+        array &$processedProductIds
+    ): string {
+        $childProductId = (int) ($productRow['id'] ?? ($fallbackOption['child_product_id'] ?? 0));
+        if ($childProductId <= 0) {
+            return '';
+        }
+
+        $childProductUuid = $this->generateStableUuidFromSeed('catalog:option-product:' . $childProductId);
+        if (isset($processedProductIds[$childProductId])) {
+            return $childProductUuid;
+        }
+
+        if (isset($buildingProductIds[$childProductId])) {
+            return $childProductUuid;
+        }
+
+        $buildingProductIds[$childProductId] = true;
+
+        $childName = trim((string) ($productRow['name'] ?? $fallbackOption['name'] ?? ''));
+        if ($childName === '') {
+            $childName = 'Produto';
+        }
+
+        $childDescription = trim((string) ($productRow['description'] ?? $fallbackOption['description'] ?? ''));
+        $childSku = trim((string) ($productRow['sku'] ?? $fallbackOption['sku'] ?? ''));
+        $childQuantity = (float) ($fallbackOption['quantity'] ?? $productRow['quantity'] ?? 0);
+        $childCoverFileId = $productRow['cover_file_id'] ?? $fallbackOption['cover_file_id'] ?? null;
+
+        if (!isset($productsById[$childProductUuid])) {
+            $childProductBody = [
+                'id' => $childProductUuid,
+                'externalCode' => (string) $childProductId,
+                'name' => $childName,
+                'description' => $childDescription,
+                'serving' => 'SERVES_1',
+                'optionGroups' => [],
+            ];
+
+            if ($childSku !== '') {
+                $childProductBody['ean'] = $childSku;
+            }
+
+            if ($childQuantity > 0) {
+                $childProductBody['quantity'] = $childQuantity;
+            }
+
+            $childSourceImageUrl = $this->buildPublicFileDownloadUrl($childCoverFileId);
+            if ($childSourceImageUrl) {
+                $uploadedChildImagePath = $this->uploadIfoodCatalogImageAndResolvePath($merchantId, $childCoverFileId, $childSourceImageUrl);
+                if ($uploadedChildImagePath) {
+                    $childProductBody['imagePath'] = $uploadedChildImagePath;
+                } else {
+                    self::$logger->warning('iFood catalog child image upload skipped, proceeding without imagePath', [
+                        'merchant_id' => $merchantId,
+                        'product_id' => $fallbackOption['product_id'] ?? null,
+                        'child_product_id' => $childProductId,
+                        'image_url' => $childSourceImageUrl,
+                    ]);
+                }
+            }
+
+            $productsById[$childProductUuid] = $childProductBody;
+        }
+
+        $childModifierGroups = is_array($productRow['modifier_groups'] ?? null) ? $productRow['modifier_groups'] : [];
+        foreach ($childModifierGroups as $groupIndex => $group) {
+            $groupId = (int) ($group['id'] ?? 0);
+            $groupName = trim((string) ($group['name'] ?? ''));
+            $groupOptions = is_array($group['options'] ?? null) ? $group['options'] : [];
+            if ($groupId <= 0 || $groupName === '' || empty($groupOptions)) {
+                continue;
+            }
+
+            $groupUuid = $this->generateStableUuidFromSeed('catalog:group:' . $groupId);
+            $optionIds = [];
+
+            foreach ($groupOptions as $optionIndex => $option) {
+                $relationId = (int) ($option['id'] ?? 0);
+                $grandChildProductId = (int) ($option['child_product_id'] ?? 0);
+                $grandChildName = trim((string) ($option['name'] ?? ''));
+                if ($relationId <= 0 || $grandChildProductId <= 0 || $grandChildName === '') {
+                    continue;
+                }
+
+                $grandChildRow = is_array($catalogProductsById[$grandChildProductId] ?? null)
+                    ? $catalogProductsById[$grandChildProductId]
+                    : [];
+                $grandChildUuid = $this->appendIfoodCatalogModifierProductBranch(
+                    $merchantId,
+                    $grandChildRow,
+                    $option,
+                    $catalogProductsById,
+                    $productsById,
+                    $optionGroups,
+                    $options,
+                    $existingOptionIds,
+                    $buildingProductIds,
+                    $processedProductIds
+                );
+
+                if ($grandChildUuid === '') {
+                    continue;
+                }
+
+                $optionExternalCode = (string) $relationId;
+                $optionUuid = $existingOptionIds[$optionExternalCode]
+                    ?? $this->generateStableUuidFromSeed('catalog:option:' . $relationId);
+                $optionIds[] = $optionUuid;
+                $optionPrice = round((float) ($option['price'] ?? 0), 2);
+
+                $options[] = [
+                    'id' => $optionUuid,
+                    'status' => !empty($option['active']) ? 'AVAILABLE' : 'UNAVAILABLE',
+                    'index' => $optionIndex,
+                    'productId' => $grandChildUuid,
+                    'price' => [
+                        'value' => $optionPrice,
+                        'originalValue' => $optionPrice,
+                    ],
+                    'externalCode' => $optionExternalCode,
+                ];
+            }
+
+            if (empty($optionIds)) {
+                continue;
+            }
+
+            $childProductOptionGroups = is_array($productsById[$childProductUuid]['optionGroups'] ?? null)
+                ? $productsById[$childProductUuid]['optionGroups']
+                : [];
+            $childOptionGroupIds = [];
+            foreach ($childProductOptionGroups as $childOptionGroup) {
+                if (!is_array($childOptionGroup)) {
+                    continue;
+                }
+
+                $existingGroupId = $this->normalizeString($childOptionGroup['id'] ?? null);
+                if ($existingGroupId !== '') {
+                    $childOptionGroupIds[$existingGroupId] = true;
+                }
+            }
+
+            if (!isset($childOptionGroupIds[$groupUuid])) {
+                $childProductOptionGroups[] = [
+                    'id' => $groupUuid,
+                    'min' => max(0, (int) ($group['minimum'] ?? 0)),
+                    'max' => max(0, (int) ($group['maximum'] ?? 0)),
+                ];
+                $productsById[$childProductUuid]['optionGroups'] = array_values($childProductOptionGroups);
+            }
+
+            $optionGroups[] = [
+                'id' => $groupUuid,
+                'name' => $groupName,
+                'externalCode' => (string) $groupId,
+                'status' => !empty($group['active']) ? 'AVAILABLE' : 'UNAVAILABLE',
+                'index' => max(0, (int) ($group['group_order'] ?? $groupIndex)),
+                'optionGroupType' => 'DEFAULT',
+                'optionIds' => $optionIds,
+            ];
+        }
+
+        $processedProductIds[$childProductId] = true;
+        unset($buildingProductIds[$childProductId]);
+
+        return $childProductUuid;
+    }
+
+    private function indexCatalogProductsById(array $products): array
+    {
+        $indexed = [];
+        foreach ($products as $product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $productId = (int) ($product['id'] ?? 0);
+            if ($productId > 0) {
+                $indexed[$productId] = $product;
+            }
+        }
+
+        return $indexed;
     }
 
     private function normalizeImageMimeType(?string $contentType): ?string
@@ -4668,7 +4972,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return str_contains($message, 'concurrently modified');
     }
 
-    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null): array
+    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
     {
         $token = $this->getAccessToken();
         if (!$token) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];
@@ -4705,7 +5009,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'externalCode' => $ec,
             'serving'      => 'SERVES_1',
         ];
-        $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product, $existingItemFlat);
+        $modifierPayload = $this->buildIfoodCatalogModifierPayload($merchantId, $product, $existingItemFlat, $catalogProductsById);
         $productBody['optionGroups'] = $modifierPayload['product_option_groups'];
         $coverFileId = $product['cover_file_id'] ?? null;
         $sourceImageUrl = $this->buildPublicFileDownloadUrl($coverFileId);
