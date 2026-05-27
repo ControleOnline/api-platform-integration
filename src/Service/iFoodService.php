@@ -7325,21 +7325,23 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             $this->entityManager->flush();
             if ($parentProduct && isset($item['groupName'])) {
                 $productGroup = $this->productGroupService->discoveryProductGroup($parentProduct, $item['groupName']);
+                $quantity = (float) ($item['quantity'] ?? 1);
                 $productGroupProduct = $this->entityManager
                     ->getRepository(ProductGroupProduct::class)
-                    ->findSharedGroupItem($productGroup, $product, $productType);
+                    ->findSharedGroupItem($productGroup, $product, $productType, $quantity);
 
                 if (!$productGroupProduct instanceof ProductGroupProduct) {
                     $productGroupProduct = new ProductGroupProduct();
-                    $productGroupProduct->setProduct($parentProduct);
                     $productGroupProduct->setProductChild($product);
                     $productGroupProduct->setProductType($productType);
                     $productGroupProduct->setProductGroup($productGroup);
+                    $productGroupProduct->setProduct($productType === 'feedstock' ? $parentProduct : null);
                     $this->entityManager->persist($productGroupProduct);
                 }
 
-                $productGroupProduct->setQuantity((float) ($item['quantity'] ?? 1));
+                $productGroupProduct->setQuantity($quantity);
                 $productGroupProduct->setPrice((float) ($item['unitPrice'] ?? 0));
+                $productGroupProduct->setProduct($productType === 'feedstock' ? $parentProduct : null);
                 $this->entityManager->flush();
             }
         }

@@ -6460,7 +6460,6 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
                        AND pg_parent_req.active = 1
                     INNER JOIN product_group_product pgp_req
                         ON pgp_req.product_group_id = pg_req.id
-                       AND pgp_req.product_id = p.id
                     INNER JOIN product child_req
                         ON child_req.id = pgp_req.product_child_id
                     WHERE pg_req.active = 1
@@ -8332,23 +8331,25 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         }
 
         if ($parentProduct && $this->hasIncomingProductGroupReference($item)) {
-            $group = $this->resolveIncomingProductGroup($parentProduct, $product, $item);
+            $group = $this->resolveIncomingProductGroup($parentProduct, $product, $item, $productType);
 
             if ($group instanceof ProductGroup) {
                 $pgpRepository = $this->entityManager->getRepository(ProductGroupProduct::class);
-                $pgp = $pgpRepository->findSharedGroupItem($group, $product, $productType);
+                $quantity = (float) ($item['amount'] ?? 1);
+                $pgp = $pgpRepository->findSharedGroupItem($group, $product, $productType, $quantity);
 
                 if (!$pgp instanceof ProductGroupProduct) {
                     $pgp = new ProductGroupProduct();
-                    $pgp->setProduct($parentProduct);
                     $pgp->setProductChild($product);
                     $pgp->setProductGroup($group);
                     $pgp->setProductType($productType);
+                    $pgp->setProduct($productType === 'feedstock' ? $parentProduct : null);
                     $this->entityManager->persist($pgp);
                 }
 
-                $pgp->setQuantity($item['amount'] ?? 1);
+                $pgp->setQuantity($quantity);
                 $pgp->setPrice(isset($item['sku_price']) ? ((float) $item['sku_price']) / 100 : 0);
+                $pgp->setProduct($productType === 'feedstock' ? $parentProduct : null);
 
                 $this->entityManager->flush();
             }
@@ -8359,7 +8360,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         return $product;
     }
 
-    private function resolveIncomingProductGroup(?Product $parentProduct, Product $product, array $item): ?ProductGroup
+    private function resolveIncomingProductGroup(
+        ?Product $parentProduct,
+        Product $product,
+        array $item,
+        ?string $productType = null
+    ): ?ProductGroup
     {
         if (!$parentProduct instanceof Product) {
             return null;
@@ -8377,7 +8383,12 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             );
         }
 
-        $catalogLink = $this->findProductGroupProductLink($parentProduct, $product);
+        $catalogLink = $this->findProductGroupProductLink(
+            $parentProduct,
+            $product,
+            $productType,
+            (float) ($item['amount'] ?? 1)
+        );
 
         return $catalogLink?->getProductGroup();
     }
@@ -8388,11 +8399,16 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
             || trim((string) ($item['content_name'] ?? '')) !== '';
     }
 
-    private function findProductGroupProductLink(Product $parentProduct, Product $product): ?ProductGroupProduct
+    private function findProductGroupProductLink(
+        Product $parentProduct,
+        Product $product,
+        ?string $productType = null,
+        ?float $quantity = null
+    ): ?ProductGroupProduct
     {
         $link = $this->entityManager
             ->getRepository(ProductGroupProduct::class)
-            ->findLinkedGroupItemForParent($parentProduct, $product);
+            ->findLinkedGroupItemForParent($parentProduct, $product, $productType, $quantity);
 
         if (!$link instanceof ProductGroupProduct || !$link->getProductGroup() instanceof ProductGroup) {
             return null;
