@@ -16,6 +16,11 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
+use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface;
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
 use DateTimeInterface;
@@ -23,7 +28,12 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
-class Food99Service extends DefaultFoodService implements EventSubscriberInterface
+class Food99Service extends AbstractMarketplaceService implements
+    MarketplaceIntegrationHandlerInterface,
+    MarketplaceIntegrationStateProviderInterface,
+    MarketplaceLogisticsQuoteProviderInterface,
+    MarketplaceOrderSnapshotProviderInterface,
+    EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
     private const LEGACY_ORDER_CONTEXT = 'iFood';
@@ -84,10 +94,9 @@ class Food99Service extends DefaultFoodService implements EventSubscriberInterfa
         'delivery_locator_shop_id',
     ];
 
-    private function init()
+    protected function getMarketplaceApp(): string
     {
-        self::$app = self::APP_CONTEXT;
-        self::$logger = $this->loggerService->getLogger(self::$app);
+        return self::APP_CONTEXT;
     }
 
     private function buildLogContext(?Integration $integration = null, array $json = [], array $extra = []): array

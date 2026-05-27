@@ -9,6 +9,8 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
+use ControleOnline\Service\Marketplace\MarketplaceProviderRegistry;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
@@ -36,6 +38,7 @@ class IntegrationService
         private ContainerInterface $container,
         private MessageBusInterface $bus,
         private ?LoggerService $loggerService = null,
+        private ?MarketplaceProviderRegistry $marketplaceProviderRegistry = null,
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
     }
@@ -64,6 +67,15 @@ class IntegrationService
         $integration = $manager->getRepository(Integration::class)->find($integrationId);
 
         return $integration instanceof Integration ? $integration : null;
+    }
+
+    private function resolveMarketplaceIntegrationHandler(Integration $integration): ?MarketplaceIntegrationHandlerInterface
+    {
+        if (!$this->marketplaceProviderRegistry instanceof MarketplaceProviderRegistry) {
+            return null;
+        }
+
+        return $this->marketplaceProviderRegistry->resolveIntegrationHandler((string) $integration->getQueueName());
     }
 
     private function buildIntegrationExecutionLockKey(int $integrationId): string
@@ -156,15 +168,23 @@ class IntegrationService
                 return;
             }
 
-            $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
             $method = 'integrate';
             $handled = false;
             $result = null;
-            if ($this->container->has($serviceName)) {
-                $service = $this->container->get($serviceName);
-                if (method_exists($service, $method)) {
-                    $handled = true;
-                    $result = $service->$method($integration);
+            $service = $this->resolveMarketplaceIntegrationHandler($integration);
+            if ($service instanceof MarketplaceIntegrationHandlerInterface) {
+                $handled = true;
+                $result = $service->$method($integration);
+            }
+
+            if (!$handled) {
+                $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+                if ($this->container->has($serviceName)) {
+                    $service = $this->container->get($serviceName);
+                    if (method_exists($service, $method)) {
+                        $handled = true;
+                        $result = $service->$method($integration);
+                    }
                 }
             }
 

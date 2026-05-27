@@ -38,3 +38,8 @@
 - O endpoint de `alternative` da documentacao atual e `/order/v1.0/disputes/{disputeId}/alternative`; qualquer uso de `alternativeId` deve ser validado contra a referencia oficial antes de alterar o client.
 - `HANDSHAKE_SETTLEMENT` deve fechar a disputa localmente. A UI nao deve continuar oferecendo acoes depois de `ACCEPTED`, `REJECTED`, `EXPIRED` ou `ALTERNATIVE_REPLIED`.
 - Cancelamento normal da loja continua separado da plataforma de negociacao: buscar `/orders/{id}/cancellationReasons` e solicitar `/orders/{id}/requestCancellation` com `{ "reason": "codigo" }`.
+
+## Marketplace contracts
+- `AbstractMarketplaceService` concentra bootstrap e utilitarios comuns dos providers de marketplace.
+- `MarketplaceProviderRegistry` e as interfaces de capability resolvem handlers, estados e snapshots por contrato; callers nao devem concatenar nomes de classe.
+- Consultas novas devem ficar em repositórios ou resolvers dedicados; services de marketplace so orquestram e persistem estado.

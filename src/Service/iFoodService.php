@@ -22,7 +22,12 @@ use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
 use ControleOnline\Entity\Wallet;
 use ControleOnline\Entity\WalletPaymentType;
+use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
 use ControleOnline\Service\Client\WebsocketClient;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
@@ -30,7 +35,12 @@ use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
-class iFoodService extends DefaultFoodService implements EventSubscriberInterface
+class iFoodService extends AbstractMarketplaceService implements
+    MarketplaceIntegrationHandlerInterface,
+    MarketplaceIntegrationStateProviderInterface,
+    MarketplaceLogisticsQuoteProviderInterface,
+    MarketplaceOrderSnapshotProviderInterface,
+    EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_IFOOD;
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
@@ -41,13 +51,25 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private const CATALOG_CONCURRENT_RETRY_DELAYS_US = [500000, 1500000, 3000000, 5000000];
     private static array $authTokenCache = [];
     private static array $catalogImagePathCache = [];
-    // INICIALIZAÇÃO
-    // Define constantes: app name, logger e entidade padrão do iFood
-    private function init()
+
+    protected function getMarketplaceApp(): string
     {
-        self::$app = 'iFood';
-        self::$logger = $this->loggerService->getLogger(self::$app);
-        self::$foodPeople = $this->peopleService->discoveryPeople('14380200000121', null, null, 'Ifood.com Agência de Restaurantes Online S.A', 'J');
+        return self::APP_CONTEXT;
+    }
+
+    protected function resolveMarketplacePeople(): ?People
+    {
+        if (!isset($this->peopleService)) {
+            return null;
+        }
+
+        return $this->peopleService->discoveryPeople(
+            '14380200000121',
+            null,
+            null,
+            'Ifood.com Agência de Restaurantes Online S.A',
+            'J'
+        );
     }
 
     // PONTO DE ENTRADA DO WEBHOOK
@@ -190,27 +212,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         ], $extra);
     }
 
-    private function normalizeString(mixed $value): string
-    {
-        if ($value instanceof \DateTimeInterface) {
-            return $value->format('Y-m-d H:i:s');
-        }
-
-        if ($value === null) {
-            return '';
-        }
-
-        if (is_bool($value)) {
-            return $value ? '1' : '0';
-        }
-
-        if (!is_scalar($value)) {
-            return '';
-        }
-
-        return trim((string) $value);
-    }
-
     private function resolveEventCode(array $event): string
     {
         $code = $event['fullCode']
@@ -246,11 +247,6 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
             'ORDER_FINISHED',
             'DELIVERY_CONCLUDED',
         ], true);
-    }
-
-    private function normalizeDigits(?string $value): string
-    {
-        return preg_replace('/\D+/', '', (string) $value) ?? '';
     }
 
     private function resolveCustomerDocumentNumber(array $customerData): ?string
@@ -564,7 +560,10 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
     private function resolveOrderDetailsFromEvent(string $orderId, array $event, ?Order $order = null): array
     {
         $eventOrderDetails = is_array($event['order'] ?? null) ? $event['order'] : [];
-        $storedOrderDetails = $order instanceof Order ? $this->findStoredIfoodOrderDetails($order) : [];
+        $otherInformations = $order instanceof Order ? $this->getDecodedOrderOtherInformations($order) : [];
+        $storedOrderDetails = $order instanceof Order
+            ? $this->findStoredIfoodOrderDetailsFromContext($otherInformations)
+            : [];
         $fetchedOrderDetails = [];
         $orderDetails = [];
 
@@ -582,7 +581,7 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         }
 
         if ($order instanceof Order && $orderDetails !== []) {
-            $this->persistResolvedIfoodOrderDetails($order, $event, $orderDetails);
+            $this->persistResolvedIfoodOrderDetails($order, $event, $orderDetails, $otherInformations);
         }
 
         self::$logger->info('iFood order details resolved for integration step', [
@@ -657,9 +656,17 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return $this->looksLikeIfoodOrderPayload($payload) ? $payload : [];
     }
 
-    private function findStoredIfoodOrderDetails(Order $order): array
+    private function findStoredIfoodOrderDetailsFromContext(array $otherInformations): array
     {
-        $context = $this->getIfoodContextOtherInformations($order);
+        $context = [];
+        foreach ([self::$app, strtolower(self::$app), strtoupper(self::$app)] as $contextKey) {
+            $candidateContext = $this->decodeOrderOtherInformationsValue($otherInformations[$contextKey] ?? null);
+            if ($candidateContext !== []) {
+                $context = $candidateContext;
+                break;
+            }
+        }
+
         if ($context === []) {
             return [];
         }
@@ -688,11 +695,15 @@ class iFoodService extends DefaultFoodService implements EventSubscriberInterfac
         return [];
     }
 
-    private function persistResolvedIfoodOrderDetails(Order $order, array $event, array $orderDetails): void
+    private function findStoredIfoodOrderDetails(Order $order): array
     {
-        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        return $this->findStoredIfoodOrderDetailsFromContext($this->getDecodedOrderOtherInformations($order));
+    }
+
+    private function persistResolvedIfoodOrderDetails(Order $order, array $event, array $orderDetails, array $otherInformations = []): void
+    {
         if ($otherInformations === []) {
-            $otherInformations = [];
+            $otherInformations = $this->getDecodedOrderOtherInformations($order);
         }
 
         $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::$app] ?? null);

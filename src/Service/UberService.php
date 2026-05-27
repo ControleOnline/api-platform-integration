@@ -9,10 +9,13 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Phone;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
+use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
-class UberService
+class UberService implements MarketplaceIntegrationHandlerInterface, MarketplaceIntegrationStateProviderInterface, MarketplaceLogisticsQuoteProviderInterface
 {
     private const APP_CONTEXT = 'Uber';
     private const API_BASE_URL = 'https://api.uber.com';
@@ -34,6 +37,11 @@ class UberService
         private readonly ConfigService $configService,
     ) {
         self::$logger = $this->loggerService->getLogger(self::APP_CONTEXT);
+    }
+
+    public function getMarketplaceKey(): string
+    {
+        return self::APP_CONTEXT;
     }
 
     public function integrate(Integration $integration): ?Order

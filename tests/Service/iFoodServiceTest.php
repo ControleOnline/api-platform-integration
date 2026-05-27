@@ -427,11 +427,11 @@ class iFoodServiceTest extends TestCase
     public function testIfoodOrderHomologationSnapshotBuildsStoreReceivableFromMerchantRevenue(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
-        $loggerService = $this->createMock(\ControleOnline\Service\LoggerService::class);
+        $loggerService = $this->createStub(\ControleOnline\Service\LoggerService::class);
         $loggerService->method('getLogger')->willReturn($this->createNullLoggerStub());
         $this->setObjectProperty($service, 'loggerService', $loggerService);
 
-        $order = $this->createMock(Order::class);
+        $order = $this->createStub(Order::class);
         $order->method('getOtherInformations')->willReturn((object) [
             'iFood' => [
                 'latest_event_type' => 'PLACED',
@@ -594,7 +594,7 @@ class iFoodServiceTest extends TestCase
     public function testCatalogModifierRowsUseSharedJoin(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
-        $provider = $this->createMock(People::class);
+        $provider = $this->createStub(People::class);
         $provider->method('getId')->willReturn(7);
 
         $connection = $this->createMock(Connection::class);
@@ -608,7 +608,7 @@ class iFoodServiceTest extends TestCase
                 return [];
             });
 
-        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager = $this->createStub(EntityManagerInterface::class);
         $entityManager->method('getConnection')->willReturn($connection);
         $this->setObjectProperty($service, 'entityManager', $entityManager);
 

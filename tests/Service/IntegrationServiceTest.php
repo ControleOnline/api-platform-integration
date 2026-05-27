@@ -27,7 +27,7 @@ class IntegrationServiceTest extends TestCase
 {
     public function testAddManagerPushIntegrationsQueuesOnlyManagerDevicesWithToken(): void
     {
-        $company = $this->createMock(People::class);
+        $company = $this->createStub(People::class);
         $targetDevice = new Device();
         $targetDevice->setDevice('android-manager');
         $targetDevice->setMetadata([
