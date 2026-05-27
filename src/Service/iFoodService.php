@@ -11,7 +11,6 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Entity\PaymentType;
-use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\File;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
@@ -1610,92 +1609,6 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function normalizeExtraDataValue(mixed $value): string
-    {
-        if ($value instanceof \DateTimeInterface) {
-            return $value->format('Y-m-d H:i:s');
-        }
-
-        if (is_bool($value)) {
-            return $value ? '1' : '0';
-        }
-
-        if ($value === null) {
-            return '';
-        }
-
-        $normalizedValue = trim((string) $value);
-        if ($normalizedValue === '') {
-            return '';
-        }
-
-        if (function_exists('mb_substr')) {
-            return mb_substr($normalizedValue, 0, 255);
-        }
-
-        return substr($normalizedValue, 0, 255);
-    }
-
-    private function ensureIfoodFieldId(string $fieldName, string $fieldType = 'text'): ?int
-    {
-        $sql = <<<SQL
-            SELECT id
-            FROM extra_fields
-            WHERE context = :context
-              AND field_name = :fieldName
-            ORDER BY id ASC
-            LIMIT 1
-        SQL;
-
-        $connection = $this->entityManager->getConnection();
-        try {
-            $fieldId = $connection->fetchOne($sql, [
-                'context' => self::APP_CONTEXT,
-                'fieldName' => $fieldName,
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood extra field lookup failed', [
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-
-        if (is_numeric($fieldId)) {
-            return (int) $fieldId;
-        }
-
-        try {
-            $connection->insert('extra_fields', [
-                'field_name' => $fieldName,
-                'field_type' => $fieldType,
-                'context' => self::APP_CONTEXT,
-                'required' => 0,
-                'field_configs' => '{}',
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->warning('iFood extra field creation failed, retrying lookup', [
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        try {
-            $fieldId = $connection->fetchOne($sql, [
-                'context' => self::APP_CONTEXT,
-                'fieldName' => $fieldName,
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood extra field lookup retry failed', [
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-
-        return is_numeric($fieldId) ? (int) $fieldId : null;
-    }
-
     private function upsertIfoodExtraDataValue(
         string $entityName,
         int $entityId,
@@ -1707,17 +1620,22 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
-        $normalizedValue = $this->normalizeExtraDataValue($value);
         $this->extraDataService->upsertExtraDataValue(
             self::APP_CONTEXT,
             $entityName,
             $entityId,
             $fieldName,
-            $normalizedValue,
+            $value,
             $fieldType
         );
 
-        return $normalizedValue === '' ? null : $normalizedValue;
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $fieldType
+        );
     }
 
     private function persistOrderIntegrationState(Order $order, array $fields): void

@@ -1880,107 +1880,18 @@ class Food99Service extends AbstractMarketplaceService implements
         return (string) $code;
     }
 
-    private function normalizeExtraDataValue(mixed $value): string
-    {
-        if ($value instanceof \DateTimeInterface) {
-            return $value->format('Y-m-d H:i:s');
-        }
-
-        if (is_bool($value)) {
-            return $value ? '1' : '0';
-        }
-
-        if ($value === null) {
-            return '';
-        }
-
-        $normalizedValue = trim((string) $value);
-
-        if ($normalizedValue === '') {
-            return '';
-        }
-
-        if (function_exists('mb_substr')) {
-            return mb_substr($normalizedValue, 0, 255);
-        }
-
-        return substr($normalizedValue, 0, 255);
-    }
-
-    private function ensureFood99FieldId(string $fieldName, string $fieldType = 'text'): ?int
-    {
-        $sql = <<<SQL
-            SELECT id
-            FROM extra_fields
-            WHERE context = :context
-              AND field_name = :fieldName
-            ORDER BY id ASC
-            LIMIT 1
-        SQL;
-
-        $connection = $this->entityManager->getConnection();
-        $fieldId = $connection->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-        ]);
-
-        if (is_numeric($fieldId)) {
-            return (int) $fieldId;
-        }
-
-        try {
-            $connection->insert('extra_fields', [
-                'field_name' => $fieldName,
-                'field_type' => $fieldType,
-                'context' => self::APP_CONTEXT,
-                'required' => 0,
-                'field_configs' => '{}',
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->warning('Food99 extra field creation failed, retrying lookup', [
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        $fieldId = $connection->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-        ]);
-
-        return is_numeric($fieldId) ? (int) $fieldId : null;
-    }
-
     private function getFood99ExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
     {
         if ($entityId <= 0) {
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.data_value
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            WHERE ef.context = :context
-              AND ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = LOWER(:entityName)
-              AND ed.entity_id = :entityId
-            ORDER BY ed.id DESC
-            LIMIT 1
-        SQL;
-
-        $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-            'entityName' => $entityName,
-            'entityId' => $entityId,
-        ]);
-
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        return (string) $value;
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName
+        );
     }
 
     private function getFood99ExtraDataValueByEntity(object $entity, string $fieldName = 'code'): ?string
@@ -2011,56 +1922,22 @@ class Food99Service extends AbstractMarketplaceService implements
             return null;
         }
 
-        $fieldId = $this->ensureFood99FieldId($fieldName, $fieldType);
-        if (!$fieldId) {
-            self::$logger->error('Food99 extra field could not be ensured', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'field_name' => $fieldName,
-            ]);
-            return null;
-        }
-
-        $normalizedValue = $this->normalizeExtraDataValue($value);
-        $connection = $this->entityManager->getConnection();
-        $existingId = $connection->fetchOne(
-            'SELECT id FROM extra_data WHERE extra_fields_id = :fieldId AND LOWER(entity_name) = LOWER(:entityName) AND entity_id = :entityId ORDER BY id DESC LIMIT 1',
-            [
-                'fieldId' => $fieldId,
-                'entityName' => $entityName,
-                'entityId' => $entityId,
-            ]
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $value,
+            $fieldType
         );
 
-        $payload = [
-            'data_value' => $normalizedValue,
-            'source' => self::APP_CONTEXT,
-            'dateTime' => date('Y-m-d H:i:s'),
-        ];
-
-        try {
-            if (is_numeric($existingId)) {
-                $connection->update('extra_data', $payload, [
-                    'id' => (int) $existingId,
-                ]);
-            } else {
-                $connection->insert('extra_data', array_merge($payload, [
-                    'extra_fields_id' => $fieldId,
-                    'entity_id' => $entityId,
-                    'entity_name' => $entityName,
-                ]));
-            }
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 extra data upsert failed', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-
-        return $normalizedValue === '' ? null : $normalizedValue;
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $fieldType
+        );
     }
 
     private function findFood99EntityByExtraData(
@@ -2069,68 +1946,40 @@ class Food99Service extends AbstractMarketplaceService implements
         mixed $value,
         string $entityClass
     ): ?object {
-        $normalizedValue = $this->normalizeExtraDataValue($value);
+        $normalizedValue = trim((string) $value);
         if ($normalizedValue === '') {
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.entity_id
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            WHERE ef.context = :context
-              AND ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = LOWER(:entityName)
-              AND ed.data_value = :value
-            ORDER BY ed.id DESC
-            LIMIT 1
-        SQL;
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            $entityClass
+        );
 
-        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-            'entityName' => $entityName,
-            'value' => $normalizedValue,
-        ]);
-
-        if (!is_numeric($entityId)) {
-            return null;
-        }
-
-        return $this->entityManager->getRepository($entityClass)->find((int) $entityId);
+        return is_object($entity) ? $entity : null;
     }
 
     private function findFood99OrderByLegacyAwareExtraData(string $fieldName, mixed $value): ?Order
     {
-        $normalizedValue = $this->normalizeExtraDataValue($value);
+        $normalizedValue = trim((string) $value);
         if ($normalizedValue === '') {
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.entity_id
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            INNER JOIN orders o ON o.id = ed.entity_id
-            WHERE ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = 'order'
-              AND ed.data_value = :value
-              AND ef.context = :primaryContext
-              AND o.app = :orderApp
-            ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
-            LIMIT 1
-        SQL;
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            Order::class
+        );
 
-        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
-            'fieldName' => $fieldName,
-            'value' => $normalizedValue,
-            'primaryContext' => self::APP_CONTEXT,
-            'orderApp' => self::APP_CONTEXT,
-        ]);
+        if (!$entity instanceof Order || $entity->getApp() !== self::APP_CONTEXT) {
+            return null;
+        }
 
-        return is_numeric($entityId)
-            ? $this->entityManager->getRepository(Order::class)->find((int) $entityId)
-            : null;
+        return $entity;
     }
 
     private function getFood99OrderExtraDataValue(int $entityId, string $fieldName): ?string
@@ -2139,32 +1988,12 @@ class Food99Service extends AbstractMarketplaceService implements
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.data_value
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            INNER JOIN orders o ON o.id = ed.entity_id
-            WHERE ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = 'order'
-              AND ed.entity_id = :entityId
-              AND ef.context = :primaryContext
-              AND o.app = :orderApp
-            ORDER BY CASE WHEN ef.context = :primaryContext THEN 0 ELSE 1 END, ed.id DESC
-            LIMIT 1
-        SQL;
-
-        $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'fieldName' => $fieldName,
-            'entityId' => $entityId,
-            'primaryContext' => self::APP_CONTEXT,
-            'orderApp' => self::APP_CONTEXT,
-        ]);
-
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        return (string) $value;
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            'Order',
+            $entityId,
+            $fieldName
+        );
     }
 
     private function decodeOrderOtherInformationsValue(mixed $value): array

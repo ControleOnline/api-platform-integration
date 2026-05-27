@@ -282,34 +282,19 @@ class IfoodPeopleOperationsService extends AbstractMarketplaceService
 
     private function findEntityByExtraData(string $entityName, string $fieldName, string $value, string $entityClass): ?object
     {
-        if ($value === '') {
+        $normalizedValue = trim((string) $value);
+        if ($normalizedValue === '') {
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.entity_id
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            WHERE ef.context = :context
-              AND ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = LOWER(:entityName)
-              AND ed.data_value = :value
-            ORDER BY ed.id DESC
-            LIMIT 1
-        SQL;
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            $entityClass
+        );
 
-        $entityId = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context'    => self::APP_CONTEXT,
-            'fieldName'  => $fieldName,
-            'entityName' => $entityName,
-            'value'      => $value,
-        ]);
-
-        if (!is_numeric($entityId)) {
-            return null;
-        }
-
-        return $this->entityManager->getRepository($entityClass)->find((int) $entityId);
+        return is_object($entity) ? $entity : null;
     }
 
 

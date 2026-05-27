@@ -3,6 +3,8 @@
 namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Address;
+use ControleOnline\Entity\ExtraData;
+use ControleOnline\Entity\ExtraFields;
 use ControleOnline\Service\AddressService;
 use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Integration;
@@ -356,38 +358,48 @@ class DefaultFoodService
             return null;
         }
 
-        $entityName = null;
-        if (method_exists($entity, 'getEntityName')) {
-            $entityName = trim((string) $entity->getEntityName());
+        $candidates = [];
+        foreach ($this->extraDataService->getExtraDataFromEntity($entity) as $extraData) {
+            if (!$extraData instanceof ExtraData) {
+                continue;
+            }
+
+            $extraFields = $extraData->getExtraFields();
+            if (!$extraFields instanceof ExtraFields) {
+                continue;
+            }
+
+            if (trim((string) $extraFields->getContext()) !== (string) self::$app) {
+                continue;
+            }
+
+            $fieldName = strtolower(trim((string) $extraFields->getName()));
+            if (!in_array($fieldName, ['id', 'code'], true)) {
+                continue;
+            }
+
+            $value = trim((string) $extraData->getValue());
+            if ($value === '') {
+                continue;
+            }
+
+            $candidates[] = [
+                'priority' => $fieldName === 'id' ? 0 : 1,
+                'id' => $extraData->getId(),
+                'value' => $value,
+            ];
         }
-        if ($entityName === null || $entityName === '') {
-            $entityName = (new \ReflectionClass($entity))->getShortName();
-        }
 
-        $sql = <<<SQL
-            SELECT ed.data_value
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            WHERE ef.context = :context
-              AND LOWER(ed.entity_name) = LOWER(:entityName)
-              AND ed.entity_id = :entityId
-              AND ef.field_name IN ('id', 'code')
-            ORDER BY CASE ef.field_name WHEN 'id' THEN 0 ELSE 1 END, ed.id DESC
-            LIMIT 1
-        SQL;
-
-        $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::$app,
-            'entityName' => $entityName,
-            'entityId' => (string) $entityId,
-        ]);
-
-        if ($value === false || $value === null) {
+        if ($candidates === []) {
             return null;
         }
 
-        $normalized = trim((string) $value);
-        return $normalized !== '' ? $normalized : null;
+        usort($candidates, static function (array $left, array $right): int {
+            return [$left['priority'], -$left['id']] <=> [$right['priority'], -$right['id']];
+        });
+
+        $value = trim((string) ($candidates[0]['value'] ?? ''));
+        return $value !== '' ? $value : null;
     }
 
 
