@@ -1707,64 +1707,15 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
-        $fieldId = $this->ensureIfoodFieldId($fieldName, $fieldType);
-        if (!$fieldId) {
-            self::$logger->error('iFood extra field could not be ensured', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'field_name' => $fieldName,
-            ]);
-            return null;
-        }
-
         $normalizedValue = $this->normalizeExtraDataValue($value);
-        $connection = $this->entityManager->getConnection();
-        try {
-            $existingId = $connection->fetchOne(
-                'SELECT id FROM extra_data WHERE extra_fields_id = :fieldId AND LOWER(entity_name) = LOWER(:entityName) AND entity_id = :entityId ORDER BY id DESC LIMIT 1',
-                [
-                    'fieldId' => $fieldId,
-                    'entityName' => $entityName,
-                    'entityId' => $entityId,
-                ]
-            );
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood extra data lookup failed', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-
-        $payload = [
-            'data_value' => $normalizedValue,
-            'source' => self::APP_CONTEXT,
-            'dateTime' => date('Y-m-d H:i:s'),
-        ];
-
-        try {
-            if (is_numeric($existingId)) {
-                $connection->update('extra_data', $payload, [
-                    'id' => (int) $existingId,
-                ]);
-            } else {
-                $connection->insert('extra_data', array_merge($payload, [
-                    'extra_fields_id' => $fieldId,
-                    'entity_id' => $entityId,
-                    'entity_name' => $entityName,
-                ]));
-            }
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood extra data upsert failed', [
-                'entity_name' => $entityName,
-                'entity_id' => $entityId,
-                'field_name' => $fieldName,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $normalizedValue,
+            $fieldType
+        );
 
         return $normalizedValue === '' ? null : $normalizedValue;
     }
@@ -1782,30 +1733,12 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.data_value
-            FROM extra_data ed
-            INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
-            WHERE ef.context = :context
-              AND ef.field_name = :fieldName
-              AND LOWER(ed.entity_name) = LOWER(:entityName)
-              AND ed.entity_id = :entityId
-            ORDER BY ed.id DESC
-            LIMIT 1
-        SQL;
-
-        $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'context' => self::APP_CONTEXT,
-            'fieldName' => $fieldName,
-            'entityName' => $entityName,
-            'entityId' => $entityId,
-        ]);
-
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        return (string) $value;
+        return $this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName
+        );
     }
 
     private function decodeOrderOtherInformationsValue(mixed $value): array
