@@ -42,7 +42,6 @@ class Food99Service extends AbstractMarketplaceService implements
     EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
-    private static array $authTokenCache = [];
     private const MARKETPLACE_CAPABILITY_SERVICES = [
         Food99StoreOperationsService::class,
         Food99CatalogOperationsService::class,
@@ -574,217 +573,6 @@ class Food99Service extends AbstractMarketplaceService implements
     private function getFood99BorderBaseUrl(): string
     {
         return 'https://b.99app.com';
-    }
-
-    private function resolveAppId(): ?string
-    {
-        $appId = $_ENV['OAUTH_99FOOD_CLIENT_ID']
-            ?? $_ENV['OAUTH_99FOOD_APP_ID']
-            ?? null;
-
-        if (!$appId) {
-            self::$logger->warning('Food99 app_id is not configured', [
-                'expected_env' => ['OAUTH_99FOOD_CLIENT_ID', 'OAUTH_99FOOD_APP_ID'],
-            ]);
-            return null;
-        }
-
-        return (string) $appId;
-    }
-
-    private function resolveAppSecret(): ?string
-    {
-        $appSecret = $_ENV['OAUTH_99FOOD_CLIENT_SECRET']
-            ?? $_ENV['OAUTH_99FOOD_APP_SECRET']
-            ?? null;
-
-        if (!$appSecret) {
-            self::$logger->warning('Food99 app_secret is not configured', [
-                'expected_env' => ['OAUTH_99FOOD_CLIENT_SECRET', 'OAUTH_99FOOD_APP_SECRET'],
-            ]);
-            return null;
-        }
-
-        return (string) $appSecret;
-    }
-
-    private function resolveAppShopId(?People $provider = null): ?string
-    {
-        if ($provider?->getId()) {
-            return (string) $provider->getId();
-        }
-
-        self::$logger->warning('Food99 app_shop_id could not be resolved', [
-            'provider_id' => $provider?->getId(),
-            'expected_provider_value' => 'People.id',
-        ]);
-
-        return null;
-    }
-
-    private function requestAuthToken(string $appId, string $appSecret, string $appShopId, bool $allowRefreshFallback = true): ?array
-    {
-        try {
-            $response = $this->httpClient->request('GET', $this->getFood99BaseUrl() . '/v1/auth/authtoken/get', [
-                'query' => [
-                    'app_id' => $appId,
-                    'app_secret' => $appSecret,
-                    'app_shop_id' => $appShopId,
-                ],
-            ]);
-
-            $payload = $response->toArray(false);
-            $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-            $authToken = $data['auth_token'] ?? null;
-            $tokenExpirationTime = $data['token_expiration_time'] ?? null;
-            $errno = (int) ($payload['errno'] ?? 1);
-            $errmsg = (string) ($payload['errmsg'] ?? '');
-
-            if ($errno !== 0 || !$authToken) {
-                if (
-                    $allowRefreshFallback
-                    && in_array($errno, [10100, 10101, 10102], true)
-                ) {
-                    self::$logger->info('Food99 auth token request requires refresh fallback', [
-                        'app_shop_id' => $appShopId,
-                        'status_code' => $response->getStatusCode(),
-                        'errno' => $errno,
-                        'errmsg' => $errmsg,
-                    ]);
-
-                    $refreshSuccess = $this->refreshAuthToken($appId, $appSecret, $appShopId);
-                    if ($refreshSuccess) {
-                        return $this->requestAuthToken($appId, $appSecret, $appShopId, false);
-                    }
-                }
-
-                self::$logger->error('Food99 auth token request failed', [
-                    'app_shop_id' => $appShopId,
-                    'status_code' => $response->getStatusCode(),
-                    'errno' => $errno,
-                    'errmsg' => $errmsg,
-                ]);
-                return null;
-            }
-
-            self::$authTokenCache[$appShopId] = [
-                'auth_token' => (string) $authToken,
-                'token_expiration_time' => is_numeric($tokenExpirationTime) ? (int) $tokenExpirationTime : null,
-            ];
-
-            self::$logger->info('Food99 auth token fetched', [
-                'app_shop_id' => $appShopId,
-                'status_code' => $response->getStatusCode(),
-                'token_expiration_time' => self::$authTokenCache[$appShopId]['token_expiration_time'],
-            ]);
-
-            return self::$authTokenCache[$appShopId];
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 auth token request error', [
-                'app_shop_id' => $appShopId,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    private function refreshAuthToken(string $appId, string $appSecret, string $appShopId): bool
-    {
-        try {
-            $response = $this->httpClient->request('GET', $this->getFood99BaseUrl() . '/v1/auth/authtoken/refresh', [
-                'query' => [
-                    'app_id' => $appId,
-                    'app_secret' => $appSecret,
-                    'app_shop_id' => $appShopId,
-                ],
-            ]);
-
-            $payload = $response->toArray(false);
-            $success = $this->isSuccessfulErrno($payload['errno'] ?? null);
-
-            self::$logger->info('Food99 auth token refresh response', [
-                'app_shop_id' => $appShopId,
-                'status_code' => $response->getStatusCode(),
-                'errno' => $payload['errno'] ?? null,
-                'errmsg' => $payload['errmsg'] ?? null,
-                'success' => $success,
-            ]);
-
-            return $success;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 auth token refresh error', [
-                'app_shop_id' => $appShopId,
-                'error' => $e->getMessage(),
-            ]);
-            return false;
-        }
-    }
-
-    private function getAccessToken(?People $provider = null): ?string
-    {
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
-        $appShopId = $this->resolveAppShopId($provider);
-
-        if (!$appId || !$appSecret || !$appShopId) {
-            return null;
-        }
-
-        $cachedToken = self::$authTokenCache[$appShopId] ?? null;
-        $expirationTime = is_array($cachedToken) ? ($cachedToken['token_expiration_time'] ?? null) : null;
-        $hasValidCachedToken = !empty($cachedToken['auth_token']) && (!is_numeric($expirationTime) || (int) $expirationTime > (time() + 60));
-
-        if ($hasValidCachedToken) {
-            return (string) $cachedToken['auth_token'];
-        }
-
-        if (is_numeric($expirationTime) && (int) $expirationTime <= (time() + 60)) {
-            $this->refreshAuthToken($appId, $appSecret, $appShopId);
-        }
-
-        $tokenData = $this->requestAuthToken($appId, $appSecret, $appShopId);
-        if (!$tokenData || empty($tokenData['auth_token'])) {
-            return null;
-        }
-
-        return (string) $tokenData['auth_token'];
-    }
-
-    private function resolveAccessToken(?People $provider = null): ?string
-    {
-        try {
-            return $this->getAccessToken($provider);
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 access token resolution error', [
-                'provider_id' => $provider?->getId(),
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    public function resolveIntegrationAccessToken(People $provider): ?string
-    {
-        $this->init();
-
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
-        $appShopId = $this->resolveAppShopId($provider);
-
-        if (!$appId || !$appSecret || !$appShopId) {
-            return null;
-        }
-
-        // In the current 99Food flow, a previously generated token often requires
-        // an explicit refresh before a new get succeeds after process restarts.
-        $this->refreshAuthToken($appId, $appSecret, $appShopId);
-
-        $tokenData = $this->requestAuthToken($appId, $appSecret, $appShopId, false);
-        if (!$tokenData || empty($tokenData['auth_token'])) {
-            $tokenData = $this->requestAuthToken($appId, $appSecret, $appShopId, true);
-        }
-
-        return !empty($tokenData['auth_token']) ? (string) $tokenData['auth_token'] : null;
     }
 
     public function persistIntegrationAuthError(People $provider, ?string $message = null): void
@@ -1581,277 +1369,54 @@ class Food99Service extends AbstractMarketplaceService implements
 
     private function call99Endpoint(string $uri, array $payload, ?People $provider = null): void
     {
-        $url = $this->getFood99BaseUrl() . $uri;
-        $accessToken = $this->resolveAccessToken($provider);
-
-        if (!$accessToken) {
-            self::$logger->warning('Food99 action skipped because access token is unavailable', [
-                'uri' => $uri,
-                'payload' => $payload,
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
+        $client = $this->resolveFood99Client();
+        if (!$client) {
             return;
         }
 
-        $payload['auth_token'] = $accessToken;
-
-        try {
-            $startedAt = microtime(true);
-
-            self::$logger->info('Food99 ACTION REQUEST', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
-
-            $response = $this->httpClient->request('POST', $url, [
-                'json' => $payload,
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                ],
-            ]);
-
-            self::$logger->info('Food99 ACTION RESPONSE', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $response->toArray(false),
-            ]);
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 ACTION ERROR', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'error' => $e->getMessage(),
-            ]);
-        }
+        $client->callOrderEndpointWithResponse($uri, $payload, $provider);
     }
 
     private function call99EndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
     {
-        $url = $this->getFood99BaseUrl() . $uri;
-        $accessToken = $this->resolveAccessToken($provider);
+        $client = $this->resolveFood99Client();
 
-        if (!$accessToken) {
-            self::$logger->warning('Food99 action skipped because access token is unavailable', [
-                'uri' => $uri,
-                'payload' => $payload,
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
-            return null;
-        }
-
-        $payload['auth_token'] = $accessToken;
-
-        $startedAt = microtime(true);
-
-        try {
-            self::$logger->info('Food99 ACTION REQUEST', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
-
-            $response = $this->httpClient->request('POST', $url, [
-                'json' => $payload,
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                ],
-            ]);
-
-            $result = $response->toArray(false);
-
-            self::$logger->info('Food99 ACTION RESPONSE', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $result,
-            ]);
-
-            return $result;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 ACTION ERROR', [
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
+        return $client ? $client->callOrderEndpointWithResponse($uri, $payload, $provider) : null;
     }
 
     private function request99WithResponse(string $method, string $uri, array $payload, array $logContext = []): ?array
     {
-        $url = $this->getFood99BaseUrl() . $uri;
-        $method = strtoupper($method);
-        $requestOptions = [
-            'headers' => [
-                'Content-Type' => 'application/json',
-            ],
-        ];
+        $client = $this->resolveFood99Client();
 
-        if ($method === 'GET') {
-            $requestOptions['query'] = $payload;
-        } else {
-            $requestOptions['json'] = $payload;
-        }
-
-        try {
-            $startedAt = microtime(true);
-
-            self::$logger->info('Food99 ACTION REQUEST', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ], $logContext));
-
-            $response = $this->httpClient->request($method, $url, $requestOptions);
-            $result = $response->toArray(false);
-
-            self::$logger->info('Food99 ACTION RESPONSE', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $result,
-            ], $logContext));
-
-            return $result;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 ACTION ERROR', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'error' => $e->getMessage(),
-            ], $logContext));
-
-            return null;
-        }
+        return $client ? $client->requestBorderWithResponse($method, $uri, $payload, $logContext) : null;
     }
 
     private function request99MultipartWithResponse(string $method, string $uri, array $payload, array $logContext = []): ?array
     {
-        $url = $this->getFood99BaseUrl() . $uri;
-        $method = strtoupper($method);
-        $startedAt = microtime(true);
+        $client = $this->resolveFood99Client();
 
-        if ($method !== 'POST') {
-            self::$logger->warning('Food99 multipart request only supports POST', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-            ], $logContext));
-
-            return null;
-        }
-
-        try {
-            $formData = new FormDataPart($payload);
-            $headers = $formData->getPreparedHeaders()->toArray();
-
-            self::$logger->info('Food99 ACTION REQUEST', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'content_type' => 'multipart/form-data',
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ], $logContext));
-
-            $response = $this->httpClient->request($method, $url, [
-                'headers' => $headers,
-                'body' => $formData->bodyToIterable(),
-            ]);
-            $result = $response->toArray(false);
-
-            self::$logger->info('Food99 ACTION RESPONSE', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $result,
-            ], $logContext));
-
-            return $result;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 ACTION ERROR', array_merge([
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'error' => $e->getMessage(),
-            ], $logContext));
-
-            return null;
-        }
+        return $client ? $client->requestBorderMultipartWithResponse($method, $uri, $payload, $logContext) : null;
     }
 
     private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
-        $accessToken = $this->resolveAccessToken($provider);
+        $client = $this->resolveFood99Client();
 
-        if (!$accessToken) {
-            self::$logger->warning('Food99 action skipped because access token is unavailable', [
-                'method' => strtoupper($method),
-                'uri' => $uri,
-                'payload' => $payload,
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
-            return null;
-        }
-
-        $payload['auth_token'] = $accessToken;
-
-        return $this->request99WithResponse($method, $uri, $payload, [
-            'provider_id' => $provider?->getId(),
-        ]);
+        return $client ? $client->callStoreEndpointWithResponse($method, $uri, $payload, $provider) : null;
     }
 
     private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
-        $accessToken = $this->resolveAccessToken($provider);
+        $client = $this->resolveFood99Client();
 
-        if (!$accessToken) {
-            self::$logger->warning('Food99 action skipped because access token is unavailable', [
-                'method' => strtoupper($method),
-                'uri' => $uri,
-                'payload' => $payload,
-                'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
-            ]);
-            return null;
-        }
-
-        $payload['auth_token'] = $accessToken;
-
-        return $this->request99MultipartWithResponse($method, $uri, $payload, [
-            'provider_id' => $provider?->getId(),
-        ]);
+        return $client ? $client->callStoreMultipartEndpointWithResponse($method, $uri, $payload, $provider) : null;
     }
 
     private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
+        $client = $this->resolveFood99Client();
 
-        if (!$appId || !$appSecret) {
-            return null;
-        }
-
-        $payload['app_id'] = $payload['app_id'] ?? $appId;
-        $payload['app_secret'] = $payload['app_secret'] ?? $appSecret;
-
-        return $this->request99WithResponse($method, $uri, $payload);
+        return $client ? $client->callAppEndpointWithResponse($method, $uri, $payload) : null;
     }
 
     public function getIntegratedStoreCode(People $provider): ?string

@@ -4,6 +4,7 @@
 ## Food99Service.php
 - A carteira operacional da integracao deve ser `99 Food`, mesmo quando o app canonico continuar sendo `Food99`.
 - `Food99Service` deve ficar como fachada fina; nao reintroduzir catalogo de cancelamento ou calculos de settlement no service principal.
+- `Food99Service` nao deve reter nem expor helpers de autenticacao do 99Food como `resolveIntegrationAccessToken`, `getAccessToken`, `requestAuthToken` ou `refreshAuthToken`; essa responsabilidade pertence exclusivamente ao `Food99Client`.
 - `Food99FinancialOperationsService` nao deve calcular comissoes, logisticas ou settlement a partir de `price` e `promotions`; ele apenas materializa as seções ja gravadas no JSON (`financial`, `payment`, `customer`, `address`, `notes`, `identifiers`) ou outras seções ja persistidas.
 - O vinculo do cliente com o 99 deve usar apenas `receive_address.uid` como identificador remoto oficial.
 - Nao tentar recuperar `Food99.code` por telefone, e-mail, nome parcial ou outros heuristics.
@@ -49,6 +50,6 @@
 - Consultas novas devem ficar em repositórios ou resolvers dedicados; helpers compartilhados devem virar classes de apoio, nao metodo solto em service.
 - O bloco grande de marketplace foi separado por capacidade em classes dedicadas em `Service/Marketplace`; nao reintroduzir catalogo, people, financeiro, pedido e store/admin no mesmo arquivo.
 - `iFoodService` deve permanecer como orquestrador das classes `IfoodStoreOperationsService`, `IfoodCatalogOperationsService`, `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService` e `IfoodOrderOperationsService`; o service principal nao deve voltar a concentrar esses blocos.
-- `IfoodClient` e o unico ponto de consulta HTTP e autenticacao do iFood; `IfoodStoreOperationsService`, `IfoodCatalogOperationsService`, `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService` e `IfoodOrderOperationsService` nao devem ler `OAUTH_IFOOD_CLIENT_ID` / `OAUTH_IFOOD_CLIENT_SECRET` nem chamar `HttpClientInterface` diretamente.
+- `IfoodClient` e `Food99Client` sao os unicos pontos de consulta HTTP e autenticacao dos seus providers; `IfoodStoreOperationsService`, `IfoodCatalogOperationsService`, `IfoodPeopleOperationsService`, `IfoodFinancialOperationsService`, `IfoodOrderOperationsService` e as classes equivalentes de 99Food nao devem ler `OAUTH_*` nem chamar `HttpClientInterface` diretamente.
 - `Food99Service` deve permanecer como orquestrador das classes `Food99StoreOperationsService`, `Food99CatalogOperationsService`, `Food99PeopleOperationsService`, `Food99FinancialOperationsService` e `Food99OrderOperationsService`; as responsabilidades nao devem voltar a se misturar no mesmo arquivo.
 - `iFoodService` segue a mesma separacao por capacidades, mas com cadencia financeira propria: fechamento semanal e vencimento um mes depois do fechamento para a invoice de repasse.

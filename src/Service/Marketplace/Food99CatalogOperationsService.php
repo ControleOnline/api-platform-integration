@@ -765,7 +765,8 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
             return $detail;
         }
 
-        $authToken = $this->resolveIntegrationAccessToken($provider);
+        $food99Client = $this->resolveFood99Client();
+        $authToken = $food99Client ? $food99Client->resolveIntegrationAccessToken($provider) : null;
         $detail['integration']['auth_available'] = !empty($authToken);
 
         if (!$authToken) {
@@ -834,7 +835,8 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
             'errors' => [],
         ];
 
-        $authToken = $this->resolveIntegrationAccessToken($provider);
+        $food99Client = $this->resolveFood99Client();
+        $authToken = $food99Client ? $food99Client->resolveIntegrationAccessToken($provider) : null;
         $sync['auth_available'] = !empty($authToken);
 
         if (!$authToken) {

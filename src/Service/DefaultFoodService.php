@@ -17,6 +17,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
+use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\Client\IfoodClient;
 use Doctrine\ORM\EntityManagerInterface;
@@ -55,6 +56,7 @@ class DefaultFoodService
         protected WalletService $walletService,
         protected OrderProductService $orderProductService,
         protected ProductGroupService $productGroupService,
+        protected ?Food99Client $food99Client = null,
         protected ?IntegrationService $integrationService = null,
         protected ?WhatsAppService $whatsAppService = null,
         protected ?ContainerInterface $container = null,
@@ -99,6 +101,26 @@ class DefaultFoodService
         $this->whatsAppService = $service;
 
         return $this->whatsAppService;
+    }
+
+    protected function resolveFood99Client(): ?Food99Client
+    {
+        if ($this->food99Client instanceof Food99Client) {
+            return $this->food99Client;
+        }
+
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(Food99Client::class)) {
+            return null;
+        }
+
+        $service = $this->container->get(Food99Client::class);
+        if (!$service instanceof Food99Client) {
+            return null;
+        }
+
+        $this->food99Client = $service;
+
+        return $this->food99Client;
     }
 
     protected function resolveMarketplaceServiceInstance(string $serviceClass): ?object

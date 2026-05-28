@@ -1531,15 +1531,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function confirmOrder(Order $order, string $orderId, ?People $provider = null): array
     {
-        $url = $this->getFood99BaseUrl() . '/v1/order/order/confirm';
-        $accessToken = $this->resolveAccessToken($provider);
-
-        if (!$accessToken) {
+        $client = $this->resolveFood99Client();
+        if (!$client) {
             $message = 'Token de acesso indisponivel para confirmar pedido na 99Food.';
-            self::$logger->warning('Food99 confirm skipped because access token is unavailable', [
+            self::$logger->warning('Food99 confirm skipped because client is unavailable', [
                 'order_id' => $orderId,
                 'provider_id' => $provider?->getId(),
-                'api_base_url' => $this->getFood99BaseUrl(),
                 'message' => $message,
             ]);
 
@@ -1549,58 +1546,18 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             );
         }
 
-        $payload = [
-            'auth_token' => $accessToken,
+        $response = $client->callOrderEndpointWithResponse('/v1/order/order/confirm', [
             'order_id' => $orderId,
-        ];
+        ], $provider);
 
-        $startedAt = microtime(true);
-
-        try {
-            self::$logger->info('Food99 ORDER CONFIRM REQUEST', [
-                'order_id' => $orderId,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'provider_id' => $provider?->getId(),
-                'url' => $url,
-            ]);
-
-            $response = $this->httpClient->request('POST', $url, [
-                'json' => $payload,
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                ],
-            ]);
-
-            $result = $response->toArray(false);
-
-            self::$logger->info('Food99 ORDER CONFIRM RESPONSE', [
-                'order_id' => $orderId,
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $result,
-            ]);
-
-            return $this->persistOrderConfirmResult($order, is_array($result) ? $result : null);
-        } catch (\Throwable $e) {
-            $errorCode = (int) $e->getCode();
-            if ($errorCode === 0) {
-                $errorCode = 10002;
-            }
-
-            self::$logger->error('Food99 ORDER CONFIRM ERROR', [
-                'order_id' => $orderId,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'error_code' => $errorCode,
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'error' => $e->getMessage(),
-            ]);
-
-            return $this->persistOrderConfirmResult($order, [
-                'errno' => $errorCode,
-                'errmsg' => $e->getMessage(),
-                'data' => [],
-            ]);
+        if (!is_array($response)) {
+            return $this->persistOrderConfirmResult(
+                $order,
+                $this->buildUnavailableOrderActionResponse('Nao foi possivel confirmar o pedido na 99Food.')
+            );
         }
+
+        return $this->persistOrderConfirmResult($order, $response);
     }
 
     private function shouldSkipExistingOrderNewRetry(Order $order): bool
