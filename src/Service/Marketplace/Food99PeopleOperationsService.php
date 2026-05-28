@@ -259,7 +259,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         return $candidatePayloads;
     }
 
-    private function extractFood99PayloadValueFromNestedSections(array $json, array $directKeys, array $nestedKeys): ?string
+    public function extractFood99PayloadValueFromNestedSections(array $json, array $directKeys, array $nestedKeys): ?string
     {
         $directValue = $this->searchPayloadValueByKeys($json, $directKeys);
         if ($directValue !== null && $directValue !== '') {

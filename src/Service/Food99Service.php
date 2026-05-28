@@ -229,31 +229,28 @@ class Food99Service extends AbstractMarketplaceService implements
         return $service;
     }
 
-    private function callMarketplaceCapabilityMethod(string $serviceClass, string $method, array $arguments = []): mixed
-    {
-        $service = $this->resolveMarketplaceCapabilityService($serviceClass);
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
     private function resolveFallbackRemoteOrderStateForDeliveryEvent(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->resolveFallbackRemoteOrderStateForDeliveryEvent(...$arguments);
     }
 
     private function isReadyQueueTransition(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->isReadyQueueTransition(...$arguments);
     }
 
     private function areAllOrderProductQueuesReady(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->areAllOrderProductQueuesReady(...$arguments);
     }
 
     private function applyLocalLifecycleStatusFromRemoteState(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->applyLocalLifecycleStatusFromRemoteState(...$arguments);
     }
 
     private function handleOrderProductQueueReadyTransition(...$arguments): mixed
@@ -265,7 +262,8 @@ class Food99Service extends AbstractMarketplaceService implements
             return null;
         }
 
-        if (!$this->isReadyQueueTransition($oldQueue, $newQueue)) {
+        $orderOperations = $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class);
+        if (!$orderOperations->isReadyQueueTransition($oldQueue, $newQueue)) {
             return null;
         }
 
@@ -275,7 +273,7 @@ class Food99Service extends AbstractMarketplaceService implements
         }
 
         $realStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
-        if ($realStatus !== 'open' || !$this->areAllOrderProductQueuesReady($order)) {
+        if ($realStatus !== 'open' || !$orderOperations->areAllOrderProductQueuesReady($order)) {
             return null;
         }
 
@@ -286,97 +284,116 @@ class Food99Service extends AbstractMarketplaceService implements
 
     private function resolveFood99SettlementWallet(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99StoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class)
+            ->resolveFood99SettlementWallet(...$arguments);
     }
 
     private function resolveFood99WebhookOnlineState(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99StoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class)
+            ->resolveFood99WebhookOnlineState(...$arguments);
     }
 
     private function resolveRemoteOrderStateFromDeliveryStatus(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->resolveRemoteOrderStateFromDeliveryStatus(...$arguments);
     }
 
     private function resolveIncomingProductGroup(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->resolveIncomingProductGroup(...$arguments);
     }
 
     private function fetchMenuProducts(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99CatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99CatalogOperationsService::class)
+            ->fetchMenuProducts(...$arguments);
     }
 
     private function resolveFood99RemoteClientId(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99PeopleOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class)
+            ->resolveFood99RemoteClientId(...$arguments);
     }
 
     private function resolveFood99CustomerName(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99PeopleOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class)
+            ->resolveFood99CustomerName(...$arguments);
     }
 
     private function extractOrderRiderName(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->extractOrderRiderName(...$arguments);
     }
 
     private function extractOrderRiderPhone(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->extractOrderRiderPhone(...$arguments);
     }
 
     private function extractOrderRiderToStoreEta(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->extractOrderRiderToStoreEta(...$arguments);
     }
 
     private function syncFood99CourierFromDeliveryState(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->syncFood99CourierFromDeliveryState(...$arguments);
     }
 
     private function syncFood99DeliveryOrder(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->syncFood99DeliveryOrder(...$arguments);
     }
 
     private function resolveFood99QuoteDeliveryAreaMatch(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99StoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class)
+            ->resolveFood99QuoteDeliveryAreaMatch(...$arguments);
     }
 
     private function discoveryClient(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->discoveryClient(...$arguments);
     }
 
     private function resolveFood99MarketplacePeople(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99FinancialOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99FinancialOperationsService::class)
+            ->resolveFood99MarketplacePeople(...$arguments);
     }
 
     private function resolveFood99ProviderPaymentType(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99FinancialOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99FinancialOperationsService::class)
+            ->resolveFood99ProviderPaymentType(...$arguments);
     }
 
     private function resolveFood99WeeklyDueDate(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99FinancialOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99FinancialOperationsService::class)
+            ->resolveFood99WeeklyDueDate(...$arguments);
     }
 
     private function createFood99PayableInvoice(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99FinancialOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99FinancialOperationsService::class)
+            ->createFood99PayableInvoice(...$arguments);
     }
 
     private function storeOrderRemoteSnapshot(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(Food99OrderOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->storeOrderRemoteSnapshot(...$arguments);
     }
 
     private function buildLogContext(?Integration $integration = null, array $json = [], array $extra = []): array
@@ -733,7 +750,8 @@ class Food99Service extends AbstractMarketplaceService implements
             'last_action_message' => $safeResponse['errmsg'] ?? '',
         ]);
 
-        $this->storeOrderRemoteSnapshot($order, 'last_action_' . $action, $safeResponse);
+        $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->storeOrderRemoteSnapshot($order, 'last_action_' . $action, $safeResponse);
 
         if ($success) {
             if ($action === 'cancel') {
@@ -1047,7 +1065,8 @@ class Food99Service extends AbstractMarketplaceService implements
             ]);
         }
 
-        $this->storeOrderRemoteSnapshot($order, 'delivery_locator_verify', $rawResponse ?? []);
+        $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
+            ->storeOrderRemoteSnapshot($order, 'delivery_locator_verify', $rawResponse ?? []);
 
         if (($verification['flow']['step'] ?? '') === 'completed') {
             $verification['result'] = $this->persistOrderActionResult(
@@ -1599,20 +1618,6 @@ class Food99Service extends AbstractMarketplaceService implements
         return $entity;
     }
 
-    private function getFood99OrderExtraDataValue(int $entityId, string $fieldName): ?string
-    {
-        if ($entityId <= 0) {
-            return null;
-        }
-
-        return $this->extraDataService->getExtraDataValue(
-            self::APP_CONTEXT,
-            'Order',
-            $entityId,
-            $fieldName
-        );
-    }
-
     private function decodeOrderOtherInformationsValue(mixed $value): array
     {
         if (is_array($value)) {
@@ -1975,7 +1980,7 @@ class Food99Service extends AbstractMarketplaceService implements
 
         $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
         if (is_object($storeService)) {
-            $this->invokeMarketplaceServiceMethod($storeService, 'persistProviderIntegrationState', [$provider, $fields]);
+            $storeService->persistProviderIntegrationState($provider, $fields);
         }
     }
 
@@ -2000,14 +2005,16 @@ class Food99Service extends AbstractMarketplaceService implements
 
     public function resolveOrderClient(People $provider, array $address, array $payload, string $orderId): People
     {
-        $client = $this->discoveryClient($address, $payload, $provider);
+        $orderOperations = $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class);
+        $client = $orderOperations->discoveryClient($address, $payload, $provider);
         if ($client instanceof People) {
             $this->peopleService->discoveryLink($provider, $client, 'client');
             return $client;
         }
 
-        $fallbackName = $this->resolveFood99CustomerName($address);
-        $clientCode = $this->resolveFood99RemoteClientId($address, $payload);
+        $peopleOperations = $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class);
+        $fallbackName = $peopleOperations->resolveFood99CustomerName($address);
+        $clientCode = $peopleOperations->resolveFood99RemoteClientId($address, $payload);
 
         if ($fallbackName !== '') {
             $client = $this->findFood99ClientByAddressAndName($address, $fallbackName);
@@ -2068,50 +2075,7 @@ class Food99Service extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
-        $state = $fallbackState;
-
-        $orderId = (int) $order->getId();
-        $legacyState = [
-            'food99_id' => $this->getFood99OrderExtraDataValue($orderId, 'id'),
-            'food99_code' => $this->getFood99OrderExtraDataValue($orderId, 'code'),
-            'remote_order_state' => $this->getFood99OrderExtraDataValue($orderId, 'remote_order_state'),
-            'remote_delivery_status' => $this->getFood99OrderExtraDataValue($orderId, 'remote_delivery_status'),
-            'last_event_type' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_type'),
-            'last_event_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_at'),
-            'cancel_code' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_code'),
-            'cancel_reason' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_reason'),
-            'last_action' => $this->getFood99OrderExtraDataValue($orderId, 'last_action'),
-            'last_action_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_at'),
-            'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
-            'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
-            'confirm_at' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_at'),
-            'confirm_errno' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_errno'),
-            'confirm_message' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_message'),
-            'reconcile_at' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_at'),
-            'reconcile_errno' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_errno'),
-            'reconcile_message' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_message'),
-            'reconcile_latency_ms' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_latency_ms'),
-            'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
-            'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
-            'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
-            'pickup_code' => $this->getFood99OrderExtraDataValue($orderId, 'pickup_code'),
-            'locator' => $this->getFood99OrderExtraDataValue($orderId, 'locator'),
-            'handover_page_url' => $this->getFood99OrderExtraDataValue($orderId, 'handover_page_url'),
-            'virtual_phone_number' => $this->getFood99OrderExtraDataValue($orderId, 'virtual_phone_number'),
-            'handover_code' => $this->getFood99OrderExtraDataValue($orderId, 'handover_code'),
-            'rider_name' => $this->getFood99OrderExtraDataValue($orderId, 'rider_name'),
-            'rider_phone' => $this->getFood99OrderExtraDataValue($orderId, 'rider_phone'),
-            'rider_to_store_eta' => $this->getFood99OrderExtraDataValue($orderId, 'rider_to_store_eta'),
-        ];
-
-        foreach ($legacyState as $key => $value) {
-            if (array_key_exists($key, $state) && $state[$key] !== null && $state[$key] !== '') {
-                continue;
-            }
-
-            $state[$key] = $value;
-        }
+        $state = $this->extractOrderIntegrationStateFromOtherInformations($order);
 
         $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));
         $state['allows_manual_delivery_completion'] = $this->resolveAllowsManualDeliveryCompletion($state);

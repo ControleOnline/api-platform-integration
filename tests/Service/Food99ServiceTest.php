@@ -883,6 +883,44 @@ class Food99ServiceTest extends TestCase
         self::assertSame($existingClient, $resolvedClient);
     }
 
+    public function testStoredOrderIntegrationStateUsesMaterializedSnapshotOnly(): void
+    {
+        $extraDataService = $this->createMock(ExtraDataService::class);
+        $extraDataService->expects(self::never())->method('getExtraDataValue');
+        $extraDataService->expects(self::never())->method('getEntityByExtraData');
+
+        $this->setObjectProperty(DefaultFoodService::class, $this->service, 'extraDataService', $extraDataService);
+
+        $order = $this->createMock(Order::class);
+        $snapshot = [
+            'Food99' => [
+                'type' => 'orderNew',
+                'data' => [
+                    'order_id' => '5764671883811294471',
+                    'order_index' => '570001',
+                ],
+                'deliveryStatus' => [
+                    'data' => [
+                        'delivery_status' => 'picked_up',
+                    ],
+                ],
+            ],
+        ];
+
+        $order
+            ->expects(self::once())
+            ->method('getOtherInformations')
+            ->with(true)
+            ->willReturn($snapshot);
+
+        $state = $this->service->getStoredOrderIntegrationState($order);
+
+        self::assertSame('5764671883811294471', $state['food99_id']);
+        self::assertSame('570001', $state['food99_code']);
+        self::assertSame('orderNew', $state['last_event_type']);
+        self::assertSame('new', $state['remote_order_state']);
+    }
+
     public function testResolveFood99MarketplacePeopleIgnoresSharedLegacyFoodPeopleState(): void
     {
         $legacyFoodPeople = $this->createConfiguredMock(People::class, [

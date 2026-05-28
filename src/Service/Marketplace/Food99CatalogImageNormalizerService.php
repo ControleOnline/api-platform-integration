@@ -9,8 +9,6 @@ use Symfony\Contracts\Service\Attribute\Required;
 
 class Food99CatalogImageNormalizerService extends DefaultFoodService
 {
-    private ?Food99Client $food99Client = null;
-
     private function logger(): ?LoggerInterface
     {
         if (!$this->loggerService) {

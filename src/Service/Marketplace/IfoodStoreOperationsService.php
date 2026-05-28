@@ -888,7 +888,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
     }
 
-    private function isStoreStatusWebhookEvent(array $event, string $eventCode): bool
+    public function isStoreStatusWebhookEvent(array $event, string $eventCode): bool
     {
         $merchantId = $this->resolveWebhookMerchantId($event);
         if ($merchantId === '') {
@@ -934,7 +934,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         );
     }
 
-    private function resolveWebhookMerchantStatus(array $event): ?string
+    public function resolveWebhookMerchantStatus(array $event): ?string
     {
         $candidates = [
             $event['merchantStatus'] ?? null,
@@ -1985,7 +1985,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return $dropoffAddress instanceof Address ? $dropoffAddress : null;
     }
 
-    private function validateIfoodQuoteRoute(?Address $pickupAddress, ?Address $dropoffAddress): ?string
+    public function validateIfoodQuoteRoute(?Address $pickupAddress, ?Address $dropoffAddress): ?string
     {
         if (!$pickupAddress instanceof Address) {
             return 'Pedido sem endereco de coleta valido.';
@@ -2059,7 +2059,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    private function buildIfoodShippingAddressPayload(Address $address): array
+    public function buildIfoodShippingAddressPayload(Address $address): array
     {
         $street = $address->getStreet();
         $district = $street?->getDistrict();
@@ -2200,7 +2200,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return $items;
     }
 
-    private function persistIfoodQuoteState(Order $order, array $storedState, array $logisticsState): void
+    public function persistIfoodQuoteState(Order $order, array $storedState, array $logisticsState): void
     {
         $otherInformations = $this->getDecodedOrderOtherInformations($order);
         if ($otherInformations === []) {
@@ -2261,7 +2261,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    private function getStoredIfoodQuoteState(Order $order): array
+    public function getStoredIfoodQuoteState(Order $order): array
     {
         $otherInformations = $this->getDecodedOrderOtherInformations($order);
         if ($otherInformations === []) {
@@ -2629,7 +2629,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     }
     // DESCOBERTA/CRIAÇÃO DO CLIENTE
     // Busca cliente existente pelo ID do iFood ou cria novo com dados do pedido
-    private function discoveryClient(People $provider, array $customerData): ?People
+    public function discoveryClient(People $provider, array $customerData): ?People
     {
         $customerName = $this->normalizeString($customerData['name'] ?? null);
         $codClienteiFood = $this->normalizeString($customerData['id'] ?? null);
@@ -2864,7 +2864,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             || (bool) ($oldAction['remote_sync'] ?? false) !== (bool) ($newAction['remote_sync'] ?? false);
     }
 
-    private function isReadyQueueTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): bool
+    public function isReadyQueueTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): bool
     {
         $statusOutId = (int) ($newQueue->getQueue()?->getStatusOut()?->getId() ?? 0);
         if ($statusOutId <= 0) {
@@ -2878,7 +2878,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             && $newStatusId === $statusOutId;
     }
 
-    private function areAllOrderProductQueuesReady(Order $order): bool
+    public function areAllOrderProductQueuesReady(Order $order): bool
     {
         $hasQueueEntry = false;
 

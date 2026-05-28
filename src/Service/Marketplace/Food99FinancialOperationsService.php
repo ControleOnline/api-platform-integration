@@ -399,7 +399,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return $paymentTypeData;
     }
 
-    private function resolveFood99ProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
+    public function resolveFood99ProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
     {
         $candidateNames = array_values(array_unique(array_filter(array_merge(
             [(string) ($paymentTypeData['paymentType'] ?? '')],

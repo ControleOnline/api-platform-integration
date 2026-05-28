@@ -172,41 +172,40 @@ class iFoodService extends AbstractMarketplaceService implements
         return $service;
     }
 
-    private function callMarketplaceCapabilityMethod(string $serviceClass, string $method, array $arguments = []): mixed
-    {
-        $service = $this->resolveMarketplaceCapabilityService($serviceClass);
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
     private function resolveWebhookMerchantStatus(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->resolveWebhookMerchantStatus(...$arguments);
     }
 
     private function isStoreStatusWebhookEvent(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->isStoreStatusWebhookEvent(...$arguments);
     }
 
     private function getStoredIfoodQuoteState(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->getStoredIfoodQuoteState(...$arguments);
     }
 
     private function buildIfoodShippingAddressPayload(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->buildIfoodShippingAddressPayload(...$arguments);
     }
 
     private function validateIfoodQuoteRoute(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->validateIfoodQuoteRoute(...$arguments);
     }
 
     private function persistIfoodQuoteState(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodStoreOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class)
+            ->persistIfoodQuoteState(...$arguments);
     }
 
     private function resolveIfoodCatalogCategoryId(
@@ -218,54 +217,58 @@ class iFoodService extends AbstractMarketplaceService implements
         int $localCategoryId = 0,
         string $storedIfoodId = ''
     ): mixed {
-        return $this->callMarketplaceCapabilityMethod(
-            IfoodCatalogOperationsService::class,
-            __FUNCTION__,
-            [
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->resolveIfoodCatalogCategoryId(
                 $merchantId,
                 $catalogId,
                 $categoryName,
-                &$remoteCategoriesByName,
+                $remoteCategoriesByName,
                 $sequence,
                 $localCategoryId,
-                $storedIfoodId,
-            ]
-        );
+                $storedIfoodId
+            );
     }
 
     private function normalizeImageMimeType(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->normalizeImageMimeType(...$arguments);
     }
 
     private function isIfoodUploadImageWithinLimits(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->isIfoodUploadImageWithinLimits(...$arguments);
     }
 
     private function fetchCatalogModifierRows(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->fetchCatalogModifierRows(...$arguments);
     }
 
     private function buildIfoodCatalogModifierPayload(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->buildIfoodCatalogModifierPayload(...$arguments);
     }
 
     private function findIfoodCatalogRemoteItemByProductFallback(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->findIfoodCatalogRemoteItemByProductFallback(...$arguments);
     }
 
     private function expandCatalogProductsWithModifierDescendants(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->expandCatalogProductsWithModifierDescendants(...$arguments);
     }
 
     private function upsertIfoodCatalogItemV2(...$arguments): mixed
     {
-        return $this->callMarketplaceCapabilityMethod(IfoodCatalogOperationsService::class, __FUNCTION__, $arguments);
+        return $this->resolveMarketplaceCapabilityService(IfoodCatalogOperationsService::class)
+            ->upsertIfoodCatalogItemV2(...$arguments);
     }
 
     // PONTO DE ENTRADA DO WEBHOOK
@@ -284,7 +287,8 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
-        if ($this->isStoreStatusWebhookEvent($event, $eventCode)) {
+        $storeOperations = $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class);
+        if ($storeOperations->isStoreStatusWebhookEvent($event, $eventCode)) {
             $this->syncStoreStatusWebhook($event, $integration);
             return null;
         }

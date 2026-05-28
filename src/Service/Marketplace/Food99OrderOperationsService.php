@@ -260,56 +260,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             }
         }
 
-        $state = [];
-        $otherInformations = $this->getDecodedOrderOtherInformations($order);
-        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
-        if ($context !== []) {
-            $state = $context;
-        }
-
-        $orderId = (int) $order->getId();
-        $legacyState = [
-            'food99_id' => $this->getFood99OrderExtraDataValue($orderId, 'id'),
-            'food99_code' => $this->getFood99OrderExtraDataValue($orderId, 'code'),
-            'remote_order_state' => $this->getFood99OrderExtraDataValue($orderId, 'remote_order_state'),
-            'remote_delivery_status' => $this->getFood99OrderExtraDataValue($orderId, 'remote_delivery_status'),
-            'last_event_type' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_type'),
-            'last_event_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_event_at'),
-            'cancel_code' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_code'),
-            'cancel_reason' => $this->getFood99OrderExtraDataValue($orderId, 'cancel_reason'),
-            'last_action' => $this->getFood99OrderExtraDataValue($orderId, 'last_action'),
-            'last_action_at' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_at'),
-            'last_action_errno' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_errno'),
-            'last_action_message' => $this->getFood99OrderExtraDataValue($orderId, 'last_action_message'),
-            'confirm_at' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_at'),
-            'confirm_errno' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_errno'),
-            'confirm_message' => $this->getFood99OrderExtraDataValue($orderId, 'confirm_message'),
-            'reconcile_at' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_at'),
-            'reconcile_errno' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_errno'),
-            'reconcile_message' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_message'),
-            'reconcile_latency_ms' => $this->getFood99OrderExtraDataValue($orderId, 'reconcile_latency_ms'),
-            'delivery_type' => $this->getFood99OrderExtraDataValue($orderId, 'delivery_type'),
-            'fulfillment_mode' => $this->getFood99OrderExtraDataValue($orderId, 'fulfillment_mode'),
-            'expected_arrived_eta' => $this->getFood99OrderExtraDataValue($orderId, 'expected_arrived_eta'),
-            'pickup_code' => $this->getFood99OrderExtraDataValue($orderId, 'pickup_code'),
-            'locator' => $this->getFood99OrderExtraDataValue($orderId, 'locator'),
-            'handover_page_url' => $this->getFood99OrderExtraDataValue($orderId, 'handover_page_url'),
-            'virtual_phone_number' => $this->getFood99OrderExtraDataValue($orderId, 'virtual_phone_number'),
-            'handover_code' => $this->getFood99OrderExtraDataValue($orderId, 'handover_code'),
-            'rider_name' => $this->getFood99OrderExtraDataValue($orderId, 'rider_name'),
-            'rider_phone' => $this->getFood99OrderExtraDataValue($orderId, 'rider_phone'),
-            'rider_to_store_eta' => $this->getFood99OrderExtraDataValue($orderId, 'rider_to_store_eta'),
-        ];
-
-        foreach ($legacyState as $key => $value) {
-            if (array_key_exists($key, $state) && $state[$key] !== null && $state[$key] !== '') {
-                continue;
-            }
-
-            $state[$key] = $value;
-        }
-
-        return $state;
+        return [];
     }
 
     private function normalizeCancelReasonId(mixed $value): ?int
@@ -398,25 +349,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $this->entityManager->persist($order);
     }
 
-    private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
-    {
-        $service = $this->food99PeopleOperationsService;
-
-        return $service instanceof Food99PeopleOperationsService
-            ? $service->searchPayloadValueByKeys($payload, $keys)
-            : null;
-    }
-
-    private function extractFood99PayloadValueFromNestedSections(array $json, array $directKeys, array $nestedKeys): ?string
-    {
-        $service = $this->food99PeopleOperationsService;
-
-        return $service instanceof Food99PeopleOperationsService
-            ? $service->extractFood99PayloadValueFromNestedSections($json, $directKeys, $nestedKeys)
-            : null;
-    }
-
-    private function resolveFood99RemoteClientId(array $address, array $payload = []): string
+    public function resolveFood99RemoteClientId(array $address, array $payload = []): string
     {
         $service = $this->food99PeopleOperationsService;
         if (!$service instanceof Food99PeopleOperationsService) {
@@ -426,7 +359,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return (string) $service->resolveFood99RemoteClientId($address, $payload);
     }
 
-    private function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): ?People
+    public function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): ?People
     {
         $service = $this->food99PeopleOperationsService;
         if (!$service instanceof Food99PeopleOperationsService) {
@@ -757,7 +690,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $this->statusService->discoveryStatus('open', 'open', 'order');
     }
 
-    private function syncFood99DeliveryOrder(
+    public function syncFood99DeliveryOrder(
         Order $order,
         ?People $courier = null,
         ?string $remoteState = null,
@@ -906,7 +839,9 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderEventTimestamp(array $json): string
     {
-        $timestamp = $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        $timestamp = $service instanceof Food99PeopleOperationsService
+            ? $service->searchPayloadValueByKeys($json, [
             'event_time',
             'eventTime',
             'event_timestamp',
@@ -919,7 +854,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             'createdAt',
             'timestamp',
             'time',
-        ]);
+        ])
+            : null;
 
         if ($timestamp === null || $timestamp === '') {
             return date('Y-m-d H:i:s');
@@ -941,7 +877,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderDeliveryStatus(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'delivery_status',
             'deliveryStatus',
             'status_desc',
@@ -952,7 +893,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderDeliveryType(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'delivery_type',
             'deliveryType',
         ]);
@@ -960,7 +906,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderFulfillmentMode(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'fulfillment_mode',
             'fulfillmentMode',
         ]);
@@ -968,7 +919,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderExpectedArrivedEta(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'expected_arrived_eta',
             'expectedArrivedEta',
             'delivery_eta',
@@ -978,7 +934,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderPickupCode(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'pickup_code',
             'pickupCode',
         ]);
@@ -986,14 +947,24 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderLocator(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'locator',
         ]);
     }
 
     private function extractOrderHandoverPageUrl(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'handover_page_url',
             'handoverPageUrl',
         ]);
@@ -1001,7 +972,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderVirtualPhoneNumber(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'virtual_phone_number',
             'virtualPhoneNumber',
         ]);
@@ -1009,15 +985,25 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderHandoverCode(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'handover_code',
             'handoverCode',
         ]);
     }
 
-    private function extractOrderRiderName(array $json): ?string
+    public function extractOrderRiderName(array $json): ?string
     {
-        return $this->extractFood99PayloadValueFromNestedSections($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->extractFood99PayloadValueFromNestedSections($json, [
             'rider_name',
             'riderName',
             'courier_name',
@@ -1034,9 +1020,14 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         ]);
     }
 
-    private function extractOrderRiderPhone(array $json): ?string
+    public function extractOrderRiderPhone(array $json): ?string
     {
-        return $this->extractFood99PayloadValueFromNestedSections($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->extractFood99PayloadValueFromNestedSections($json, [
             'rider_phone',
             'riderPhone',
             'courier_phone',
@@ -1055,9 +1046,14 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         ]);
     }
 
-    private function extractOrderRiderToStoreEta(array $json): ?string
+    public function extractOrderRiderToStoreEta(array $json): ?string
     {
-        return $this->extractFood99PayloadValueFromNestedSections($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->extractFood99PayloadValueFromNestedSections($json, [
             'rider_to_B_ETA',
             'rider_to_b_eta',
             'riderToBEta',
@@ -1149,7 +1145,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderCancelReason(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'reason',
             'cancel_reason',
             'cancelReason',
@@ -1161,7 +1162,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
     private function extractOrderCancelCode(array $json): ?string
     {
-        return $this->searchPayloadValueByKeys($json, [
+        $service = $this->food99PeopleOperationsService;
+        if (!$service instanceof Food99PeopleOperationsService) {
+            return null;
+        }
+
+        return $service->searchPayloadValueByKeys($json, [
             'reason_id',
             'reasonId',
             'cancel_code',
@@ -1191,7 +1197,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return false;
     }
 
-    private function storeOrderRemoteSnapshot(Order $order, string $entryKey, array $payload): void
+    public function storeOrderRemoteSnapshot(Order $order, string $entryKey, array $payload): void
     {
         $otherInformations = $this->getDecodedOrderOtherInformations($order);
         $food99Snapshot = $this->flattenFood99SnapshotBlock($otherInformations[self::APP_CONTEXT] ?? []);
@@ -1308,7 +1314,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $this->applyLocalStatus($order, 'pending', 'way');
     }
 
-    private function applyLocalLifecycleStatusFromRemoteState(Order $order, ?string $remoteState): void
+    public function applyLocalLifecycleStatusFromRemoteState(Order $order, ?string $remoteState): void
     {
         $normalizedRemoteState = $this->normalizeRemoteOrderState($remoteState);
 
@@ -1493,7 +1499,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $order;
     }
 
-    private function resolveFallbackRemoteOrderStateForDeliveryEvent(
+    public function resolveFallbackRemoteOrderStateForDeliveryEvent(
         Order $order,
         string $eventType,
         ?string $incomingRemoteState,
@@ -1666,7 +1672,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $this->resolveRemoteOrderStateFromDeliveryStatus($deliveryStatus);
     }
 
-    private function resolveRemoteOrderStateFromDeliveryStatus(?string $deliveryStatus): ?string
+    public function resolveRemoteOrderStateFromDeliveryStatus(?string $deliveryStatus): ?string
     {
         $normalized = strtolower(trim((string) $deliveryStatus));
         if ($normalized === '') {
@@ -3387,7 +3393,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $product;
     }
 
-    private function resolveIncomingProductGroup(
+    public function resolveIncomingProductGroup(
         ?Product $parentProduct,
         Product $product,
         array $item,
@@ -3444,7 +3450,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $link;
     }
 
-    private function discoveryClient(array $address, array $payload = [], ?People $provider = null): ?People
+    public function discoveryClient(array $address, array $payload = [], ?People $provider = null): ?People
     {
         $peopleService = $this->food99PeopleOperationsService;
         $remoteClientId = is_object($peopleService) && method_exists($peopleService, 'resolveFood99RemoteClientId')
@@ -3610,7 +3616,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             || (bool) ($oldAction['remote_sync'] ?? false) !== (bool) ($newAction['remote_sync'] ?? false);
     }
 
-    private function isReadyQueueTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): bool
+    public function isReadyQueueTransition(OrderProductQueue $oldQueue, OrderProductQueue $newQueue): bool
     {
         $statusOutId = (int) ($newQueue->getQueue()?->getStatusOut()?->getId() ?? 0);
         if ($statusOutId <= 0) {
@@ -3625,7 +3631,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             && $newStatusId === $statusOutId;
     }
 
-    private function areAllOrderProductQueuesReady(Order $order): bool
+    public function areAllOrderProductQueuesReady(Order $order): bool
     {
         $hasQueueEntry = false;
 

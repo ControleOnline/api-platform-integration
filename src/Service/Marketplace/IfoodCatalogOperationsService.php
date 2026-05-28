@@ -642,7 +642,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    private function expandCatalogProductsWithModifierDescendants(array $products, array $selectedProductIds): array
+    public function expandCatalogProductsWithModifierDescendants(array $products, array $selectedProductIds): array
     {
         if (empty($selectedProductIds) || empty($products)) {
             return $products;
@@ -826,7 +826,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    private function findIfoodCatalogRemoteItemByProductFallback(array $remoteItems, array $product): ?array
+    public function findIfoodCatalogRemoteItemByProductFallback(array $remoteItems, array $product): ?array
     {
         $localSku = $this->normalizeString($product['sku'] ?? null);
         $localName = $this->normalizeText($this->normalizeString($product['name'] ?? null));
@@ -950,7 +950,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return array_values(array_unique(array_filter($normalized)));
     }
 
-    private function fetchCatalogModifierRows(People $provider, array $productIds = []): array
+    public function fetchCatalogModifierRows(People $provider, array $productIds = []): array
     {
         $parentIds = $this->normalizeProductIds($productIds);
         if (empty($parentIds)) {
@@ -1507,7 +1507,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return str_contains($message, 'notfound') || str_contains($message, 'not found');
     }
 
-    private function resolveIfoodCatalogCategoryId(
+    public function resolveIfoodCatalogCategoryId(
         string $merchantId,
         string $catalogId,
         string $categoryName,
@@ -1710,7 +1710,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return $optionsByExternalCode;
     }
 
-    private function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
+    public function buildIfoodCatalogModifierPayload(string $merchantId, array $product, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
     {
         $modifierGroups = is_array($product['modifier_groups'] ?? null) ? $product['modifier_groups'] : [];
         if (empty($modifierGroups)) {
@@ -2011,7 +2011,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return $indexed;
     }
 
-    private function normalizeImageMimeType(?string $contentType): ?string
+    public function normalizeImageMimeType(?string $contentType): ?string
     {
         $normalized = strtolower(trim((string) $contentType));
         if ($normalized === '') {
@@ -2065,7 +2065,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return 'data:' . $mimeType . ';base64,' . base64_encode($binary);
     }
 
-    private function isIfoodUploadImageWithinLimits(string $binary, string $mimeType): bool
+    public function isIfoodUploadImageWithinLimits(string $binary, string $mimeType): bool
     {
         $sizeBytes = strlen($binary);
         if ($sizeBytes <= 0 || $sizeBytes > self::MAX_IMAGE_UPLOAD_BYTES) {
@@ -2414,7 +2414,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         return str_contains($message, 'concurrently modified');
     }
 
-    private function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
+    public function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
     {
         $token = $this->getAccessToken();
         if (!$token) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];

@@ -788,7 +788,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
         $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
-    private function resolveFood99WebhookOnlineState(array $data): ?bool
+    public function resolveFood99WebhookOnlineState(array $data): ?bool
     {
         if (array_key_exists('biz_status', $data) && is_numeric($data['biz_status'])) {
             return (int) $data['biz_status'] === 1;
@@ -1296,7 +1296,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
         ];
     }
 
-    private function resolveFood99QuoteDeliveryAreaMatch(array $deliveryAreasResponse, Address $dropoffAddress): ?array
+    public function resolveFood99QuoteDeliveryAreaMatch(array $deliveryAreasResponse, Address $dropoffAddress): ?array
     {
         $latitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLatitude());
         $longitude = $this->normalizeFood99CoordinateValue($dropoffAddress->getLongitude());

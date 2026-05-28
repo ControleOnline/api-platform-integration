@@ -145,6 +145,10 @@ class DefaultFoodService
                 continue;
             }
 
+            if ($property->getName() === 'eventDispatcher') {
+                continue;
+            }
+
             $property->setAccessible(true);
             if (method_exists($property, 'isInitialized') && !$property->isInitialized($this)) {
                 continue;
