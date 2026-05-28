@@ -451,6 +451,27 @@ final class Food99OrderOperationsServiceTest extends TestCase
         self::assertTrue(true);
     }
 
+    public function testMapOpenDeliveryEventTypeKeepsCancellationRequestNeutral(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        self::assertSame('orderFinish', $this->invokePrivateMethod(
+            $service,
+            'mapOpenDeliveryEventType',
+            'DELIVERED'
+        ));
+        self::assertSame('orderCancelRequest', $this->invokePrivateMethod(
+            $service,
+            'mapOpenDeliveryEventType',
+            'CANCELLATION_REQUESTED'
+        ));
+        self::assertSame('orderDetailSync', $this->invokePrivateMethod(
+            $service,
+            'mapOpenDeliveryEventType',
+            'CANCELLATION_REQUEST_DENIED'
+        ));
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
