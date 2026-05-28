@@ -1676,17 +1676,6 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                     $shop['shop_name'] ?? 'Loja Food99',
                     'J'
                 );
-                if ($shopId !== '') {
-                    $this->extraDataService->upsertExtraDataValue(
-                        self::APP_CONTEXT,
-                        'People',
-                        (int) $provider->getId(),
-                        'code',
-                        $shopId,
-                        'text',
-                        self::APP_CONTEXT
-                    );
-                }
             }
 
             if ($provider instanceof People && $shopId !== '') {
