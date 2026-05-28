@@ -1840,6 +1840,16 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
+        if ($this->isUnavailableOrderActionResponse($confirmResult)) {
+            self::$logger?->warning('Food99 order confirmation skipped because the confirmation service is unavailable', [
+                'order_id' => $orderId,
+                'local_order_id' => $order->getId(),
+                'message' => $confirmResult['errmsg'] ?? null,
+            ]);
+
+            return;
+        }
+
         if ($this->isTerminalLocalOrderStatus($order)) {
             return;
         }
@@ -1849,6 +1859,11 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $orderId,
             trim((string) ($confirmResult['errmsg'] ?? 'unknown error'))
         ));
+    }
+
+    private function isUnavailableOrderActionResponse(array $response): bool
+    {
+        return (int) ($response['errno'] ?? 0) === 10001;
     }
 
     /**

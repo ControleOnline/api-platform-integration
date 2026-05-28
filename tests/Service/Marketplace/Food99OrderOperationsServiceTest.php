@@ -430,6 +430,24 @@ final class Food99OrderOperationsServiceTest extends TestCase
         ], $food99Service->calls);
     }
 
+    public function testThrowIfConfirmationShouldRetryIgnoresUnavailableConfirmationResponse(): void
+    {
+        $order = new \ControleOnline\Entity\Order();
+        $this->setEntityIdOnOrder($order, 902);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        $this->invokePrivateMethod(
+            $service,
+            'throwIfConfirmationShouldRetry',
+            ['errno' => 10001, 'errmsg' => 'Nao foi possivel confirmar o pedido na 99Food.', 'data' => []],
+            '5764671883811294471',
+            $order
+        );
+
+        self::assertTrue(true);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
