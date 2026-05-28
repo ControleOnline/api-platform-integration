@@ -320,6 +320,58 @@ final class Food99OrderOperationsServiceTest extends TestCase
         ], $peopleService->calls);
     }
 
+    public function testFindExistingIntegratedOrderUsesStoredSnapshotFallbackWhenExtraDataIsMissing(): void
+    {
+        $order = new \ControleOnline\Entity\Order();
+        $this->setEntityIdOnOrder($order, 71674);
+
+        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
+        $extraDataService->expects(self::once())
+            ->method('getEntityByExtraData')
+            ->with(
+                'Food99',
+                'id',
+                '5764671883811294471',
+                \ControleOnline\Entity\Order::class
+            )
+            ->willReturn(null);
+
+        $food99Service = new class($order) {
+            public array $calls = [];
+
+            public function __construct(private \ControleOnline\Entity\Order $order)
+            {
+            }
+
+            public function findFood99OrderByStoredIntegrationState(string $orderId, string $orderCode = ''): ?\ControleOnline\Entity\Order
+            {
+                $this->calls[] = [$orderId, $orderCode];
+
+                return $this->order;
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($food99Service);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'findExistingIntegratedOrder',
+            '5764671883811294471',
+            '570001'
+        );
+
+        self::assertSame($order, $result);
+        self::assertSame([
+            ['5764671883811294471', '570001'],
+        ], $food99Service->calls);
+    }
+
     public function testStoredOrderIntegrationStateAndConfirmResultDelegateToFood99Service(): void
     {
         $order = new \ControleOnline\Entity\Order();

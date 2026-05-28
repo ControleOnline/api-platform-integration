@@ -1667,6 +1667,50 @@ class Food99Service extends AbstractMarketplaceService implements
         return $state;
     }
 
+    private function findFood99OrderByStoredIntegrationState(string $orderId, string $orderCode = ''): ?Order
+    {
+        $orderId = trim($orderId);
+        $orderCode = trim($orderCode);
+
+        if ($orderId === '' && $orderCode === '') {
+            return null;
+        }
+
+        $needle = $orderId !== '' ? $orderId : $orderCode;
+        $candidates = $this->entityManager
+            ->getRepository(Order::class)
+            ->createQueryBuilder('o')
+            ->andWhere('o.app = :app')
+            ->andWhere('o.otherInformations LIKE :needle')
+            ->setParameter('app', self::APP_CONTEXT)
+            ->setParameter('needle', '%' . $needle . '%')
+            ->orderBy('o.alterDate', 'DESC')
+            ->addOrderBy('o.id', 'DESC')
+            ->setMaxResults(25)
+            ->getQuery()
+            ->getResult();
+
+        foreach ($candidates as $candidate) {
+            if (!$candidate instanceof Order) {
+                continue;
+            }
+
+            $state = $this->getStoredOrderIntegrationState($candidate);
+            $candidateOrderId = trim((string) ($state['food99_id'] ?? ''));
+            $candidateOrderCode = trim((string) ($state['food99_code'] ?? ''));
+
+            if ($orderId !== '' && $candidateOrderId === $orderId) {
+                return $candidate;
+            }
+
+            if ($orderCode !== '' && $candidateOrderCode === $orderCode) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     private function unwrapStoredOrderPayload(array $payload): array
     {
         $normalizedPayload = $payload;

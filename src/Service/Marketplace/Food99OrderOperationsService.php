@@ -136,6 +136,14 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                 return $order;
             }
 
+            $storedOrder = $this->callFood99ServiceMethod('findFood99OrderByStoredIntegrationState', [
+                $orderId,
+                $orderCode,
+            ]);
+            if ($storedOrder instanceof Order) {
+                return $storedOrder;
+            }
+
             if (!$allowCodeFallback) {
                 return null;
             }
