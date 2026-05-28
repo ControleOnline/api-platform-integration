@@ -47,6 +47,150 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return trim((string) $value);
     }
 
+    private function buildOrderIntegrationLockKey(string $orderId): string
+    {
+        return 'food99:order:' . substr(sha1($orderId), 0, 40);
+    }
+
+    private function acquireOrderIntegrationLock(string $orderId): bool
+    {
+        try {
+            $acquired = (int) $this->entityManager->getConnection()->fetchOne(
+                'SELECT GET_LOCK(:lockKey, 5)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+
+            if ($acquired !== 1) {
+                self::$logger?->warning('Food99 could not acquire order integration lock in time', [
+                    'order_id' => $orderId,
+                    'lock_key' => $this->buildOrderIntegrationLockKey($orderId),
+                ]);
+            }
+
+            return $acquired === 1;
+        } catch (\Throwable $e) {
+            self::$logger?->warning('Food99 could not acquire order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function releaseOrderIntegrationLock(string $orderId): void
+    {
+        try {
+            $this->entityManager->getConnection()->fetchOne(
+                'SELECT RELEASE_LOCK(:lockKey)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+        } catch (\Throwable $e) {
+            self::$logger?->warning('Food99 could not release order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function extractIncomingOrderIdentifiers(array $json): array
+    {
+        $identifiers = $this->callFood99ServiceMethod(__FUNCTION__, [$json]);
+
+        return is_array($identifiers) ? $identifiers : [
+            'order_id' => '',
+            'order_index' => '',
+            'order_code' => '',
+        ];
+    }
+
+    private function findFood99EntityByExtraData(
+        string $entityName,
+        string $fieldName,
+        mixed $value,
+        string $entityClass
+    ): ?object {
+        $normalizedValue = trim((string) $value);
+        if ($normalizedValue === '') {
+            return null;
+        }
+
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            $entityClass
+        );
+
+        return is_object($entity) ? $entity : null;
+    }
+
+    private function findFood99OrderByLegacyAwareExtraData(string $fieldName, mixed $value): ?Order
+    {
+        $normalizedValue = trim((string) $value);
+        if ($normalizedValue === '') {
+            return null;
+        }
+
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            Order::class
+        );
+
+        if (!$entity instanceof Order || $entity->getApp() !== self::APP_CONTEXT) {
+            return null;
+        }
+
+        return $entity;
+    }
+
+    private function findExistingIntegratedOrder(
+        string $orderId,
+        string $orderCode,
+        bool $allowCodeFallback = true
+    ): ?Order {
+        if ($orderId !== '') {
+            $order = $this->findFood99OrderByLegacyAwareExtraData('id', $orderId);
+            if ($order instanceof Order) {
+                return $order;
+            }
+
+            if (!$allowCodeFallback) {
+                return null;
+            }
+        }
+
+        if ($orderCode !== '') {
+            $order = $this->findFood99OrderByLegacyAwareExtraData('code', $orderCode);
+            if ($order instanceof Order) {
+                return $order;
+            }
+        }
+
+        return null;
+    }
+
+    private function waitForExistingIntegratedOrder(
+        string $orderId,
+        string $orderCode,
+        int $attempts = 5,
+        int $sleepMicroseconds = 250000,
+        bool $allowCodeFallback = true
+    ): ?Order {
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
+            $existing = $this->findExistingIntegratedOrder($orderId, $orderCode, $allowCodeFallback);
+            if ($existing instanceof Order) {
+                return $existing;
+            }
+
+            usleep($sleepMicroseconds);
+        }
+
+        return null;
+    }
+
     private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
@@ -77,6 +221,16 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
     private function callFood99PeopleServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99PeopleOperationsService::class);
+        if (!is_object($service)) {
+            return null;
+        }
+
+        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+    }
+
+    private function callFood99StoreServiceMethod(string $method, array $arguments = []): mixed
+    {
+        $service = $this->resolveMarketplaceServiceInstance(Food99StoreOperationsService::class);
         if (!is_object($service)) {
             return null;
         }
@@ -116,6 +270,17 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $courier instanceof People ? $courier : null;
     }
 
+    private function syncFood99ClientData(
+        People $client,
+        People $provider,
+        array $address,
+        string $remoteClientId = ''
+    ): People {
+        $syncedClient = $this->callFood99PeopleServiceMethod(__FUNCTION__, [$client, $provider, $address, $remoteClientId]);
+
+        return $syncedClient instanceof People ? $syncedClient : $client;
+    }
+
     private function resolveFood99MarketplacePeople(): People
     {
         $people = $this->callFood99FinancialServiceMethod(__FUNCTION__, []);
@@ -130,6 +295,18 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
     private function syncProviderWebhookReceiptState(array $json): void
     {
         $this->callFood99ServiceMethod(__FUNCTION__, [$json]);
+    }
+
+    private function syncStoreStatusWebhook(array $json): void
+    {
+        $this->callFood99StoreServiceMethod(__FUNCTION__, [$json]);
+    }
+
+    private function resolveOrderClient(People $provider, array $address, array $payload, string $orderId): People
+    {
+        $client = $this->callFood99ServiceMethod(__FUNCTION__, [$provider, $address, $payload, $orderId]);
+
+        return $client instanceof People ? $client : $provider;
     }
 
     private function decodeOrderOtherInformationsValue(mixed $value): array

@@ -86,6 +86,220 @@ final class Food99OrderOperationsServiceTest extends TestCase
         );
     }
 
+    public function testExtractIncomingOrderIdentifiersDelegatesToFood99Service(): void
+    {
+        $food99Service = new class {
+            public array $calls = [];
+
+            public function extractIncomingOrderIdentifiers(array $json): array
+            {
+                $this->calls[] = $json;
+
+                return [
+                    'order_id' => '5764671854459555132',
+                    'order_index' => '570004',
+                    'order_code' => '570004',
+                ];
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($food99Service);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'extractIncomingOrderIdentifiers',
+            [
+                'type' => 'orderNew',
+                'data' => [
+                    'order_id' => '5764671854459555132',
+                ],
+            ]
+        );
+
+        self::assertSame([
+            'order_id' => '5764671854459555132',
+            'order_index' => '570004',
+            'order_code' => '570004',
+        ], $result);
+        self::assertSame(
+            [
+                [
+                    'type' => 'orderNew',
+                    'data' => [
+                        'order_id' => '5764671854459555132',
+                    ],
+                ],
+            ],
+            $food99Service->calls
+        );
+    }
+
+    public function testSyncStoreStatusWebhookDelegatesToFood99StoreService(): void
+    {
+        $storeService = new class {
+            public array $calls = [];
+
+            public function syncStoreStatusWebhook(array $json): void
+            {
+                $this->calls[] = $json;
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($storeService);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $this->invokePrivateMethod(
+            $service,
+            'syncStoreStatusWebhook',
+            [
+                'type' => 'shopStatus',
+                'data' => ['shop_id' => '3'],
+            ]
+        );
+
+        self::assertSame(
+            [
+                [
+                    'type' => 'shopStatus',
+                    'data' => ['shop_id' => '3'],
+                ],
+            ],
+            $storeService->calls
+        );
+    }
+
+    public function testSyncFood99ClientDataDelegatesToFood99PeopleService(): void
+    {
+        $client = new \ControleOnline\Entity\People();
+        $peopleService = new class($client) {
+            public array $calls = [];
+
+            public function __construct(private \ControleOnline\Entity\People $client)
+            {
+            }
+
+            public function syncFood99ClientData(
+                \ControleOnline\Entity\People $client,
+                \ControleOnline\Entity\People $provider,
+                array $address,
+                string $remoteClientId = ''
+            ): \ControleOnline\Entity\People {
+                $this->calls[] = [$client, $provider, $address, $remoteClientId];
+
+                return $this->client;
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($peopleService);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $provider = new \ControleOnline\Entity\People();
+        $result = $this->invokePrivateMethod(
+            $service,
+            'syncFood99ClientData',
+            $client,
+            $provider,
+            ['street_name' => 'Rua A'],
+            '123'
+        );
+
+        self::assertSame($client, $result);
+        self::assertCount(1, $peopleService->calls);
+        self::assertSame($client, $peopleService->calls[0][0]);
+        self::assertSame($provider, $peopleService->calls[0][1]);
+        self::assertSame(['street_name' => 'Rua A'], $peopleService->calls[0][2]);
+        self::assertSame('123', $peopleService->calls[0][3]);
+    }
+
+    public function testResolveOrderClientDelegatesToFood99Service(): void
+    {
+        $resolvedClient = new \ControleOnline\Entity\People();
+        $food99Service = new class($resolvedClient) {
+            public array $calls = [];
+
+            public function __construct(private \ControleOnline\Entity\People $client)
+            {
+            }
+
+            public function resolveOrderClient(
+                \ControleOnline\Entity\People $provider,
+                array $address,
+                array $payload,
+                string $orderId
+            ): \ControleOnline\Entity\People {
+                $this->calls[] = [$provider, $address, $payload, $orderId];
+
+                return $this->client;
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($food99Service);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $provider = new \ControleOnline\Entity\People();
+        $result = $this->invokePrivateMethod(
+            $service,
+            'resolveOrderClient',
+            $provider,
+            ['street_name' => 'Rua A'],
+            ['data' => ['order_id' => '5764671854459555132']],
+            '5764671854459555132'
+        );
+
+        self::assertSame($resolvedClient, $result);
+        self::assertCount(1, $food99Service->calls);
+        self::assertSame($provider, $food99Service->calls[0][0]);
+        self::assertSame(['street_name' => 'Rua A'], $food99Service->calls[0][1]);
+        self::assertSame(['data' => ['order_id' => '5764671854459555132']], $food99Service->calls[0][2]);
+        self::assertSame('5764671854459555132', $food99Service->calls[0][3]);
+    }
+
+    public function testFindFood99EntityByExtraDataUsesExtraDataServiceLookup(): void
+    {
+        $resolved = new \stdClass();
+        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
+        $extraDataService->expects(self::once())
+            ->method('getEntityByExtraData')
+            ->with(
+                'Food99',
+                'code',
+                '3',
+                \ControleOnline\Entity\People::class
+            )
+            ->willReturn($resolved);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'findFood99EntityByExtraData',
+            'People',
+            'code',
+            '3',
+            \ControleOnline\Entity\People::class
+        );
+
+        self::assertSame($resolved, $result);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
