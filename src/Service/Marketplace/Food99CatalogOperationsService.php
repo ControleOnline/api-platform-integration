@@ -16,6 +16,7 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
+use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
@@ -96,6 +97,23 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
             $fieldType,
             self::APP_CONTEXT
         );
+    }
+
+    private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
+    {
+        $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
+        if (!is_object($service)) {
+            return null;
+        }
+
+        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+    }
+
+    private function call99EndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
+    {
+        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$uri, $payload, $provider]);
+
+        return is_array($response) ? $response : null;
     }
 
     private function normalizeProductIds(array $productIds): array
