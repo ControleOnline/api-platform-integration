@@ -157,6 +157,105 @@ class Food99ClientTest extends TestCase
         }
     }
 
+    public function testOpenDeliveryPollingDetailsAndAcknowledgementUseBearerAuthAndQueryString(): void
+    {
+        $previousValues = [
+            'OAUTH_99FOOD_CLIENT_ID' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+            'OAUTH_99FOOD_CLIENT_ID_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+        ];
+        unset($_ENV['OAUTH_99FOOD_CLIENT_ID'], $_ENV['OAUTH_99FOOD_CLIENT_SECRET']);
+
+        $_SERVER['OAUTH_99FOOD_CLIENT_ID'] = 'server-app-id';
+        $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] = 'server-app-secret';
+
+        $httpClient = new RecordingHttpClient(function (string $method, string $url, array $options) {
+            if (str_contains($url, '/v1/auth/authtoken/get')) {
+                return RecordedResponse::json([
+                    'errno' => 0,
+                    'data' => [
+                        'auth_token' => 'token-open',
+                        'token_expiration_time' => time() + 3600,
+                    ],
+                ]);
+            }
+
+            if (str_contains($url, '/v4/opendelivery/v1/events:polling')) {
+                self::assertSame('GET', $method);
+                self::assertSame('Bearer token-open', $options['headers']['Authorization'] ?? null);
+                self::assertStringContainsString('eventType=CREATED&eventType=DELIVERED', $url);
+                self::assertStringContainsString('fromTime=2026-05-28T03%3A00%3A00Z', $url);
+
+                return RecordedResponse::json([
+                    'errno' => 0,
+                    'data' => [
+                        [
+                            'id' => 'evt-1',
+                            'eventType' => 'CREATED',
+                            'orderId' => 'order-1',
+                            'createdAt' => '2026-05-28T10:00:00Z',
+                        ],
+                    ],
+                ]);
+            }
+
+            if (str_contains($url, '/v4/opendelivery/v1/orders/order-1')) {
+                self::assertSame('GET', $method);
+                self::assertSame('Bearer token-open', $options['headers']['Authorization'] ?? null);
+
+                return RecordedResponse::json([
+                    'errno' => 0,
+                    'data' => [
+                        'id' => 'order-1',
+                        'displayId' => '570004',
+                        'merchant' => [
+                            'id' => 'shop-1',
+                            'name' => 'Gyros Greek Barbecue',
+                        ],
+                    ],
+                ]);
+            }
+
+            if (str_contains($url, '/v4/opendelivery/v1/events/acknowledgment')) {
+                self::assertSame('POST', $method);
+                self::assertSame('Bearer token-open', $options['headers']['Authorization'] ?? null);
+                self::assertSame([
+                    [
+                        'id' => 'evt-1',
+                        'orderId' => 'order-1',
+                        'eventType' => 'CREATED',
+                    ],
+                ], $options['json'] ?? []);
+
+                return new RecordedResponse('', 202);
+            }
+
+            throw new \RuntimeException('Unexpected Food99 request: ' . $url);
+        });
+
+        $client = new Food99Client($httpClient);
+        $provider = $this->newTestPeople(3);
+
+        try {
+            $pollResponse = $client->pollOpenDeliveryEvents($provider, ['created', 'delivered'], '2026-05-28T03:00:00Z');
+            self::assertSame(0, $pollResponse['errno'] ?? null);
+            self::assertCount(1, $pollResponse['data'] ?? []);
+
+            $orderResponse = $client->getOpenDeliveryOrderDetails($provider, 'order-1');
+            self::assertSame(0, $orderResponse['errno'] ?? null);
+            self::assertSame('order-1', $orderResponse['data']['id'] ?? null);
+
+            $ackResponse = $client->acknowledgeOpenDeliveryEvents($provider, $pollResponse['data'] ?? []);
+            self::assertSame(0, $ackResponse['errno'] ?? null);
+            self::assertSame([], $ackResponse['data'] ?? []);
+
+            self::assertCount(4, $httpClient->requests);
+        } finally {
+            $this->restoreEnvironmentValues($previousValues);
+        }
+    }
+
     private function restoreEnvironmentValues(array $previousValues): void
     {
         foreach ($previousValues as $key => $value) {
