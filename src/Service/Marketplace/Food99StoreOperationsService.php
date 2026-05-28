@@ -122,6 +122,27 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         );
     }
 
+    private function findFood99EntityByExtraData(
+        string $entityName,
+        string $fieldName,
+        mixed $value,
+        string $entityClass
+    ): ?object {
+        $normalizedValue = trim((string) $value);
+        if ($normalizedValue === '') {
+            return null;
+        }
+
+        $entity = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            $fieldName,
+            $normalizedValue,
+            $entityClass
+        );
+
+        return is_object($entity) ? $entity : null;
+    }
+
     private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
     {
         $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
