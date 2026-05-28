@@ -504,11 +504,28 @@ class IntegrationService
         $manager->flush();
 
         if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
-            $this->bus->dispatch(
-                new SendIntegrationMessage(
-                    integrationId: $integration->getId()
-                )
-            );
+            try {
+                $this->bus->dispatch(
+                    new SendIntegrationMessage(
+                        integrationId: $integration->getId()
+                    )
+                );
+            } catch (Throwable $exception) {
+                if (strcasecmp((string) $queueNane, 'PushNotification') !== 0) {
+                    throw $exception;
+                }
+
+                if ($this->loggerService instanceof LoggerService) {
+                    $this->loggerService
+                        ->getLogger('integration')
+                        ->warning('Ephemeral integration queue dispatch skipped', [
+                            'integrationId' => $integration->getId(),
+                            'queueName' => $queueNane,
+                            'class' => $exception::class,
+                            'message' => $exception->getMessage(),
+                        ]);
+                }
+            }
         }
 
         return $integration;

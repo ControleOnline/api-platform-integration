@@ -139,6 +139,80 @@ class IntegrationServiceTest extends TestCase
         self::assertSame($company, $persistedIntegrations[0]->getPeople());
     }
 
+    public function testAddManagerPushIntegrationsIgnoresDispatchFailuresForEphemeralQueues(): void
+    {
+        $company = $this->createStub(People::class);
+        $targetDevice = new Device();
+        $targetDevice->setDevice('android-manager');
+        $targetDevice->setMetadata([
+            'pushTokens' => [
+                'manager' => [
+                    'android' => [
+                        'deviceToken' => 'fcm-token-1',
+                    ],
+                ],
+            ],
+        ]);
+
+        $targetConfig = (new DeviceConfig())
+            ->setPeople($company)
+            ->setDevice($targetDevice)
+            ->setType('MANAGER');
+
+        $repository = $this->getMockBuilder(EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['findBy'])
+            ->getMock();
+        $repository
+            ->expects(self::once())
+            ->method('findBy')
+            ->with(['people' => $company])
+            ->willReturn([$targetConfig]);
+
+        $openStatus = $this->createStub(Status::class);
+        $statusService = $this->createMock(StatusService::class);
+        $statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('open', 'open', 'integration')
+            ->willReturn($openStatus);
+
+        $persistedIntegrations = [];
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->method('isOpen')->willReturn(true);
+        $entityManager
+            ->expects(self::once())
+            ->method('getRepository')
+            ->with(DeviceConfig::class)
+            ->willReturn($repository);
+        $entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->willReturnCallback(function (Integration $integration) use (&$persistedIntegrations): void {
+                $this->setEntityId($integration, 556);
+                $persistedIntegrations[] = $integration;
+            });
+        $entityManager
+            ->expects(self::once())
+            ->method('flush');
+
+        $bus = $this->createMock(MessageBusInterface::class);
+        $bus
+            ->expects(self::once())
+            ->method('dispatch')
+            ->willThrowException(new \RuntimeException('messenger transport unavailable'));
+
+        $service = $this->buildService($entityManager, $statusService, $bus);
+
+        $count = $service->addManagerPushIntegrations('{"event":"order.created"}', $company);
+
+        self::assertSame(1, $count);
+        self::assertCount(1, $persistedIntegrations);
+        self::assertSame('PushNotification', $persistedIntegrations[0]->getQueueName());
+        self::assertSame($targetDevice, $persistedIntegrations[0]->getDevice());
+        self::assertSame($company, $persistedIntegrations[0]->getPeople());
+    }
+
     public function testExecuteIntegrationResetsClosedEntityManagerBeforePersistingRetryFailure(): void
     {
         $integration = new Integration();
