@@ -370,6 +370,9 @@ class MarketplaceOrderFinancialGenerationService
     private function buildContext(Order $order): array
     {
         $normalizedApp = strtolower(trim((string) $order->getApp()));
+        $marketplaceApp = $normalizedApp === strtolower(Order::APP_FOOD99)
+            ? Order::APP_FOOD99
+            : Order::APP_IFOOD;
 
         if ($normalizedApp === strtolower(Order::APP_FOOD99)) {
             $snapshot = $this->food99Service->getOrderHomologationSnapshot($order);
@@ -401,7 +404,26 @@ class MarketplaceOrderFinancialGenerationService
         $payment = is_array($snapshot['payment'] ?? null) ? $snapshot['payment'] : [];
         $delivery = is_array($snapshot['delivery'] ?? null) ? $snapshot['delivery'] : [];
 
-        $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
+        $materializedInvoicePaymentType = null;
+        $materializedWeeklyDueDate = null;
+
+        try {
+            $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
+        } catch (\RuntimeException $exception) {
+            $materializedSnapshot = $this->extractMaterializedMarketplaceSnapshot($order, $marketplaceApp);
+            if ($materializedSnapshot === []) {
+                throw $exception;
+            }
+
+            $financial = array_replace($financial, is_array($materializedSnapshot['financial'] ?? null) ? $materializedSnapshot['financial'] : []);
+            $payment = array_replace($payment, is_array($materializedSnapshot['payment'] ?? null) ? $materializedSnapshot['payment'] : []);
+            $delivery = array_replace($delivery, is_array($materializedSnapshot['delivery'] ?? null) ? $materializedSnapshot['delivery'] : []);
+            $state = array_replace($state, is_array($materializedSnapshot['state'] ?? null) ? $materializedSnapshot['state'] : []);
+            $materializedInvoicePaymentType = $materializedSnapshot['invoice_payment_type'] ?? null;
+            $materializedWeeklyDueDate = $materializedSnapshot['weekly_due_date'] ?? null;
+
+            $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
+        }
 
         $providerWallet = $normalizedApp === strtolower(Order::APP_FOOD99)
             ? $this->resolveFood99SettlementWallet($order->getProvider())
@@ -475,13 +497,19 @@ class MarketplaceOrderFinancialGenerationService
                         )
                     )));
 
-        $invoicePaymentType = $this->resolveMarketplaceInvoicePaymentType(
-            $order->getProvider(),
-            $this->resolveMarketplaceInvoicePaymentMethodLabel($payment, $state, $marketplaceLabel),
-            $this->resolveMarketplaceInvoicePaymentCode($payment, $state),
-            $providerWallet,
-            $marketplaceWallet
-        );
+        $invoicePaymentType = $materializedInvoicePaymentType instanceof PaymentType
+            ? $materializedInvoicePaymentType
+            : $this->resolveMarketplaceInvoicePaymentType(
+                $order->getProvider(),
+                $this->resolveMarketplaceInvoicePaymentMethodLabel($payment, $state, $marketplaceLabel),
+                $this->resolveMarketplaceInvoicePaymentCode($payment, $state),
+                $providerWallet,
+                $marketplaceWallet
+            );
+
+        $weeklyDueDate = $materializedWeeklyDueDate instanceof DateTime
+            ? $materializedWeeklyDueDate
+            : $this->resolveWeeklyDueDate($order);
 
         return [
             'app' => $normalizedApp === strtolower(Order::APP_FOOD99) ? Order::APP_FOOD99 : Order::APP_IFOOD,
@@ -493,7 +521,7 @@ class MarketplaceOrderFinancialGenerationService
             'pending_status' => $pendingStatus,
             'paid_status' => $paidStatus,
             'invoice_payment_type' => $invoicePaymentType,
-            'weekly_due_date' => $this->resolveWeeklyDueDate($order),
+            'weekly_due_date' => $weeklyDueDate,
             'weekly_settlement_amount' => $weeklySettlementAmount,
             'customer_collection_amount' => $isPaidOnline ? 0.0 : $collectOnDeliveryAmount,
             'customer_marketplace_payment_amount' => $isPaidOnline
@@ -519,6 +547,146 @@ class MarketplaceOrderFinancialGenerationService
                 'name' => $this->text($state['rider_name'] ?? $delivery['rider_name'] ?? null),
                 'phone' => $this->text($state['rider_phone'] ?? $delivery['rider_phone'] ?? null),
             ],
+        ];
+    }
+
+    private function extractMaterializedMarketplaceSnapshot(Order $order, string $app): array
+    {
+        $financial = [];
+        $payment = [];
+        $delivery = [];
+        $state = [];
+        $invoicePaymentType = null;
+        $weeklyDueDate = null;
+        $hasManagedInvoices = false;
+
+        $orderInvoices = is_iterable($order->getInvoice()) ? $order->getInvoice()->toArray() : [];
+        foreach ($orderInvoices as $orderInvoice) {
+            if (!$orderInvoice instanceof OrderInvoice) {
+                continue;
+            }
+
+            $invoice = $orderInvoice->getInvoice();
+            if (!$invoice instanceof Invoice) {
+                continue;
+            }
+
+            $metadata = $this->readMarketplaceMetadata($invoice, $app);
+            if (!$this->isManagedMarketplaceMetadataPayload($metadata, $app)) {
+                continue;
+            }
+
+            $purpose = trim((string) ($metadata['invoice_purpose'] ?? ''));
+            if ($purpose === '') {
+                continue;
+            }
+
+            $hasManagedInvoices = true;
+            $amount = $this->money($orderInvoice->getRealPrice());
+            if ($amount <= 0) {
+                $amount = $this->money($invoice->getPrice());
+            }
+
+            if ($invoicePaymentType === null && $invoice->getPaymentType() instanceof PaymentType) {
+                $invoicePaymentType = $invoice->getPaymentType();
+            }
+
+            if ($purpose === self::PURPOSE_WEEKLY_SETTLEMENT && $invoice->getDueDate() instanceof DateTimeInterface) {
+                $weeklyDueDate = new DateTime($invoice->getDueDate()->format('Y-m-d'));
+            }
+
+            switch ($purpose) {
+                case self::PURPOSE_CUSTOMER_MARKETPLACE_PAYMENT:
+                case self::LEGACY_PURPOSE_CUSTOMER_TOTAL:
+                    $financial['customer_total'] = $amount;
+                    $financial['store_receivable_total'] = $amount;
+                    $payment['amount_paid'] = $amount;
+                    $payment['is_paid_online'] = true;
+                    break;
+
+                case self::PURPOSE_CUSTOMER_COLLECTION:
+                    $financial['customer_need_paying_money'] = $amount;
+                    $payment['collect_on_delivery_amount'] = $amount;
+                    $payment['customer_need_paying_money'] = $amount;
+                    $payment['is_paid_online'] = false;
+                    break;
+
+                case self::PURPOSE_WEEKLY_SETTLEMENT:
+                    $financial['weekly_settlement_amount'] = $amount;
+                    $financial['store_receivable_total'] = $amount;
+                    break;
+
+                case self::PURPOSE_SERVICE_FEE:
+                case self::LEGACY_PURPOSE_MARKETPLACE_FEE:
+                    $financial['service_fee'] = $amount;
+                    $financial['service_fee_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_SMALL_ORDER_FEE:
+                    $financial['small_order_fee'] = $amount;
+                    $financial['small_order_fee_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_MEAL_TOP_UP_FEE:
+                    $financial['meal_top_up_fee'] = $amount;
+                    $financial['meal_top_up_fee_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_COMMISSION_DISTRIBUTION:
+                    $financial['commission_distribution_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_PAYMENT_PROCESSING:
+                    $financial['payment_processing_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_LOGISTICS_COST:
+                    $financial['logistics_cost_amount'] = $amount;
+                    break;
+
+                case self::PURPOSE_MERCHANT_DISCOUNT:
+                    $financial['store_discount_total'] = $amount;
+                    $financial['merchant_subsidy'] = $amount;
+                    break;
+
+                case self::PURPOSE_PLATFORM_DISCOUNT:
+                    $financial['platform_discount_total'] = $amount;
+                    $financial['ifood_subsidy'] = $amount;
+                    break;
+
+                case self::PURPOSE_COURIER_PAYMENT:
+                case self::LEGACY_PURPOSE_DELIVERY_FEE:
+                    $financial['delivery_fee'] = $amount;
+                    $financial['delivery_fee_amount'] = $amount;
+                    $delivery['is_platform_delivery'] = true;
+                    $state['is_platform_delivery'] = true;
+
+                    $courierName = $this->text($metadata['courier_name'] ?? null);
+                    $courierPhone = $this->text($metadata['courier_phone'] ?? null);
+                    if ($courierName !== '') {
+                        $state['rider_name'] = $courierName;
+                        $delivery['rider_name'] = $courierName;
+                    }
+
+                    if ($courierPhone !== '') {
+                        $state['rider_phone'] = $courierPhone;
+                        $delivery['rider_phone'] = $courierPhone;
+                    }
+                    break;
+            }
+        }
+
+        if (!$hasManagedInvoices) {
+            return [];
+        }
+
+        return [
+            'financial' => $financial,
+            'payment' => $payment,
+            'delivery' => $delivery,
+            'state' => $state,
+            'invoice_payment_type' => $invoicePaymentType,
+            'weekly_due_date' => $weeklyDueDate,
         ];
     }
 

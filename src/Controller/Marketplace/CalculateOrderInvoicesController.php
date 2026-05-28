@@ -129,7 +129,7 @@ class CalculateOrderInvoicesController extends AbstractController
         }
 
         try {
-            $result = $this->generateFromStoredSnapshot($order);
+            $result = $this->marketplaceOrderFinancialGenerationService->generate($order);
         } catch (\RuntimeException $exception) {
             return new JsonResponse([
                 'error' => $exception->getMessage(),
@@ -138,7 +138,7 @@ class CalculateOrderInvoicesController extends AbstractController
 
         return new JsonResponse([
             'success' => true,
-            'message' => 'Invoices populadas com sucesso a partir do snapshot salvo no pedido.',
+            'message' => 'Invoices populadas com sucesso a partir do snapshot salvo ou das invoices materializadas no pedido.',
             'data' => $result,
         ], Response::HTTP_OK);
     }
