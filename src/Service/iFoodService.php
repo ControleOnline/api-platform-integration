@@ -540,7 +540,7 @@ class iFoodService extends AbstractMarketplaceService implements
                 : $eventOrderDetails;
         } elseif ($storedOrderDetails !== []) {
             $orderDetails = $storedOrderDetails;
-        } elseif (!$order instanceof Order) {
+        } else {
             $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
             if (is_array($fetchedOrderDetails)) {
                 $orderDetails = $fetchedOrderDetails;
@@ -565,6 +565,18 @@ class iFoodService extends AbstractMarketplaceService implements
         ]);
 
         return is_array($orderDetails) ? $orderDetails : [];
+    }
+
+    private function fetchOrderDetails(string $orderId): ?array
+    {
+        $service = $this->resolveMarketplaceServiceInstance(IfoodStoreOperationsService::class);
+        if (!is_object($service)) {
+            return null;
+        }
+
+        $details = $this->invokeMarketplaceServiceMethod($service, __FUNCTION__, [$orderId]);
+
+        return is_array($details) ? $details : null;
     }
 
     private function getIfoodContextOtherInformations(Order $order): array

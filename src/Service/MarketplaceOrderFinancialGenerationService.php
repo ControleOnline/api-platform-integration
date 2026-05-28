@@ -406,24 +406,36 @@ class MarketplaceOrderFinancialGenerationService
 
         $materializedInvoicePaymentType = null;
         $materializedWeeklyDueDate = null;
-
-        try {
-            $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
-        } catch (\RuntimeException $exception) {
-            $materializedSnapshot = $this->extractMaterializedMarketplaceSnapshot($order, $marketplaceApp);
-            if ($materializedSnapshot === []) {
-                throw $exception;
-            }
-
-            $financial = array_replace($financial, is_array($materializedSnapshot['financial'] ?? null) ? $materializedSnapshot['financial'] : []);
-            $payment = array_replace($payment, is_array($materializedSnapshot['payment'] ?? null) ? $materializedSnapshot['payment'] : []);
-            $delivery = array_replace($delivery, is_array($materializedSnapshot['delivery'] ?? null) ? $materializedSnapshot['delivery'] : []);
-            $state = array_replace($state, is_array($materializedSnapshot['state'] ?? null) ? $materializedSnapshot['state'] : []);
+        $materializedSnapshot = $this->extractMaterializedMarketplaceSnapshot($order, $marketplaceApp);
+        if ($materializedSnapshot !== []) {
+            $financial = array_replace(
+                is_array($materializedSnapshot['financial'] ?? null) ? $materializedSnapshot['financial'] : [],
+                $financial
+            );
+            $payment = array_replace(
+                is_array($materializedSnapshot['payment'] ?? null) ? $materializedSnapshot['payment'] : [],
+                $payment
+            );
+            $delivery = array_replace(
+                is_array($materializedSnapshot['delivery'] ?? null) ? $materializedSnapshot['delivery'] : [],
+                $delivery
+            );
+            $state = array_replace(
+                is_array($materializedSnapshot['state'] ?? null) ? $materializedSnapshot['state'] : [],
+                $state
+            );
             $materializedInvoicePaymentType = $materializedSnapshot['invoice_payment_type'] ?? null;
             $materializedWeeklyDueDate = $materializedSnapshot['weekly_due_date'] ?? null;
-
-            $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
         }
+
+        if ($normalizedApp === strtolower(Order::APP_IFOOD)) {
+            $financial = array_replace(
+                $this->resolveIfoodStateFinancialFallback($state),
+                $financial
+            );
+        }
+
+        $this->assertMarketplaceFinancialSnapshotIsUsable($order, $financial, $payment);
 
         $providerWallet = $normalizedApp === strtolower(Order::APP_FOOD99)
             ? $this->resolveFood99SettlementWallet($order->getProvider())
@@ -1524,6 +1536,22 @@ class MarketplaceOrderFinancialGenerationService
             'store_delivery_discount_amount' => $this->money($financial['store_delivery_discount_total'] ?? 0),
             'store_non_delivery_discount_amount' => $this->money($financial['store_non_delivery_discount_total'] ?? 0),
         ];
+    }
+
+    private function resolveIfoodStateFinancialFallback(array $state): array
+    {
+        return array_filter([
+            'discount_total' => $state['discount_total'] ?? null,
+            'ifood_subsidy' => $state['ifood_subsidy'] ?? null,
+            'merchant_subsidy' => $state['merchant_subsidy'] ?? null,
+            'platform_discount_total' => $state['platform_discount_total'] ?? null,
+            'store_discount_total' => $state['store_discount_total'] ?? null,
+            'platform_delivery_discount_total' => $state['platform_delivery_discount_total'] ?? null,
+            'platform_non_delivery_discount_total' => $state['platform_non_delivery_discount_total'] ?? null,
+            'store_delivery_discount_total' => $state['store_delivery_discount_total'] ?? null,
+            'store_non_delivery_discount_total' => $state['store_non_delivery_discount_total'] ?? null,
+            'voucher_code' => $state['voucher_code'] ?? null,
+        ], static fn ($value) => $value !== null && $value !== '');
     }
 
     private function text(mixed $value): string
