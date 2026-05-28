@@ -1659,7 +1659,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
             $provider = $provider instanceof People ? $provider : null;
 
-            if (!$provider instanceof People && $shopId !== '') {
+            if (!($provider instanceof People) && $shopId !== '') {
                 $provider = $this->extraDataService->getEntityByExtraData(
                     self::APP_CONTEXT,
                     'code',
@@ -1889,7 +1889,11 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
                     if (!$order instanceof Order) {
                         $order = $this->addOrder($payload, false, false, $provider);
-                        if (!$order instanceof Order) {
+                    if (!$order instanceof Order) {
+                        $existingOrder = $this->findExistingIntegratedOrder($orderId, $displayId, true);
+                        if ($existingOrder instanceof Order) {
+                            $order = $existingOrder;
+                        } else {
                             $orderFailed = true;
                             $failedOrders[] = [
                                 'order_id' => $orderId,
@@ -1899,6 +1903,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                             break;
                         }
                     }
+                }
 
                     $mappedEventType = (string) ($event['mapped_event_type'] ?? '');
                     if ($mappedEventType !== '') {
