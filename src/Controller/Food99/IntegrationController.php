@@ -211,6 +211,46 @@ class IntegrationController extends AbstractController
         return trim((string) $errno) === '0';
     }
 
+    private function extractFood99AuthorizationUrl(mixed $response): ?string
+    {
+        if (!is_array($response)) {
+            return null;
+        }
+
+        $candidates = [
+            $response['data']['url'] ?? null,
+            $response['data']['auth_url'] ?? null,
+            $response['data']['authorization_url'] ?? null,
+            $response['data']['authorization_page'] ?? null,
+            $response['data']['web_page_url'] ?? null,
+            $response['data']['bind_url'] ?? null,
+            $response['data']['bindUrl'] ?? null,
+            $response['url'] ?? null,
+            $response['auth_url'] ?? null,
+            $response['authorization_url'] ?? null,
+            $response['authorization_page'] ?? null,
+            $response['web_page_url'] ?? null,
+            $response['bind_url'] ?? null,
+            $response['bindUrl'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private function buildFood99ManagerOverviewUrl(Request $request): string
+    {
+        $preferredLanguage = strtolower((string) ($request->getPreferredLanguage(['pt-BR', 'en-BR']) ?? 'pt-BR'));
+        $locale = str_starts_with($preferredLanguage, 'en') ? 'en-BR' : 'pt-BR';
+
+        return sprintf('https://merchant.99app.com/%s/manager/overview', $locale);
+    }
+
     private function normalizeTimeInput(mixed $value): ?string
     {
         $normalized = trim((string) $value);
@@ -1360,7 +1400,39 @@ class IntegrationController extends AbstractController
 
         $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
 
-        return new JsonResponse($this->food99Service->getAuthorizationPage($payload));
+        $authorizationResponse = $this->food99Service->getAuthorizationPage($payload);
+        $authorizationUrl = $this->extractFood99AuthorizationUrl($authorizationResponse);
+
+        if ($authorizationUrl !== null) {
+            self::$logger?->info('Food99 authorization page resolved', [
+                'provider_id' => $provider->getId(),
+                'app_shop_id' => $payload['app_shop_id'],
+                'authorization_url' => $authorizationUrl,
+                'response_errno' => is_array($authorizationResponse) ? ($authorizationResponse['errno'] ?? null) : null,
+            ]);
+
+            return new JsonResponse($authorizationResponse);
+        }
+
+        $fallbackUrl = $this->buildFood99ManagerOverviewUrl($request);
+
+        self::$logger?->warning('Food99 authorization page fallback to merchant manager overview', [
+            'provider_id' => $provider->getId(),
+            'app_shop_id' => $payload['app_shop_id'],
+            'response_errno' => is_array($authorizationResponse) ? ($authorizationResponse['errno'] ?? null) : null,
+            'response_errmsg' => is_array($authorizationResponse) ? ($authorizationResponse['errmsg'] ?? null) : null,
+            'fallback_url' => $fallbackUrl,
+        ]);
+
+        return new JsonResponse([
+            'errno' => 0,
+            'errmsg' => '',
+            'data' => [
+                'url' => $fallbackUrl,
+            ],
+            'authorization_source' => 'merchant-manager-overview',
+            'authorization_fallback' => true,
+        ]);
     }
 
     #[Route('/marketplace/integrations/99food/store/categories', name: 'marketplace_integrations_food99_categories', methods: ['GET'])]

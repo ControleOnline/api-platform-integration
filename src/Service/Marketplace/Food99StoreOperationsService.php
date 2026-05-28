@@ -1447,35 +1447,35 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/v1/auth/authorizationpage/getUrl', $payload);
+        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/get_url', $payload);
     }
 
     public function bindStore(array $payload): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/v3/auth/authorization/shopBind', $payload);
+        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/bind', $payload);
     }
 
     public function listAuthorizedStores(array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/v3/auth/authorization/getAuthorizedShops', $payload);
+        return $this->call99AppEndpointWithResponse('GET', '/shop_center/v1/authorize/list', $payload);
     }
 
     public function listBindStores(array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/v1/shop/shop/list', $payload);
+        return $this->call99AppEndpointWithResponse('GET', '/shop_center/v1/shop/list', $payload);
     }
 
     public function unbindStore(People $provider, array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/unbind', $payload, $provider);
+        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/unbind', $payload);
     }
 
     public function setStoreOrderConfirmationMethod(People $provider, array $payload): ?array

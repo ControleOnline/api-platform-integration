@@ -12,6 +12,7 @@ class Food99Client
 {
     private const API_BASE_URL = 'https://openapi.99food.com';
     private const BORDER_BASE_URL = 'https://b.99app.com';
+    private const PORTAL_BASE_URL = 'https://openplatform-portal-food.99app.com';
 
     private static array $authTokenCache = [];
 
@@ -32,6 +33,11 @@ class Food99Client
         return $this->requestWithResponse(self::BORDER_BASE_URL, $method, $uri, $payload, $logContext, true);
     }
 
+    public function requestPortalWithResponse(string $method, string $uri, array $payload = [], array $logContext = []): ?array
+    {
+        return $this->requestWithResponse(self::PORTAL_BASE_URL, $method, $uri, $payload, $logContext, false);
+    }
+
     public function callAppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
         $appId = $this->resolveAppId();
@@ -44,7 +50,7 @@ class Food99Client
         $payload['app_id'] = $payload['app_id'] ?? $appId;
         $payload['app_secret'] = $payload['app_secret'] ?? $appSecret;
 
-        return $this->requestBorderWithResponse($method, $uri, $payload);
+        return $this->requestPortalWithResponse($method, $uri, $payload);
     }
 
     public function callStoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
