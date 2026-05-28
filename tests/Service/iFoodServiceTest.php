@@ -562,6 +562,71 @@ class iFoodServiceTest extends TestCase
         self::assertSame('remote-chas', $remoteCategoriesByName['chas']);
     }
 
+    public function testGetAccessTokenUsesServerFallbackWhenEnvIsMissing(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
+        $this->setStaticProperty(iFoodService::class, 'authTokenCache', []);
+
+        $envBackup = [
+            'OAUTH_IFOOD_CLIENT_ID' => $_ENV['OAUTH_IFOOD_CLIENT_ID'] ?? null,
+            'OAUTH_IFOOD_CLIENT_SECRET' => $_ENV['OAUTH_IFOOD_CLIENT_SECRET'] ?? null,
+        ];
+        $serverBackup = [
+            'OAUTH_IFOOD_CLIENT_ID' => $_SERVER['OAUTH_IFOOD_CLIENT_ID'] ?? null,
+            'OAUTH_IFOOD_CLIENT_SECRET' => $_SERVER['OAUTH_IFOOD_CLIENT_SECRET'] ?? null,
+        ];
+
+        unset($_ENV['OAUTH_IFOOD_CLIENT_ID'], $_ENV['OAUTH_IFOOD_CLIENT_SECRET']);
+        $_SERVER['OAUTH_IFOOD_CLIENT_ID'] = 'client-from-server';
+        $_SERVER['OAUTH_IFOOD_CLIENT_SECRET'] = 'secret-from-server';
+
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(200);
+        $response->method('getContent')->with(false)->willReturn('{"accessToken":"token-from-server","expiresIn":3600}');
+        $response->method('toArray')->with(false)->willReturn([
+            'accessToken' => 'token-from-server',
+            'expiresIn' => 3600,
+        ]);
+
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects(self::once())
+            ->method('request')
+            ->with(
+                'POST',
+                'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token',
+                self::callback(static function (array $options): bool {
+                    parse_str((string) ($options['body'] ?? ''), $body);
+
+                    return ($body['grantType'] ?? null) === 'client_credentials'
+                        && ($body['clientId'] ?? null) === 'client-from-server'
+                        && ($body['clientSecret'] ?? null) === 'secret-from-server';
+                })
+            )
+            ->willReturn($response);
+        $this->setObjectProperty($service, 'httpClient', $httpClient);
+
+        try {
+            self::assertSame('token-from-server', $this->invokePrivateMethod($service, 'getAccessToken'));
+        } finally {
+            foreach ($envBackup as $key => $value) {
+                if ($value === null) {
+                    unset($_ENV[$key]);
+                } else {
+                    $_ENV[$key] = $value;
+                }
+            }
+
+            foreach ($serverBackup as $key => $value) {
+                if ($value === null) {
+                    unset($_SERVER[$key]);
+                } else {
+                    $_SERVER[$key] = $value;
+                }
+            }
+        }
+    }
+
     public function testIfoodImageMimeTypeNormalizesUploadAliases(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();

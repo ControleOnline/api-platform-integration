@@ -97,8 +97,8 @@ class iFoodService extends AbstractMarketplaceService implements
                 'headers' => ['content-type' => 'application/x-www-form-urlencoded'],
                 'body' => http_build_query([
                     'grantType' => 'client_credentials',
-                    'clientId' => $_ENV['OAUTH_IFOOD_CLIENT_ID'] ?? '',
-                    'clientSecret' => $_ENV['OAUTH_IFOOD_CLIENT_SECRET'] ?? '',
+                    'clientId' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_ID'),
+                    'clientSecret' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_SECRET'),
                 ]),
             ]);
 

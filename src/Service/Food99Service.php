@@ -1292,19 +1292,6 @@ class Food99Service extends AbstractMarketplaceService implements
         return $safeResponse;
     }
 
-    private function isSuccessfulErrno(mixed $errno): bool
-    {
-        if ($errno === null) {
-            return false;
-        }
-
-        if (is_numeric($errno)) {
-            return (int) $errno === 0;
-        }
-
-        return trim((string) $errno) === '0';
-    }
-
     private function persistOrderReconcileResult(Order $order, ?array $response, ?int $latencyMs = null): array
     {
         $safeResponse = is_array($response)
