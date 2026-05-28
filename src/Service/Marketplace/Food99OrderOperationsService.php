@@ -669,6 +669,28 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $this->entityManager->persist($order);
     }
 
+    private function buildLogContext(?Integration $integration = null, array $json = [], array $extra = []): array
+    {
+        $context = $this->callFood99ServiceMethod(__FUNCTION__, [$integration, $json, $extra]);
+        if (is_array($context)) {
+            return $context;
+        }
+
+        $data = is_array($json['data'] ?? null) ? $json['data'] : [];
+        $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+        $shop = is_array($info['shop'] ?? null) ? $info['shop'] : (is_array($data['shop'] ?? null) ? $data['shop'] : []);
+
+        return array_merge([
+            'integration_id' => $integration?->getId(),
+            'logEntity' => $integration,
+            'event_type' => $json['type'] ?? null,
+            'order_id' => isset($data['order_id']) ? (string) $data['order_id'] : null,
+            'order_index' => isset($info['order_index']) ? (string) $info['order_index'] : null,
+            'shop_id' => isset($shop['shop_id']) ? (string) $shop['shop_id'] : null,
+            'shop_name' => $shop['shop_name'] ?? null,
+        ], $extra);
+    }
+
     private function flattenFood99SnapshotBlock(mixed $snapshot): array
     {
         if ($snapshot instanceof \stdClass) {
