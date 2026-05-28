@@ -2054,13 +2054,16 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
         $createdAt = $this->normalizeOpenDeliveryString($event['createdAt'] ?? $event['created_at'] ?? $event['event_time'] ?? '');
         $createdAtTs = $this->normalizeOpenDeliveryTimestamp($createdAt);
+        $normalizedCreatedAt = $createdAtTs > 0
+            ? date('Y-m-d H:i:s', $createdAtTs)
+            : ($createdAt !== '' ? $createdAt : date('Y-m-d H:i:s'));
 
         return [
             'event_id' => $eventId,
             'order_id' => $orderId,
             'original_event_type' => $eventType,
             'mapped_event_type' => $this->mapOpenDeliveryEventType($eventType),
-            'created_at' => $createdAt !== '' ? $createdAt : date('Y-m-d H:i:s'),
+            'created_at' => $normalizedCreatedAt,
             'created_at_ts' => $createdAtTs,
         ];
     }
