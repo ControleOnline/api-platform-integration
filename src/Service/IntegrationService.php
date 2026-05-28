@@ -191,9 +191,26 @@ class IntegrationService
             }
 
             if ($handled && $this->shouldGenerateMarketplaceFinancial($integration, $result)) {
-                $this->container
-                    ->get(MarketplaceOrderFinancialGenerationService::class)
-                    ->generate($result);
+                try {
+                    $this->container
+                        ->get(MarketplaceOrderFinancialGenerationService::class)
+                        ->generate($result);
+                } catch (Throwable $exception) {
+                    if (!str_contains($exception->getMessage(), 'Resumo financeiro da integracao indisponivel')) {
+                        throw $exception;
+                    }
+
+                    if ($this->loggerService instanceof LoggerService) {
+                        $this->loggerService
+                            ->getLogger('integration')
+                            ->warning('Marketplace financial generation skipped', [
+                                'integrationId' => $integration->getId(),
+                                'queueName' => $integration->getQueueName(),
+                                'class' => $exception::class,
+                                'message' => $exception->getMessage(),
+                            ]);
+                    }
+                }
             }
 
             $managedIntegration = $this->reloadIntegration((int) $integration->getId());
