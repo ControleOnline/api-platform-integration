@@ -1868,65 +1868,72 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $ackEvents = [];
 
         foreach ($groupedEvents as $orderId => $orderEvents) {
-            $orderDetails = $client->getOpenDeliveryOrderDetails($provider, $orderId);
-            if (!is_array($orderDetails)) {
+            try {
+                $orderDetails = $client->getOpenDeliveryOrderDetails($provider, $orderId);
+                if (!is_array($orderDetails)) {
+                    $failedOrders[] = [
+                        'order_id' => $orderId,
+                        'reason' => 'Nao foi possivel carregar os detalhes do pedido.',
+                    ];
+
+                    continue;
+                }
+
+                $order = null;
+                $orderFailed = false;
+                $lastMappedEventType = null;
+
+                foreach ($orderEvents as $event) {
+                    $payload = $this->buildOpenDeliveryWebhookPayload($provider, $orderDetails, $event);
+                    $this->syncProviderWebhookReceiptState($payload);
+
+                    if (!$order instanceof Order) {
+                        $order = $this->addOrder($payload, false, false, $provider);
+                        if (!$order instanceof Order) {
+                            $orderFailed = true;
+                            $failedOrders[] = [
+                                'order_id' => $orderId,
+                                'event_id' => $event['event_id'],
+                                'reason' => 'Nao foi possivel criar o pedido localmente.',
+                            ];
+                            break;
+                        }
+                    }
+
+                    $mappedEventType = (string) ($event['mapped_event_type'] ?? '');
+                    if ($mappedEventType !== '') {
+                        $updatedOrder = $this->handleGenericOrderEvent($payload, $mappedEventType, false);
+                        if ($updatedOrder instanceof Order) {
+                            $order = $updatedOrder;
+                        }
+                    }
+
+                    $ackEvents[] = [
+                        'id' => $event['event_id'],
+                        'orderId' => $orderId,
+                        'eventType' => $event['original_event_type'],
+                    ];
+                    $processedEvents++;
+                    $lastMappedEventType = $mappedEventType !== '' ? $mappedEventType : $lastMappedEventType;
+                }
+
+                if ($orderFailed) {
+                    continue;
+                }
+
+                $processedOrders[] = [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order instanceof Order ? $order->getId() : null,
+                    'event_count' => count($orderEvents),
+                    'last_event_type' => $lastMappedEventType,
+                    'status' => $order instanceof Order ? $order->getStatus()?->getRealStatus() : null,
+                ];
+            } catch (\Throwable $exception) {
                 $failedOrders[] = [
                     'order_id' => $orderId,
-                    'reason' => 'Nao foi possivel carregar os detalhes do pedido.',
+                    'reason' => $exception->getMessage(),
                 ];
-
-                continue;
             }
-
-            $order = null;
-            $orderFailed = false;
-            $lastMappedEventType = null;
-
-            foreach ($orderEvents as $event) {
-                $payload = $this->buildOpenDeliveryWebhookPayload($provider, $orderDetails, $event);
-                $this->syncProviderWebhookReceiptState($payload);
-
-                if (!$order instanceof Order) {
-                    $order = $this->addOrder($payload, false, false, $provider);
-                    if (!$order instanceof Order) {
-                        $orderFailed = true;
-                        $failedOrders[] = [
-                            'order_id' => $orderId,
-                            'event_id' => $event['event_id'],
-                            'reason' => 'Nao foi possivel criar o pedido localmente.',
-                        ];
-                        break;
-                    }
-                }
-
-                $mappedEventType = (string) ($event['mapped_event_type'] ?? '');
-                if ($mappedEventType !== '') {
-                    $updatedOrder = $this->handleGenericOrderEvent($payload, $mappedEventType, false);
-                    if ($updatedOrder instanceof Order) {
-                        $order = $updatedOrder;
-                    }
-                }
-
-                $ackEvents[] = [
-                    'id' => $event['event_id'],
-                    'orderId' => $orderId,
-                    'eventType' => $event['original_event_type'],
-                ];
-                $processedEvents++;
-                $lastMappedEventType = $mappedEventType !== '' ? $mappedEventType : $lastMappedEventType;
-            }
-
-            if ($orderFailed) {
-                continue;
-            }
-
-            $processedOrders[] = [
-                'order_id' => $orderId,
-                'local_order_id' => $order instanceof Order ? $order->getId() : null,
-                'event_count' => count($orderEvents),
-                'last_event_type' => $lastMappedEventType,
-                'status' => $order instanceof Order ? $order->getStatus()?->getRealStatus() : null,
-            ];
         }
 
         $acknowledgedCount = 0;
@@ -2232,7 +2239,19 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             is_string($paymentMethodLabel) ? $paymentMethodLabel : '',
         ]);
 
-        $amountPaidCents = $this->extractOpenDeliveryMoneyValue($paymentEntry);
+        $amountPaidCents = $this->extractOpenDeliveryMoneyValue(
+            $this->findFirstValueByKeysRecursive($paymentEntry, [
+                'paidAmount',
+                'paid_amount',
+                'amountPaid',
+                'amount_paid',
+                'value',
+                'amount',
+                'total',
+                'totalAmount',
+                'total_amount',
+            ]) ?? $paymentEntry
+        );
         if ($amountPaidCents <= 0) {
             $amountPaidCents = $customerTotalCents;
         }
