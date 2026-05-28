@@ -11,7 +11,6 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\OrderProductQueue;
 use ControleOnline\Entity\PaymentType;
-use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\File;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
@@ -259,15 +258,15 @@ class IfoodPeopleOperationsService extends AbstractMarketplaceService
             return $people;
         }
 
-        $extraFields = $this->extraDataService->discoveryExtraFields($fieldName, self::APP_CONTEXT, '{}');
-        $extraData = new ExtraData();
-        $extraData->setEntityId((string) $people->getId());
-        $extraData->setEntityName('People');
-        $extraData->setExtraFields($extraFields);
-        $extraData->setValue($code);
-
-        $this->entityManager->persist($extraData);
-        $this->entityManager->flush();
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            'People',
+            (int) $people->getId(),
+            $fieldName,
+            $code,
+            'text',
+            self::APP_CONTEXT
+        );
 
         if ($currentBinding instanceof People && $currentBinding->getId() !== $people->getId()) {
             self::$logger->warning('iFood client code rebound to a different local people record', [

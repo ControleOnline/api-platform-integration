@@ -77,7 +77,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
             $entityName,
             $entityId,
             $fieldName,
-            $value
+            $value,
+            'text',
+            self::APP_CONTEXT
         );
     }
 

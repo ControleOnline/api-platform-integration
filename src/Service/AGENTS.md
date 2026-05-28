@@ -24,6 +24,7 @@
 - Em `Food99`, a carteira de repasse da loja vem da tela de integracao e precisa ser persistida como `store_settlement_wallet_id`; essa carteira e a unica fonte valida para `provider_wallet`.
 - Em pedidos filhos de logistica gerados por `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
 - Acesso a `extra_data` nao deve ser reimplementado em services de marketplace; use `ExtraDataService` para leitura e escrita de chaves persistidas.
+- Writers de `extra_data` devem rejeitar valor vazio e preencher `source` com `Food99`/`iFood` quando a origem for conhecida; nao criar linha nova sem valor util.
 - `extra_data` e `extra_fields` nesta camada so podem guardar IDs, chaves remotas e codigos sem destino materializado equivalente. Snapshot rico, pessoas, pedidos, financeiro, logistica e configuracoes devem ir para as tabelas/JSON canonicos do dominio dono e devem ser limpos do legado assim que o backfill confirmar a materializacao.
 
 ## iFoodService.php

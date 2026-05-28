@@ -192,8 +192,28 @@ class AsaasService
 
     private function discoveryAsaasCode(object $entity, string $code)
     {
-        $extraFields = $this->extraDataService->discoveryExtraFields('Code', 'Asaas', '{}', 'code');
-        return $this->extraDataService->discoveryExtraData($entity->getId(), $extraFields, $code,  $entity);
+        $normalizedCode = trim($code);
+        if ($normalizedCode === '' || !method_exists($entity, 'getId')) {
+            return $entity;
+        }
+
+        $entityId = (int) $entity->getId();
+        if ($entityId <= 0) {
+            return $entity;
+        }
+
+        $entityName = (new \ReflectionClass($entity))->getShortName();
+        $this->extraDataService->upsertExtraDataValue(
+            'Asaas',
+            $entityName,
+            $entityId,
+            'Code',
+            $normalizedCode,
+            'code',
+            'Asaas'
+        );
+
+        return $entity;
     }
 
     public function discoveryCustomer(People $people)

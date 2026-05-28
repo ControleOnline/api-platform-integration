@@ -361,7 +361,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         }
 
         if ($remoteClientId !== '') {
-            $this->extraDataService->discoveryExtraData($client, self::APP_CONTEXT, 'code', $remoteClientId);
+            $this->extraDataService->discoveryExtraData($client, self::APP_CONTEXT, 'code', $remoteClientId, self::APP_CONTEXT);
         }
 
         $this->peopleService->discoveryLink($provider, $client, 'client');

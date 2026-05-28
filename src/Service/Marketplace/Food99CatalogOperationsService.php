@@ -93,7 +93,8 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
             $entityId,
             $fieldName,
             $this->normalizeExtraDataValue($value),
-            $fieldType
+            $fieldType,
+            self::APP_CONTEXT
         );
     }
 

@@ -1638,7 +1638,8 @@ class iFoodService extends AbstractMarketplaceService implements
             $entityId,
             $fieldName,
             $value,
-            $fieldType
+            $fieldType,
+            self::APP_CONTEXT
         );
 
         return $this->extraDataService->getExtraDataValue(

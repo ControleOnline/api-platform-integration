@@ -117,7 +117,8 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             $entityId,
             $fieldName,
             $this->normalizeExtraDataValue($value),
-            $fieldType
+            $fieldType,
+            self::APP_CONTEXT
         );
     }
 
@@ -129,6 +130,27 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         }
 
         return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+    }
+
+    private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    {
+        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload]);
+
+        return is_array($response) ? $response : null;
+    }
+
+    private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
+    {
+        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload, $provider]);
+
+        return is_array($response) ? $response : null;
+    }
+
+    private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
+    {
+        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload, $provider]);
+
+        return is_array($response) ? $response : null;
     }
 
     private function decodeOrderOtherInformationsValue(mixed $value): array

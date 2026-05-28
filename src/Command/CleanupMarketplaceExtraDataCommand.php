@@ -232,22 +232,27 @@ class CleanupMarketplaceExtraDataCommand extends DefaultCommand
         $entity = $group['entity'];
         $otherInformations = $this->decodeOtherInformations($entity->getOtherInformations(true));
         $entityUpdated = false;
+        $legacyRowIdsToDelete = [];
 
         foreach ($group['rows'] as $row) {
             $fieldName = $row['field_name'];
             $context = $row['context'];
             $legacyRow = $row['legacy_row'];
             $rawValue = $row['raw_value'];
+            $hasMeaningfulRawValue = $this->isMeaningfulLegacyValue($rawValue);
 
             $block = $this->decodeOtherInformations($otherInformations[$context] ?? null);
-            if (!array_key_exists($fieldName, $block) || $block[$fieldName] === null || $block[$fieldName] === '') {
+            if (
+                $hasMeaningfulRawValue
+                && (!array_key_exists($fieldName, $block) || $block[$fieldName] === null || $block[$fieldName] === '')
+            ) {
                 $block[$fieldName] = $rawValue;
                 $otherInformations[$context] = $block;
                 $materialized++;
                 $entityUpdated = true;
             }
 
-            if ($this->isAllowedLegacyField($fieldName)) {
+            if ($this->isAllowedLegacyField($fieldName) && $hasMeaningfulRawValue) {
                 $keptIdentifiers++;
                 continue;
             }
@@ -255,7 +260,7 @@ class CleanupMarketplaceExtraDataCommand extends DefaultCommand
             $deletedFieldNames[$context][$fieldName] = true;
 
             if (!$dryRun) {
-                $this->entityManager->remove($legacyRow);
+                $legacyRowIdsToDelete[] = (int) $legacyRow->getId();
                 $deleted++;
             }
         }
@@ -265,6 +270,15 @@ class CleanupMarketplaceExtraDataCommand extends DefaultCommand
             if (!$dryRun) {
                 $this->entityManager->persist($entity);
             }
+        }
+
+        if (!$dryRun && $legacyRowIdsToDelete !== []) {
+            foreach (array_chunk(array_values(array_unique($legacyRowIdsToDelete)), 500) as $legacyRowIdChunk) {
+                $this->extraDataRepository->deleteByIds($legacyRowIdChunk);
+            }
+
+            $this->entityManager->clear(ExtraData::class);
+            $this->entityManager->clear(ExtraFields::class);
         }
     }
 
@@ -288,13 +302,36 @@ class CleanupMarketplaceExtraDataCommand extends DefaultCommand
             return $value->format('Y-m-d H:i:s');
         }
 
+        if (is_string($value)) {
+            $normalized = trim($value);
+
+            return $normalized !== '' ? $normalized : null;
+        }
+
         if (is_array($value) || is_object($value)) {
             $normalized = json_decode(json_encode($value), true);
 
-            return is_array($normalized) ? $normalized : (string) $value;
+            return is_array($normalized) && $normalized !== [] ? $normalized : null;
         }
 
         return $value;
+    }
+
+    private function isMeaningfulLegacyValue(mixed $value): bool
+    {
+        if ($value === null) {
+            return false;
+        }
+
+        if (is_string($value)) {
+            return trim($value) !== '';
+        }
+
+        if (is_array($value)) {
+            return $value !== [];
+        }
+
+        return true;
     }
 
     private function materializeOtherInformations(object $entity, string $context, string $fieldName, mixed $value): bool
