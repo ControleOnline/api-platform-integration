@@ -125,6 +125,29 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return is_object($entity) ? $entity : null;
     }
 
+    private function persistFood99ExtraDataValue(
+        string $entityName,
+        int $entityId,
+        string $fieldName,
+        mixed $value,
+        string $fieldType = 'text'
+    ): void
+    {
+        if ($entityId <= 0) {
+            return;
+        }
+
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            $entityName,
+            $entityId,
+            $fieldName,
+            $value,
+            $fieldType,
+            self::APP_CONTEXT
+        );
+    }
+
     private function findFood99OrderByLegacyAwareExtraData(string $fieldName, mixed $value): ?Order
     {
         $normalizedValue = trim((string) $value);
@@ -211,6 +234,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         );
     }
 
+    private function getStoredOrderIntegrationState(Order $order): array
+    {
+        $state = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+
+        return is_array($state) ? $state : [];
+    }
+
     private function normalizeCancelReasonId(mixed $value): ?int
     {
         $reasonId = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
@@ -290,6 +320,20 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         throw new \RuntimeException('Food99 marketplace people could not be resolved.');
+    }
+
+    private function persistOrderConfirmResult(Order $order, ?array $response): array
+    {
+        $result = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $response]);
+        if (is_array($result)) {
+            return $result;
+        }
+
+        return [
+            'errno' => 10001,
+            'errmsg' => 'Nao foi possivel confirmar o pedido na 99Food.',
+            'data' => [],
+        ];
     }
 
     private function syncProviderWebhookReceiptState(array $json): void
@@ -1653,7 +1697,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                     'J'
                 );
                 if ($shopId !== '') {
-                    $this->persistLocalFoodCodeByEntity('People', (int) $provider->getId(), $shopId);
+                    $this->persistFood99ExtraDataValue('People', (int) $provider->getId(), 'code', $shopId);
                 }
             }
 
@@ -1666,16 +1710,27 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $this->entityManager->persist($order);
             $this->entityManager->flush();
 
-            $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
-            $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
+            $this->persistFood99ExtraDataValue('Order', (int) $order->getId(), 'id', $orderId);
+            $this->persistFood99ExtraDataValue('Order', (int) $order->getId(), 'code', $orderCode);
             $deliveryState = $this->extractOrderDeliveryStateFields($json);
+            $remoteState = 'new';
+            $deliveryStatus = $this->extractOrderDeliveryStatus($json);
+
+            self::$logger->info('Food99 order delivery state resolved', $this->buildLogContext(null, $json, [
+                'local_order_id' => $order->getId(),
+                'remote_state' => $remoteState,
+                'delivery_status' => $deliveryStatus,
+                'delivery_type' => $deliveryState['delivery_type'] ?? null,
+                'fulfillment_mode' => $deliveryState['fulfillment_mode'] ?? null,
+            ]));
+
             $this->callFood99ServiceMethod('persistOrderIntegrationState', [
                 $order,
                 array_merge([
                     'last_event_type' => 'orderNew',
                     'last_event_at' => $this->extractOrderEventTimestamp($json),
-                    'remote_order_state' => 'new',
-                    'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
+                    'remote_order_state' => $remoteState,
+                    'remote_delivery_status' => $deliveryStatus,
                 ], $deliveryState),
             ]);
 
@@ -1744,10 +1799,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                 'message' => $message,
             ]);
 
-            return $this->persistOrderConfirmResult(
-                $order,
-                $this->buildUnavailableOrderActionResponse($message)
-            );
+            return $this->persistOrderConfirmResult($order, null);
         }
 
         $response = $client->callOrderEndpointWithResponse('/v1/order/order/confirm', [
@@ -1755,10 +1807,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         ], $provider);
 
         if (!is_array($response)) {
-            return $this->persistOrderConfirmResult(
-                $order,
-                $this->buildUnavailableOrderActionResponse('Nao foi possivel confirmar o pedido na 99Food.')
-            );
+            return $this->persistOrderConfirmResult($order, null);
         }
 
         return $this->persistOrderConfirmResult($order, $response);
@@ -1937,7 +1986,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             }
         }
 
-        $this->persistLocalFoodCodeByEntity('Product', (int) $product->getId(), (string) $code);
+        $this->persistFood99ExtraDataValue('Product', (int) $product->getId(), 'code', (string) $code);
 
         return $product;
     }

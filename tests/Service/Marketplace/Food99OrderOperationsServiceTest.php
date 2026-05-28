@@ -300,6 +300,136 @@ final class Food99OrderOperationsServiceTest extends TestCase
         self::assertSame($resolved, $result);
     }
 
+    public function testPersistFood99ExtraDataValueUsesInjectedExtraDataService(): void
+    {
+        $calls = [];
+        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
+        $extraDataService->expects(self::exactly(2))
+            ->method('upsertExtraDataValue')
+            ->willReturnCallback(static function (
+                string $context,
+                string $entityName,
+                int $entityId,
+                string $fieldName,
+                mixed $value,
+                string $fieldType,
+                ?string $source
+            ) use (&$calls): void {
+                $calls[] = compact(
+                    'context',
+                    'entityName',
+                    'entityId',
+                    'fieldName',
+                    'value',
+                    'fieldType',
+                    'source'
+                );
+            });
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
+
+        $this->invokePrivateMethod(
+            $service,
+            'persistFood99ExtraDataValue',
+            'Order',
+            777,
+            'id',
+            '5764671854459555132'
+        );
+
+        $this->invokePrivateMethod(
+            $service,
+            'persistFood99ExtraDataValue',
+            'Order',
+            777,
+            'code',
+            '570004'
+        );
+
+        self::assertSame([
+            [
+                'context' => 'Food99',
+                'entityName' => 'Order',
+                'entityId' => 777,
+                'fieldName' => 'id',
+                'value' => '5764671854459555132',
+                'fieldType' => 'text',
+                'source' => 'Food99',
+            ],
+            [
+                'context' => 'Food99',
+                'entityName' => 'Order',
+                'entityId' => 777,
+                'fieldName' => 'code',
+                'value' => '570004',
+                'fieldType' => 'text',
+                'source' => 'Food99',
+            ],
+        ], $calls);
+    }
+
+    public function testStoredOrderIntegrationStateAndConfirmResultDelegateToFood99Service(): void
+    {
+        $order = new \ControleOnline\Entity\Order();
+        $this->setEntityIdOnOrder($order, 901);
+
+        $food99Service = new class {
+            public array $calls = [];
+
+            public function getStoredOrderIntegrationState(\ControleOnline\Entity\Order $order): array
+            {
+                $this->calls[] = ['state', $order->getId()];
+
+                return [
+                    'food99_id' => '5764671883811294471',
+                    'confirm_errno' => '0',
+                ];
+            }
+
+            public function persistOrderConfirmResult(\ControleOnline\Entity\Order $order, ?array $response): array
+            {
+                $this->calls[] = ['confirm', $order->getId(), $response];
+
+                return $response ?? [
+                    'errno' => 10001,
+                    'errmsg' => 'Nao foi possivel confirmar o pedido na 99Food.',
+                    'data' => [],
+                ];
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($food99Service);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $storedState = $this->invokePrivateMethod(
+            $service,
+            'getStoredOrderIntegrationState',
+            $order
+        );
+
+        $confirmResult = $this->invokePrivateMethod(
+            $service,
+            'persistOrderConfirmResult',
+            $order,
+            ['errno' => 0, 'errmsg' => 'ok', 'data' => []]
+        );
+
+        self::assertSame([
+            'food99_id' => '5764671883811294471',
+            'confirm_errno' => '0',
+        ], $storedState);
+        self::assertSame(['errno' => 0, 'errmsg' => 'ok', 'data' => []], $confirmResult);
+        self::assertSame([
+            ['state', 901],
+            ['confirm', 901, ['errno' => 0, 'errmsg' => 'ok', 'data' => []]],
+        ], $food99Service->calls);
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
@@ -311,6 +441,13 @@ final class Food99OrderOperationsServiceTest extends TestCase
     private function setEntityId(object $entity, int $id): void
     {
         $property = new \ReflectionProperty(Integration::class, 'id');
+        $property->setAccessible(true);
+        $property->setValue($entity, $id);
+    }
+
+    private function setEntityIdOnOrder(object $entity, int $id): void
+    {
+        $property = new \ReflectionProperty(\ControleOnline\Entity\Order::class, 'id');
         $property->setAccessible(true);
         $property->setValue($entity, $id);
     }
