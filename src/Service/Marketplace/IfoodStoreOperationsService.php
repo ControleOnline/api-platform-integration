@@ -45,16 +45,6 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return self::APP_CONTEXT;
     }
 
-    private function callIfoodServiceMethod(string $method, array $arguments = []): mixed
-    {
-        $service = $this->resolveMarketplaceServiceInstance(iFoodService::class);
-        if (!is_object($service)) {
-            return null;
-        }
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
     {
         return $this->extraDataService->getExtraDataValue(
@@ -80,14 +70,14 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
     private function decodeOrderOtherInformationsValue(mixed $value): array
     {
-        $decoded = $this->callIfoodServiceMethod(__FUNCTION__, [$value]);
+        $decoded = $this->decodeEntityOtherInformationsValue($value);
 
         return is_array($decoded) ? $decoded : [];
     }
 
     private function getDecodedOrderOtherInformations(Order $order): array
     {
-        $decoded = $this->callIfoodServiceMethod(__FUNCTION__, [$order]);
+        $decoded = $this->getDecodedEntityOtherInformations($order);
 
         return is_array($decoded) ? $decoded : [];
     }
@@ -2577,7 +2567,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
     // FETCH DETALHES DO PEDIDO
     // Chama API do iFood para buscar informa��es completas do pedido (cliente, produtos, entrega, pagamentos)
-    private function fetchOrderDetails(string $orderId): ?array
+    public function fetchOrderDetails(string $orderId): ?array
     {
         try {
             $encodedOrderId = rawurlencode($orderId);

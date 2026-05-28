@@ -85,7 +85,7 @@ class DefaultFoodService
 
     protected function resolveWhatsAppService(): ?WhatsAppService
     {
-        if ($this->whatsAppService instanceof WhatsAppService) {
+        if (isset($this->whatsAppService) && $this->whatsAppService instanceof WhatsAppService) {
             return $this->whatsAppService;
         }
 
@@ -105,7 +105,7 @@ class DefaultFoodService
 
     protected function resolveFood99Client(): ?Food99Client
     {
-        if ($this->food99Client instanceof Food99Client) {
+        if (isset($this->food99Client) && $this->food99Client instanceof Food99Client) {
             return $this->food99Client;
         }
 

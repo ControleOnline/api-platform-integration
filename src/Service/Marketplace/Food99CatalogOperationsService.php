@@ -16,7 +16,8 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
-use ControleOnline\Service\Food99Service;
+use ControleOnline\Event\Food99DelegationEvent;
+use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
@@ -25,18 +26,80 @@ use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
 use DateTimeInterface;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
+use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
-class Food99CatalogOperationsService extends AbstractMarketplaceService
+class Food99CatalogOperationsService extends AbstractMarketplaceService implements EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
+
+    private ?EventDispatcherInterface $eventDispatcher = null;
+    private ?Food99StoreOperationsService $food99StoreOperationsService = null;
+    private ?Food99CatalogImageNormalizerService $food99CatalogImageNormalizerService = null;
 
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
+    }
+
+    #[Required]
+    public function setEventDispatcher(EventDispatcherInterface $eventDispatcher): void
+    {
+        $this->eventDispatcher = $eventDispatcher;
+    }
+
+    #[Required]
+    public function setFood99CatalogImageNormalizerService(Food99CatalogImageNormalizerService $food99CatalogImageNormalizerService): void
+    {
+        $this->food99CatalogImageNormalizerService = $food99CatalogImageNormalizerService;
+    }
+
+    #[Required]
+    public function setFood99StoreOperationsService(Food99StoreOperationsService $food99StoreOperationsService): void
+    {
+        $this->food99StoreOperationsService = $food99StoreOperationsService;
+    }
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            Food99DelegationEvent::class => 'onFood99Delegation',
+        ];
+    }
+
+    public function onFood99Delegation(Food99DelegationEvent $event): void
+    {
+        if (!$event->provider instanceof People) {
+            return;
+        }
+
+        switch ($event->action) {
+            case Food99DelegationEvent::ACTION_CATALOG_MARK_PRODUCTS_SYNCED:
+                $this->markProductsCatalogSynced(
+                    $event->provider,
+                    is_array($event->payload['product_ids'] ?? null) ? $event->payload['product_ids'] : [],
+                    false
+                );
+                $event->markHandled(null);
+                return;
+
+            case Food99DelegationEvent::ACTION_CATALOG_SYNC_INTEGRATION_STATE:
+                $result = $this->syncIntegrationState($event->provider, false);
+                $event->markHandled($result);
+                return;
+        }
+    }
+
+    private function dispatchFood99DelegationEvent(Food99DelegationEvent $event): Food99DelegationEvent
+    {
+        if ($this->eventDispatcher instanceof EventDispatcherInterface) {
+            $this->eventDispatcher->dispatch($event);
+        }
+
+        return $event;
     }
 
     private function normalizeIncomingFood99Value(mixed $value): string
@@ -99,55 +162,102 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         );
     }
 
-    private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
-    {
-        $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
-        if (!is_object($service)) {
-            return null;
-        }
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
     private function call99EndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
     {
-        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$uri, $payload, $provider]);
-
-        return is_array($response) ? $response : null;
-    }
-
-    private function callFood99StoreServiceMethod(string $method, array $arguments = []): mixed
-    {
-        $service = $this->resolveFood99StoreOperationsService();
-        if (!$service instanceof Food99StoreOperationsService) {
+        $client = $this->resolveFood99Client();
+        if (!$client instanceof Food99Client) {
             return null;
         }
 
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+        return $client->callStoreEndpointWithResponse('POST', $uri, $payload, $provider);
     }
 
-    private function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
+    public function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
     {
-        $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $code, $message]);
+        $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+            Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_LAST_ERROR,
+            $provider,
+            [
+                'code' => $code,
+                'message' => $message,
+            ]
+        ));
+
+        if ($event->handled) {
+            return;
+        }
+
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            $storeService->persistProviderLastError($provider, $code, $message);
+        }
     }
 
-    private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
+    public function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
     {
-        $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $response, $taskId]);
+        $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+            Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_MENU_UPLOAD_SUBMISSION,
+            $provider,
+            [
+                'response' => $response,
+                'task_id' => $taskId,
+            ]
+        ));
+
+        if ($event->handled) {
+            return;
+        }
+
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            $storeService->persistProviderMenuUploadSubmission($provider, $response, $taskId);
+        }
     }
 
-    private function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
+    public function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
     {
-        $normalized = $this->callFood99StoreServiceMethod(__FUNCTION__, [$response, $fallbackTaskId]);
+        $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+            Food99DelegationEvent::ACTION_STORE_NORMALIZE_MENU_TASK_RESPONSE,
+            null,
+            [
+                'response' => $response,
+                'fallback_task_id' => $fallbackTaskId,
+            ]
+        ));
 
-        return is_array($normalized) ? $normalized : $response;
+        if ($event->handled && is_array($event->result)) {
+            return $event->result;
+        }
+
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->normalizeMenuTaskResponse($response, $fallbackTaskId);
+        }
+
+        return $response;
     }
 
-    private function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
+    public function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
     {
-        $state = $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $response, $fallbackTaskId]);
+        $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+            Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_MENU_TASK_STATE,
+            $provider,
+            [
+                'response' => $response,
+                'fallback_task_id' => $fallbackTaskId,
+            ]
+        ));
 
-        return is_string($state) && $state !== '' ? $state : 'processing';
+        if ($event->handled && is_string($event->result)) {
+            return $event->result;
+        }
+
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->persistProviderMenuTaskState($provider, $response, $fallbackTaskId);
+        }
+
+        return 'processing';
     }
 
     private function normalizeProductIds(array $productIds): array
@@ -170,20 +280,23 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         return array_values(array_unique(array_filter($normalized)));
     }
 
-    private function resolveFood99StoreOperationsService(): ?Food99StoreOperationsService
-    {
-        $service = $this->resolveMarketplaceServiceInstance(Food99StoreOperationsService::class);
-
-        return $service instanceof Food99StoreOperationsService ? $service : null;
-    }
-
     public function getStoredIntegrationState(People $provider): array
     {
-        $storeService = $this->resolveFood99StoreOperationsService();
+        $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+            Food99DelegationEvent::ACTION_STORE_GET_STORED_INTEGRATION_STATE,
+            $provider
+        ));
 
-        return $storeService instanceof Food99StoreOperationsService
-            ? $storeService->getStoredIntegrationState($provider)
-            : [];
+        if ($event->handled && is_array($event->result)) {
+            return $event->result;
+        }
+
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->getStoredIntegrationState($provider);
+        }
+
+        return [];
     }
 
     private function fetchMenuProducts(People $provider, array $productIds = []): array
@@ -662,8 +775,20 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         }
     }
 
-    public function markProductsCatalogSynced(People $provider, array $productIds): void
+    public function markProductsCatalogSynced(People $provider, array $productIds, bool $dispatch = true): void
     {
+        if ($dispatch) {
+            $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+                Food99DelegationEvent::ACTION_CATALOG_MARK_PRODUCTS_SYNCED,
+                $provider,
+                ['product_ids' => $productIds]
+            ));
+
+            if ($event->handled) {
+                return;
+            }
+        }
+
         $this->init();
 
         $rows = $this->fetchMenuProducts($provider, $this->normalizeProductIds($productIds));
@@ -857,8 +982,19 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         return $detail;
     }
 
-    public function syncIntegrationState(People $provider): array
+    public function syncIntegrationState(People $provider, bool $dispatch = true): array
     {
+        if ($dispatch) {
+            $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+                Food99DelegationEvent::ACTION_CATALOG_SYNC_INTEGRATION_STATE,
+                $provider
+            ));
+
+            if ($event->handled && is_array($event->result)) {
+                return $event->result;
+            }
+        }
+
         $this->init();
 
         $sync = [
@@ -1392,7 +1528,10 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
             }
 
             $appItemId = trim((string) ($item['app_item_id'] ?? ''));
-            $normalizedImagePath = $this->normalizeImageForFood99Upload($sourceUrl, (int) $provider->getId(), $appItemId);
+            $imageNormalizer = $this->food99CatalogImageNormalizerService;
+            $normalizedImagePath = $imageNormalizer instanceof Food99CatalogImageNormalizerService
+                ? $imageNormalizer->normalizeImageForFood99Upload($sourceUrl, (int) $provider->getId(), $appItemId)
+                : null;
             $uploadPayload = [
                 'ext' => $this->buildFood99ImageUploadExt($provider, $appItemId, $sourceUrl),
             ];
@@ -1434,140 +1573,6 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         }
 
         return $stats;
-    }
-
-    /**
-     * Converte bytes brutos de imagem para recurso GD.
-     * Tenta GD nativo primeiro; para formatos não suportados (SVG, AVIF, etc.)
-     * tenta Imagick se disponível, convertendo internamente para JPEG antes.
-     */
-    private function tryRawToGdImage(string $raw): ?\GdImage
-    {
-        $image = @imagecreatefromstring($raw);
-        if ($image instanceof \GdImage) {
-            return $image;
-        }
-
-        if (!class_exists('Imagick')) {
-            return null;
-        }
-
-        try {
-            $imagick = new \Imagick();
-            $imagick->setResolution(150, 150);
-            $imagick->readImageBlob($raw);
-            $imagick->setImageBackgroundColor(new \ImagickPixel('white'));
-            $imagick = $imagick->flattenImages();
-            $imagick->setImageFormat('jpeg');
-            $jpeg = $imagick->getImageBlob();
-            $imagick->clear();
-            $result = @imagecreatefromstring($jpeg);
-            return ($result instanceof \GdImage) ? $result : null;
-        } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
-    private function normalizeImageForFood99Upload(string $sourceUrl, int $providerId, string $appItemId): ?string
-    {
-        try {
-            if (!$this->isHttpImageUrl($sourceUrl) || !function_exists('imagecreatefromstring')) {
-                return null;
-            }
-
-            $response = $this->httpClient->request('GET', $sourceUrl);
-            if ($response->getStatusCode() >= 400) {
-                return null;
-            }
-
-            $raw = $response->getContent(false);
-            if (!$raw) {
-                return null;
-            }
-
-            $image = $this->tryRawToGdImage($raw);
-            if (!$image) {
-                return null;
-            }
-
-            $width = imagesx($image);
-            $height = imagesy($image);
-
-            if ($width <= 0 || $height <= 0) {
-                imagedestroy($image);
-                return null;
-            }
-
-            $maxDimension = 3000;
-            $minDimension = 150;
-            $targetWidth = $width;
-            $targetHeight = $height;
-
-            if ($targetWidth > $maxDimension || $targetHeight > $maxDimension) {
-                $scale = min($maxDimension / $targetWidth, $maxDimension / $targetHeight);
-                $targetWidth = (int) max(1, floor($targetWidth * $scale));
-                $targetHeight = (int) max(1, floor($targetHeight * $scale));
-            }
-
-            if ($targetWidth < $minDimension || $targetHeight < $minDimension) {
-                $scale = max($minDimension / max(1, $targetWidth), $minDimension / max(1, $targetHeight));
-                $targetWidth = (int) max($minDimension, ceil($targetWidth * $scale));
-                $targetHeight = (int) max($minDimension, ceil($targetHeight * $scale));
-            }
-
-            $normalized = imagecreatetruecolor($targetWidth, $targetHeight);
-            imagealphablending($normalized, true);
-            imagesavealpha($normalized, false);
-            $white = imagecolorallocate($normalized, 255, 255, 255);
-            imagefilledrectangle($normalized, 0, 0, $targetWidth, $targetHeight, $white);
-            imagecopyresampled($normalized, $image, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height);
-            imagedestroy($image);
-
-            $tempBase = tempnam(sys_get_temp_dir(), 'food99_img_');
-            if (!$tempBase) {
-                imagedestroy($normalized);
-                return null;
-            }
-
-            $targetPath = $tempBase . '.jpg';
-            @unlink($tempBase);
-
-            $quality = 90;
-            $saved = false;
-
-            while ($quality >= 70) {
-                $saved = imagejpeg($normalized, $targetPath, $quality);
-                if ($saved && file_exists($targetPath) && filesize($targetPath) <= 10 * 1024 * 1024) {
-                    break;
-                }
-                $quality -= 5;
-            }
-
-            imagedestroy($normalized);
-
-            if (!$saved || !file_exists($targetPath)) {
-                if (file_exists($targetPath)) {
-                    @unlink($targetPath);
-                }
-                return null;
-            }
-
-            if (filesize($targetPath) > 10 * 1024 * 1024) {
-                @unlink($targetPath);
-                return null;
-            }
-
-            return $targetPath;
-        } catch (\Throwable $e) {
-            self::$logger->warning('Food99 image normalization failed before upload', [
-                'provider_id' => $providerId,
-                'app_item_id' => $appItemId,
-                'image_url' => $sourceUrl,
-                'error' => $e->getMessage(),
-            ]);
-
-            return null;
-        }
     }
 
     public function uploadStoreMenu(People $provider, array $payload): ?array

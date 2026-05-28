@@ -17,6 +17,7 @@ use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
 use ControleOnline\Service\Marketplace\Food99CatalogOperationsService;
+use ControleOnline\Service\Marketplace\Food99CatalogImageNormalizerService;
 use ControleOnline\Service\Marketplace\Food99FinancialOperationsService;
 use ControleOnline\Service\Marketplace\Food99OrderOperationsService;
 use ControleOnline\Service\Marketplace\Food99PeopleOperationsService;
@@ -31,6 +32,8 @@ use DateTime;
 use DateTimeInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
@@ -49,6 +52,7 @@ class Food99Service extends AbstractMarketplaceService implements
         Food99FinancialOperationsService::class,
         Food99OrderOperationsService::class,
     ];
+    private ?EventDispatcherInterface $eventDispatcher = null;
     private const ORDER_INTEGRATION_STATE_FIELDS = [
         'remote_order_state',
         'remote_delivery_status',
@@ -90,6 +94,12 @@ class Food99Service extends AbstractMarketplaceService implements
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
+    }
+
+    #[Required]
+    public function setEventDispatcher(EventDispatcherInterface $eventDispatcher): void
+    {
+        $this->eventDispatcher = $eventDispatcher;
     }
 
     public static function getSubscribedEvents(): array
@@ -166,6 +176,54 @@ class Food99Service extends AbstractMarketplaceService implements
             }
 
             return null;
+        }
+
+        if ($service instanceof Food99StoreOperationsService && method_exists($service, 'setEventDispatcher') && $this->eventDispatcher instanceof EventDispatcherInterface) {
+            $service->setEventDispatcher($this->eventDispatcher);
+        }
+
+        if ($service instanceof Food99CatalogOperationsService) {
+            if (method_exists($service, 'setEventDispatcher') && $this->eventDispatcher instanceof EventDispatcherInterface) {
+                $service->setEventDispatcher($this->eventDispatcher);
+            }
+
+            $imageNormalizer = $this->resolveMarketplaceCapabilityService(Food99CatalogImageNormalizerService::class, false);
+            if ($imageNormalizer instanceof Food99CatalogImageNormalizerService && method_exists($service, 'setFood99CatalogImageNormalizerService')) {
+                $service->setFood99CatalogImageNormalizerService($imageNormalizer);
+            }
+
+            $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
+            if ($storeService instanceof Food99StoreOperationsService && method_exists($service, 'setFood99StoreOperationsService')) {
+                $service->setFood99StoreOperationsService($storeService);
+            }
+        }
+
+        if ($service instanceof Food99FinancialOperationsService) {
+            $peopleService = $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class, false);
+            if ($peopleService instanceof Food99PeopleOperationsService && method_exists($service, 'setFood99PeopleOperationsService')) {
+                $service->setFood99PeopleOperationsService($peopleService);
+            }
+        }
+
+        if ($service instanceof Food99OrderOperationsService) {
+            if (method_exists($service, 'setFood99Service')) {
+                $service->setFood99Service($this);
+            }
+
+            $peopleService = $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class, false);
+            if ($peopleService instanceof Food99PeopleOperationsService && method_exists($service, 'setFood99PeopleOperationsService')) {
+                $service->setFood99PeopleOperationsService($peopleService);
+            }
+
+            $financialService = $this->resolveMarketplaceCapabilityService(Food99FinancialOperationsService::class, false);
+            if ($financialService instanceof Food99FinancialOperationsService && method_exists($service, 'setFood99FinancialOperationsService')) {
+                $service->setFood99FinancialOperationsService($financialService);
+            }
+
+            $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
+            if ($storeService instanceof Food99StoreOperationsService && method_exists($service, 'setFood99StoreOperationsService')) {
+                $service->setFood99StoreOperationsService($storeService);
+            }
         }
 
         return $service;
@@ -766,7 +824,7 @@ class Food99Service extends AbstractMarketplaceService implements
         ]);
     }
 
-    private function call99BorderEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    public function call99BorderEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
         $url = $this->getFood99BorderBaseUrl() . $uri;
         $method = strtoupper($method);
@@ -1063,7 +1121,7 @@ class Food99Service extends AbstractMarketplaceService implements
             ?? $this->buildUnavailableOrderActionResponse('Nao foi possivel concluir a entrega da loja na 99Food.');
     }
 
-    private function persistOrderConfirmResult(Order $order, ?array $response): array
+    public function persistOrderConfirmResult(Order $order, ?array $response): array
     {
         $safeResponse = is_array($response)
             ? $response
@@ -1383,7 +1441,7 @@ class Food99Service extends AbstractMarketplaceService implements
         $client->callOrderEndpointWithResponse($uri, $payload, $provider);
     }
 
-    private function call99EndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
+    public function call99EndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
     {
         $client = $this->resolveFood99Client();
 
@@ -1404,21 +1462,21 @@ class Food99Service extends AbstractMarketplaceService implements
         return $client ? $client->requestBorderMultipartWithResponse($method, $uri, $payload, $logContext) : null;
     }
 
-    private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
+    public function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $client = $this->resolveFood99Client();
 
         return $client ? $client->callStoreEndpointWithResponse($method, $uri, $payload, $provider) : null;
     }
 
-    private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
+    public function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $client = $this->resolveFood99Client();
 
         return $client ? $client->callStoreMultipartEndpointWithResponse($method, $uri, $payload, $provider) : null;
     }
 
-    private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    public function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
         $client = $this->resolveFood99Client();
 
@@ -1673,7 +1731,7 @@ class Food99Service extends AbstractMarketplaceService implements
         return $state;
     }
 
-    private function findFood99OrderByStoredIntegrationState(string $orderId, string $orderCode = ''): ?Order
+    public function findFood99OrderByStoredIntegrationState(string $orderId, string $orderCode = ''): ?Order
     {
         $orderId = trim($orderId);
         $orderCode = trim($orderCode);
@@ -1788,7 +1846,7 @@ class Food99Service extends AbstractMarketplaceService implements
         return $orderIndex !== '' ? $orderIndex : $orderId;
     }
 
-    private function extractIncomingOrderIdentifiers(array $json): array
+    public function extractIncomingOrderIdentifiers(array $json): array
     {
         $data = is_array($json['data'] ?? null) ? $json['data'] : [];
         $info = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
@@ -1890,7 +1948,7 @@ class Food99Service extends AbstractMarketplaceService implements
         return null;
     }
 
-    private function syncProviderWebhookReceiptState(array $json): void
+    public function syncProviderWebhookReceiptState(array $json): void
     {
         $provider = $this->resolveProviderFromWebhookPayload($json);
         if (!$provider instanceof People) {
@@ -1940,7 +1998,7 @@ class Food99Service extends AbstractMarketplaceService implements
         return null;
     }
 
-    private function resolveOrderClient(People $provider, array $address, array $payload, string $orderId): People
+    public function resolveOrderClient(People $provider, array $address, array $payload, string $orderId): People
     {
         $client = $this->discoveryClient($address, $payload, $provider);
         if ($client instanceof People) {

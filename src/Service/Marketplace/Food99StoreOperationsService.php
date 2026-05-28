@@ -16,7 +16,8 @@ use ControleOnline\Entity\ProductGroupProduct;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
-use ControleOnline\Service\Food99Service;
+use ControleOnline\Event\Food99DelegationEvent;
+use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
@@ -25,12 +26,13 @@ use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
 use DateTimeInterface;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
+use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
-class Food99StoreOperationsService extends AbstractMarketplaceService
+class Food99StoreOperationsService extends AbstractMarketplaceService implements EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
     private const SHOP_CANCEL_REASONS = [
@@ -48,9 +50,94 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         ['reason_id' => 1080, 'description' => 'Other reason', 'applicable_to' => 'all'],
     ];
 
+    private ?EventDispatcherInterface $eventDispatcher = null;
+
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
+    }
+
+    #[Required]
+    public function setEventDispatcher(EventDispatcherInterface $eventDispatcher): void
+    {
+        $this->eventDispatcher = $eventDispatcher;
+    }
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            Food99DelegationEvent::class => 'onFood99Delegation',
+        ];
+    }
+
+    public function onFood99Delegation(Food99DelegationEvent $event): void
+    {
+        switch ($event->action) {
+            case Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_LAST_ERROR:
+                $provider = $event->provider;
+                if (!$provider instanceof People) {
+                    return;
+                }
+                $this->persistProviderLastError(
+                    $provider,
+                    $event->payload['code'] ?? null,
+                    $event->payload['message'] ?? null
+                );
+                $event->markHandled(null);
+                return;
+
+            case Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_MENU_UPLOAD_SUBMISSION:
+                $provider = $event->provider;
+                if (!$provider instanceof People) {
+                    return;
+                }
+                $this->persistProviderMenuUploadSubmission(
+                    $provider,
+                    is_array($event->payload['response'] ?? null) ? $event->payload['response'] : [],
+                    $event->payload['task_id'] ?? null
+                );
+                $event->markHandled(null);
+                return;
+
+            case Food99DelegationEvent::ACTION_STORE_NORMALIZE_MENU_TASK_RESPONSE:
+                $result = $this->normalizeMenuTaskResponse(
+                    is_array($event->payload['response'] ?? null) ? $event->payload['response'] : [],
+                    $event->payload['fallback_task_id'] ?? null
+                );
+                $event->markHandled($result);
+                return;
+
+            case Food99DelegationEvent::ACTION_STORE_PERSIST_PROVIDER_MENU_TASK_STATE:
+                $provider = $event->provider;
+                if (!$provider instanceof People) {
+                    return;
+                }
+                $result = $this->persistProviderMenuTaskState(
+                    $provider,
+                    is_array($event->payload['response'] ?? null) ? $event->payload['response'] : [],
+                    $event->payload['fallback_task_id'] ?? null
+                );
+                $event->markHandled($result);
+                return;
+
+            case Food99DelegationEvent::ACTION_STORE_GET_STORED_INTEGRATION_STATE:
+                $provider = $event->provider;
+                if (!$provider instanceof People) {
+                    return;
+                }
+                $result = $this->getStoredIntegrationState($provider);
+                $event->markHandled($result);
+                return;
+        }
+    }
+
+    private function dispatchFood99DelegationEvent(Food99DelegationEvent $event): Food99DelegationEvent
+    {
+        if ($this->eventDispatcher instanceof EventDispatcherInterface) {
+            $this->eventDispatcher->dispatch($event);
+        }
+
+        return $event;
     }
 
     private function normalizeIncomingFood99Value(mixed $value): string
@@ -143,111 +230,144 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         return is_object($entity) ? $entity : null;
     }
 
-    private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
+    private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
-        $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
-        if (!is_object($service)) {
+        $client = $this->resolveFood99Client();
+        if (!$client instanceof Food99Client) {
             return null;
         }
 
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
-    private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
-    {
-        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload]);
-
-        return is_array($response) ? $response : null;
+        return $client->callAppEndpointWithResponse($method, $uri, $payload);
     }
 
     private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
-        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload, $provider]);
+        $client = $this->resolveFood99Client();
+        if (!$client instanceof Food99Client) {
+            return null;
+        }
 
-        return is_array($response) ? $response : null;
+        return $client->callStoreEndpointWithResponse($method, $uri, $payload, $provider);
     }
 
     private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
-        $response = $this->callFood99ServiceMethod(__FUNCTION__, [$method, $uri, $payload, $provider]);
+        $client = $this->resolveFood99Client();
+        if (!$client instanceof Food99Client) {
+            return null;
+        }
 
-        return is_array($response) ? $response : null;
+        return $client->callStoreMultipartEndpointWithResponse($method, $uri, $payload, $provider);
     }
 
-    private function decodeOrderOtherInformationsValue(mixed $value): array
+    public function decodeOrderOtherInformationsValue(mixed $value): array
     {
-        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
-
-        return is_array($decoded) ? $decoded : [];
+        return $this->decodeEntityOtherInformationsValue($value);
     }
 
-    private function getDecodedOrderOtherInformations(Order $order): array
+    public function getDecodedOrderOtherInformations(Order $order): array
     {
-        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
-
-        return is_array($decoded) ? $decoded : [];
+        return $this->getDecodedEntityOtherInformations($order);
     }
 
-    private function resolveFood99QuoteSourceOrder(Order $order): Order
+    public function resolveFood99QuoteSourceOrder(Order $order): Order
     {
-        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+        $mainOrder = $order->getMainOrder();
+        if ($mainOrder instanceof Order) {
+            return $mainOrder;
+        }
 
-        return $resolved instanceof Order ? $resolved : $order;
+        $mainOrderId = $order->getMainOrderId();
+        if ($mainOrderId) {
+            $resolved = $this->entityManager->getRepository(Order::class)->find((int) $mainOrderId);
+            if ($resolved instanceof Order) {
+                return $resolved;
+            }
+        }
+
+        return $order;
     }
 
-    private function resolveFood99QuotePickupAddress(Order $order, Order $sourceOrder): ?Address
+    public function resolveFood99QuotePickupAddress(Order $order, Order $sourceOrder): ?Address
     {
-        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $sourceOrder]);
+        $pickupAddress = $this->resolveAddressCandidate($order->getAddressOrigin());
+        if ($pickupAddress instanceof Address) {
+            return $pickupAddress;
+        }
 
-        return $resolved instanceof Address ? $resolved : null;
+        $pickupAddress = $this->resolveAddressCandidate($sourceOrder->getAddressOrigin());
+
+        return $pickupAddress instanceof Address ? $pickupAddress : null;
     }
 
-    private function resolveFood99QuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
+    public function resolveFood99QuoteDropoffAddress(Order $order, Order $sourceOrder): ?Address
     {
-        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$order, $sourceOrder]);
+        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
+        if ($dropoffAddress instanceof Address) {
+            return $dropoffAddress;
+        }
 
-        return $resolved instanceof Address ? $resolved : null;
+        $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
+
+        return $dropoffAddress instanceof Address ? $dropoffAddress : null;
     }
 
-    private function resolveFood99PrimaryAddress(?People $people): ?Address
+    public function resolveFood99PrimaryAddress(?People $people): ?Address
     {
-        $resolved = $this->callFood99ServiceMethod(__FUNCTION__, [$people]);
+        if (!$people instanceof People) {
+            return null;
+        }
 
-        return $resolved instanceof Address ? $resolved : null;
+        foreach ($people->getAddress() as $address) {
+            $resolvedAddress = $this->resolveAddressCandidate($address);
+            if ($resolvedAddress instanceof Address) {
+                return $resolvedAddress;
+            }
+        }
+
+        return null;
     }
 
-    private function getStoredFood99QuoteState(Order $order): array
+    public function getStoredFood99QuoteState(Order $order): array
     {
-        $state = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+        $otherInformations = $this->getDecodedEntityOtherInformations($order);
+        $logistics = $otherInformations['logistics'] ?? [];
 
-        return is_array($state) ? $state : [];
+        return is_array($logistics) ? $logistics : [];
     }
 
-    private function resolveFood99CatalogOperationsService(): ?Food99CatalogOperationsService
+    public function markProductsCatalogSynced(People $provider, array $productIds, bool $dispatch = true): void
     {
-        $service = $this->resolveMarketplaceServiceInstance(Food99CatalogOperationsService::class);
+        if ($dispatch) {
+            $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+                Food99DelegationEvent::ACTION_CATALOG_MARK_PRODUCTS_SYNCED,
+                $provider,
+                ['product_ids' => $productIds]
+            ));
 
-        return $service instanceof Food99CatalogOperationsService ? $service : null;
-    }
-
-    public function markProductsCatalogSynced(People $provider, array $productIds): void
-    {
-        $catalogService = $this->resolveFood99CatalogOperationsService();
-        if ($catalogService instanceof Food99CatalogOperationsService) {
-            $catalogService->markProductsCatalogSynced($provider, $productIds);
+            if ($event->handled) {
+                return;
+            }
         }
     }
 
-    public function syncIntegrationState(People $provider): array
+    public function syncIntegrationState(People $provider, bool $dispatch = true): array
     {
-        $catalogService = $this->resolveFood99CatalogOperationsService();
+        if ($dispatch) {
+            $event = $this->dispatchFood99DelegationEvent(new Food99DelegationEvent(
+                Food99DelegationEvent::ACTION_CATALOG_SYNC_INTEGRATION_STATE,
+                $provider
+            ));
 
-        return $catalogService instanceof Food99CatalogOperationsService
-            ? $catalogService->syncIntegrationState($provider)
-            : [];
+            if ($event->handled && is_array($event->result)) {
+                return $event->result;
+            }
+        }
+
+        return [];
     }
 
-    private function persistProviderIntegrationState(People $provider, array $fields): void
+    public function persistProviderIntegrationState(People $provider, array $fields): void
     {
         $legacyFields = [];
         $stateFields = [];
@@ -275,7 +395,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         }
     }
 
-    private function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
+    public function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
     {
         $this->persistProviderIntegrationState($provider, [
             'last_error_code' => $code,
@@ -358,7 +478,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         $this->markProductsCatalogSynced($provider, $syncedProductIds);
     }
 
-    private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
+    public function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
     {
         $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
         $taskStatus = isset($taskData['status']) ? (string) $taskData['status'] : '0';
@@ -398,7 +518,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         return null;
     }
 
-    private function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
+    public function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
     {
         if (!is_array($response['data'] ?? null)) {
             return $response;
@@ -463,7 +583,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         return 'completed';
     }
 
-    private function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
+    public function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
     {
         $taskData = is_array($response['data'] ?? null) ? $response['data'] : [];
         $taskId = $taskData['taskID'] ?? $taskData['taskId'] ?? $fallbackTaskId;
@@ -573,7 +693,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
         return $response;
     }
 
-    private function syncStoreStatusWebhook(array $json): void
+    public function syncStoreStatusWebhook(array $json): void
     {
         $data = is_array($json['data'] ?? null) ? $json['data'] : [];
         $candidateShopIds = array_values(array_unique(array_filter([
@@ -923,9 +1043,34 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
 
     private function getStoredOrderIntegrationState(Order $order): array
     {
-        $state = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
+        $otherInformations = $this->getDecodedEntityOtherInformations($order);
+        $context = $this->decodeEntityOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
 
-        return is_array($state) ? $state : [];
+        $deliveryType = $this->normalizeIncomingFood99Value($context['delivery_type'] ?? null);
+        $deliveryLabel = $this->normalizeIncomingFood99Value($context['delivery_label'] ?? null);
+
+        $isStoreDelivery = (bool) ($context['is_store_delivery'] ?? false);
+        if (!$isStoreDelivery) {
+            $isStoreDelivery = in_array($deliveryType, ['2', 'store_delivery', 'self_delivery'], true);
+        }
+
+        $isPlatformDelivery = (bool) ($context['is_platform_delivery'] ?? false);
+        if (!$isPlatformDelivery) {
+            $isPlatformDelivery = in_array($deliveryType, ['1', 'platform_delivery'], true);
+        }
+
+        if ($deliveryLabel === '') {
+            $deliveryLabel = $isStoreDelivery
+                ? 'Entrega da loja'
+                : ($isPlatformDelivery ? 'Entrega 99Food' : 'Indefinido');
+        }
+
+        return [
+            'delivery_type' => $deliveryType,
+            'delivery_label' => $deliveryLabel,
+            'is_store_delivery' => $isStoreDelivery,
+            'is_platform_delivery' => $isPlatformDelivery,
+        ];
     }
 
     private function isCancelReasonApplicableToState(array $reason, array $state): bool

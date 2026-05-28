@@ -26,6 +26,7 @@ use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
 use DateTimeInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
@@ -33,9 +34,17 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
 
+    private ?Food99PeopleOperationsService $food99PeopleOperationsService = null;
+
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
+    }
+
+    #[Required]
+    public function setFood99PeopleOperationsService(Food99PeopleOperationsService $food99PeopleOperationsService): void
+    {
+        $this->food99PeopleOperationsService = $food99PeopleOperationsService;
     }
 
     private function normalizeIncomingFood99Value(mixed $value): string
@@ -117,64 +126,81 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return (bool) $fallback;
     }
 
-    private function callFood99ServiceMethod(string $method, array $arguments = []): mixed
+    public function decodeOrderOtherInformationsValue(mixed $value): array
     {
-        $service = $this->resolveMarketplaceServiceInstance(Food99Service::class);
-        if (!is_object($service)) {
-            return null;
+        return $this->decodeEntityOtherInformationsValue($value);
+    }
+
+    public function getDecodedOrderOtherInformations(Order $order): array
+    {
+        return $this->getDecodedEntityOtherInformations($order);
+    }
+
+    public function resolveBestStoredOrderPayload(Order $order): array
+    {
+        $otherInformations = $this->getDecodedEntityOtherInformations($order);
+        $candidate = $otherInformations[self::APP_CONTEXT] ?? null;
+        if (is_string($candidate)) {
+            $candidate = $this->decodeEntityOtherInformationsValue($candidate);
         }
 
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
-    private function decodeOrderOtherInformationsValue(mixed $value): array
-    {
-        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);
-
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    private function getDecodedOrderOtherInformations(Order $order): array
-    {
-        $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
-
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    private function resolveBestStoredOrderPayload(Order $order): array
-    {
-        $payload = $this->callFood99ServiceMethod(__FUNCTION__, [$order]);
-
-        return is_array($payload) ? $payload : [];
-    }
-
-    private function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
-    {
-        $name = $this->callFood99ServiceMethod(__FUNCTION__, [$address, $fallback]);
-
-        return is_string($name) ? $name : $fallback;
-    }
-
-    private function extractFood99StoredSnapshotSection(array $payload, string $section): array
-    {
-        $snapshot = $this->callFood99ServiceMethod(__FUNCTION__, [$payload, $section]);
-
-        return is_array($snapshot) ? $snapshot : [];
-    }
-
-    private function buildFood99AddressDisplay(array $address): ?string
-    {
-        $service = $this->resolveMarketplaceServiceInstance(Food99PeopleOperationsService::class);
-        if (!is_object($service)) {
-            return null;
+        if (!is_array($candidate) || empty($candidate)) {
+            return [];
         }
 
-        $display = $this->invokeMarketplaceServiceMethod($service, __FUNCTION__, [$address]);
+        $latestEventType = $this->normalizeIncomingFood99Value(
+            $candidate['latest_event_type'] ?? $candidate['latestEventType'] ?? null
+        );
 
-        return is_string($display) && $display !== '' ? $display : null;
+        return $this->resolveBestPayloadFromStoredOrderCandidate($candidate, $latestEventType);
     }
 
-    private function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
+    public function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
+    {
+        $peopleService = $this->food99PeopleOperationsService;
+        if ($peopleService instanceof Food99PeopleOperationsService) {
+            $name = $peopleService->resolveFood99CustomerName($address, $fallback);
+
+            return is_string($name) && $name !== '' ? $name : $fallback;
+        }
+
+        return $fallback;
+    }
+
+    public function extractFood99StoredSnapshotSection(array $payload, string $section): array
+    {
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
+
+        foreach ([$payload[$section] ?? null, $data[$section] ?? null, $orderInfo[$section] ?? null] as $candidate) {
+            if (is_array($candidate) && $candidate !== []) {
+                return $candidate;
+            }
+
+            if (is_string($candidate)) {
+                $decodedCandidate = $this->decodeEntityOtherInformationsValue($candidate);
+                if (is_array($decodedCandidate) && $decodedCandidate !== []) {
+                    return $decodedCandidate;
+                }
+            }
+        }
+
+        return [];
+    }
+
+    public function buildFood99AddressDisplay(array $address): ?string
+    {
+        $service = $this->food99PeopleOperationsService;
+        if ($service instanceof Food99PeopleOperationsService) {
+            $display = $service->buildFood99AddressDisplay($address);
+
+            return is_string($display) && $display !== '' ? $display : null;
+        }
+
+        return null;
+    }
+
+    public function resolveFood99PaymentTypeLabel(?string $payType, ?string $deliveryType): string
     {
         $normalizedPayType = trim((string) $payType);
 
@@ -191,7 +217,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         };
     }
 
-    private function resolveFood99PaymentMethodLabel(?string $payMethod): string
+    public function resolveFood99PaymentMethodLabel(?string $payMethod): string
     {
         return match (trim((string) $payMethod)) {
             '1' => 'Pagamento online',
@@ -201,7 +227,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         };
     }
 
-    private function resolveFood99PaymentChannelLabel(?string $payChannel, ?string $payMethod, ?string $deliveryType): string
+    public function resolveFood99PaymentChannelLabel(?string $payChannel, ?string $payMethod, ?string $deliveryType): string
     {
         $normalizedPayChannel = trim((string) $payChannel);
         $normalizedPayMethod = trim((string) $payMethod);
@@ -251,7 +277,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         };
     }
 
-    private function resolveFood99SelectedPaymentLabel(
+    public function resolveFood99SelectedPaymentLabel(
         string $paymentChannelLabel,
         string $paymentTypeLabel,
         string $paymentMethodLabel
@@ -502,7 +528,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         $this->entityManager->flush();
     }
 
-    private function createFood99PayableInvoice(
+    public function createFood99PayableInvoice(
         Order $order,
         PaymentType $paymentType,
         float $amount,
@@ -546,7 +572,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return $invoice;
     }
 
-    private function resolveFood99MarketplacePeople(): People
+    public function resolveFood99MarketplacePeople(): People
     {
         return $this->peopleService->discoveryPeople('6012920000123', null, null, '99 Food', 'J');
     }
@@ -562,7 +588,7 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return new DateTime('now');
     }
 
-    private function resolveFood99WeeklyDueDate(Order $order): DateTime
+    public function resolveFood99WeeklyDueDate(Order $order): DateTime
     {
         $reference = $this->resolveOrderReferenceDate($order);
         $dueDate = new DateTime($reference->format('Y-m-d'));

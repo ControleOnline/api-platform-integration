@@ -6,7 +6,6 @@ use ControleOnline\Entity\Integration;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Marketplace\Food99OrderOperationsService;
 use PHPUnit\Framework\TestCase;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 
 final class Food99OrderOperationsServiceTest extends TestCase
 {
@@ -50,8 +49,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
 
     public function testSyncProviderWebhookReceiptStateDelegatesToFood99Service(): void
     {
-        $food99Service = new class {
+        $food99Service = new class extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
+
+            public function __construct()
+            {
+            }
 
             public function syncProviderWebhookReceiptState(array $json): void
             {
@@ -59,12 +62,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($food99Service);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
 
         $this->invokePrivateMethod(
             $service,
@@ -88,8 +87,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
 
     public function testExtractIncomingOrderIdentifiersDelegatesToFood99Service(): void
     {
-        $food99Service = new class {
+        $food99Service = new class extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
+
+            public function __construct()
+            {
+            }
 
             public function extractIncomingOrderIdentifiers(array $json): array
             {
@@ -103,12 +106,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($food99Service);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
 
         $result = $this->invokePrivateMethod(
             $service,
@@ -141,8 +140,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
 
     public function testSyncStoreStatusWebhookDelegatesToFood99StoreService(): void
     {
-        $storeService = new class {
+        $storeService = new class extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
+
+            public function __construct()
+            {
+            }
 
             public function syncStoreStatusWebhook(array $json): void
             {
@@ -150,12 +153,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($storeService);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $storeService);
 
         $this->invokePrivateMethod(
             $service,
@@ -180,7 +179,7 @@ final class Food99OrderOperationsServiceTest extends TestCase
     public function testSyncFood99ClientDataDelegatesToFood99PeopleService(): void
     {
         $client = new \ControleOnline\Entity\People();
-        $peopleService = new class($client) {
+        $peopleService = new class($client) extends \ControleOnline\Service\Marketplace\Food99PeopleOperationsService {
             public array $calls = [];
 
             public function __construct(private \ControleOnline\Entity\People $client)
@@ -199,12 +198,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($peopleService);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99PeopleOperationsService', $peopleService);
 
         $provider = new \ControleOnline\Entity\People();
         $result = $this->invokePrivateMethod(
@@ -227,7 +222,7 @@ final class Food99OrderOperationsServiceTest extends TestCase
     public function testResolveOrderClientDelegatesToFood99Service(): void
     {
         $resolvedClient = new \ControleOnline\Entity\People();
-        $food99Service = new class($resolvedClient) {
+        $food99Service = new class($resolvedClient) extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
 
             public function __construct(private \ControleOnline\Entity\People $client)
@@ -246,12 +241,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($food99Service);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
 
         $provider = new \ControleOnline\Entity\People();
         $result = $this->invokePrivateMethod(
@@ -285,8 +276,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
             )
             ->willReturn($resolved);
 
-        $peopleService = new class {
+        $peopleService = new class extends \ControleOnline\Service\Marketplace\Food99PeopleOperationsService {
             public array $calls = [];
+
+            public function __construct()
+            {
+            }
 
             public function resolveFood99RemoteClientId(array $address, array $payload = []): string
             {
@@ -296,12 +291,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($peopleService);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99PeopleOperationsService', $peopleService);
         $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
 
         $result = $this->invokePrivateMethod(
@@ -336,7 +327,7 @@ final class Food99OrderOperationsServiceTest extends TestCase
             )
             ->willReturn(null);
 
-        $food99Service = new class($order) {
+        $food99Service = new class($order) extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
 
             public function __construct(private \ControleOnline\Entity\Order $order)
@@ -351,12 +342,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($food99Service);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
         $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
 
         $result = $this->invokePrivateMethod(
@@ -377,8 +364,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
         $order = new \ControleOnline\Entity\Order();
         $this->setEntityIdOnOrder($order, 901);
 
-        $food99Service = new class {
+        $food99Service = new class extends \ControleOnline\Service\Food99Service {
             public array $calls = [];
+
+            public function __construct()
+            {
+            }
 
             public function getStoredOrderIntegrationState(\ControleOnline\Entity\Order $order): array
             {
@@ -402,12 +393,8 @@ final class Food99OrderOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($food99Service);
-
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
 
         $storedState = $this->invokePrivateMethod(
             $service,

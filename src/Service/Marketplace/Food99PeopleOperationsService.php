@@ -46,7 +46,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         return trim((string) $value);
     }
 
-    private function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
+    public function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
     {
         if (!is_array($payload)) {
             return null;
@@ -75,7 +75,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         return null;
     }
 
-    private function buildFood99AddressDisplay(array $address): ?string
+    public function buildFood99AddressDisplay(array $address): ?string
     {
         $parts = array_filter([
             $this->normalizeIncomingFood99Value($address['poi_address'] ?? null),
@@ -120,7 +120,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         return $normalized;
     }
 
-    private function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
+    public function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
     {
         $nameParts = array_filter([
             $this->sanitizeFood99IdentityValue($address['name'] ?? null),
@@ -137,7 +137,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
         return $fallback;
     }
 
-    private function resolveFood99RemoteClientId(array $address, array $payload = []): string
+    public function resolveFood99RemoteClientId(array $address, array $payload = []): string
     {
         $clientId = $this->searchPayloadValueByKeys($address, ['uid']);
         $normalizedClientId = $this->normalizeIncomingFood99Value($clientId);
@@ -334,7 +334,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
             || str_starts_with($currentName, 'cliente food99 ');
     }
 
-    private function syncFood99ClientData(
+    public function syncFood99ClientData(
         People $client,
         People $provider,
         array $address,
@@ -447,7 +447,7 @@ class Food99PeopleOperationsService extends AbstractMarketplaceService
             || $currentName === 'food99 courier';
     }
 
-    private function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): ?People
+    public function syncFood99CourierFromDeliveryState(Order $order, array $deliveryState): ?People
     {
         $courierName = $this->sanitizeFood99IdentityValue($deliveryState['rider_name'] ?? null);
         $courierPhone = $this->sanitizeFood99IdentityValue($deliveryState['rider_phone'] ?? null);

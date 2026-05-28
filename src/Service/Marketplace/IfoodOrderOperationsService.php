@@ -41,19 +41,17 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_IFOOD;
 
+    private ?iFoodService $iFoodService = null;
+
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
     }
 
-    private function callIfoodServiceMethod(string $method, array $arguments = []): mixed
+    #[Required]
+    public function setIfoodService(iFoodService $iFoodService): void
     {
-        $service = $this->resolveMarketplaceServiceInstance(iFoodService::class);
-        if (!is_object($service)) {
-            return null;
-        }
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+        $this->iFoodService = $iFoodService;
     }
 
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
@@ -81,49 +79,56 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
     private function decodeOrderOtherInformationsValue(mixed $value): array
     {
-        $decoded = $this->callIfoodServiceMethod(__FUNCTION__, [$value]);
+        $service = $this->iFoodService;
+        $decoded = $service?->decodeOrderOtherInformationsValue($value);
 
         return is_array($decoded) ? $decoded : [];
     }
 
     private function getDecodedOrderOtherInformations(Order $order): array
     {
-        $decoded = $this->callIfoodServiceMethod(__FUNCTION__, [$order]);
+        $service = $this->iFoodService;
+        $decoded = $service?->getDecodedOrderOtherInformations($order);
 
         return is_array($decoded) ? $decoded : [];
     }
 
     private function findStoredIfoodOrderDetails(Order $order): array
     {
-        $details = $this->callIfoodServiceMethod(__FUNCTION__, [$order]);
+        $service = $this->iFoodService;
+        $details = $service?->findStoredIfoodOrderDetails($order);
 
         return is_array($details) ? $details : [];
     }
 
     private function extractOrderBenefitSnapshot(array $orderPayload): array
     {
-        $snapshot = $this->callIfoodServiceMethod(__FUNCTION__, [$orderPayload]);
+        $service = $this->iFoodService;
+        $snapshot = $service?->extractOrderBenefitSnapshot($orderPayload);
 
         return is_array($snapshot) ? $snapshot : [];
     }
 
     private function extractAdditionalFeeSnapshot(array $additionalFees): array
     {
-        $snapshot = $this->callIfoodServiceMethod(__FUNCTION__, [$additionalFees]);
+        $service = $this->iFoodService;
+        $snapshot = $service?->extractAdditionalFeeSnapshot($additionalFees);
 
         return is_array($snapshot) ? $snapshot : [];
     }
 
     private function extractOrderRemarkFromPayload(array $orderPayload): string
     {
-        $remark = $this->callIfoodServiceMethod(__FUNCTION__, [$orderPayload]);
+        $service = $this->iFoodService;
+        $remark = $service?->extractOrderRemarkFromPayload($orderPayload);
 
         return is_string($remark) ? $remark : '';
     }
 
     private function isMerchantDeliveryContext(string $deliveredBy, string $deliveryMode): bool
     {
-        $resolved = $this->callIfoodServiceMethod(__FUNCTION__, [$deliveredBy, $deliveryMode]);
+        $service = $this->iFoodService;
+        $resolved = $service?->isMerchantDeliveryContext($deliveredBy, $deliveryMode);
 
         return (bool) $resolved;
     }
@@ -461,12 +466,12 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
         if ((string) ($result['errno'] ?? '') === '0' && ($normalizedReason !== '' || $normalizedCancellationCode !== '')) {
             try {
-                $this->callIfoodServiceMethod('persistOrderIntegrationState', [
-                    $order,
-                    [
+                $service = $this->iFoodService;
+                if ($service instanceof iFoodService) {
+                    $service->persistOrderIntegrationState($order, [
                         'cancel_reason' => $normalizedCancellationCode !== '' ? $normalizedCancellationCode : $normalizedReason,
-                    ],
-                ]);
+                    ]);
+                }
                 $this->entityManager->flush();
             } catch (\Throwable $e) {
                 self::$logger->error('iFood cancel reason persist failed', [

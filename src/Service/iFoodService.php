@@ -158,6 +158,17 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
+        if ($service instanceof IfoodOrderOperationsService && method_exists($service, 'setIfoodService')) {
+            $service->setIfoodService($this);
+        }
+
+        if ($service instanceof IfoodCatalogOperationsService && method_exists($service, 'setIfoodStoreOperationsService')) {
+            $storeService = $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class, false);
+            if ($storeService instanceof IfoodStoreOperationsService) {
+                $service->setIfoodStoreOperationsService($storeService);
+            }
+        }
+
         return $service;
     }
 
@@ -520,12 +531,12 @@ class iFoodService extends AbstractMarketplaceService implements
 
     private function fetchOrderDetails(string $orderId): ?array
     {
-        $service = $this->resolveMarketplaceServiceInstance(IfoodStoreOperationsService::class);
-        if (!is_object($service)) {
+        $service = $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class, false);
+        if (!$service instanceof IfoodStoreOperationsService) {
             return null;
         }
 
-        $details = $this->invokeMarketplaceServiceMethod($service, __FUNCTION__, [$orderId]);
+        $details = $service->fetchOrderDetails($orderId);
 
         return is_array($details) ? $details : null;
     }
@@ -625,7 +636,7 @@ class iFoodService extends AbstractMarketplaceService implements
         return [];
     }
 
-    private function findStoredIfoodOrderDetails(Order $order): array
+    public function findStoredIfoodOrderDetails(Order $order): array
     {
         return $this->findStoredIfoodOrderDetailsFromContext($this->getDecodedOrderOtherInformations($order));
     }
@@ -912,7 +923,7 @@ class iFoodService extends AbstractMarketplaceService implements
         return '';
     }
 
-    private function isMerchantDeliveryContext(string $deliveredBy, string $deliveryMode): bool
+    public function isMerchantDeliveryContext(string $deliveredBy, string $deliveryMode): bool
     {
         if ($deliveredBy === 'MERCHANT') {
             return true;
@@ -936,7 +947,7 @@ class iFoodService extends AbstractMarketplaceService implements
         return is_array($orderPayload['scheduled'] ?? null) ? $orderPayload['scheduled'] : [];
     }
 
-    private function extractOrderBenefitSnapshot(array $orderPayload): array
+    public function extractOrderBenefitSnapshot(array $orderPayload): array
     {
         $benefits = is_array($orderPayload['benefits'] ?? null) ? $orderPayload['benefits'] : [];
         if ($benefits === []) {
@@ -1021,7 +1032,7 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function extractAdditionalFeeSnapshot(array $additionalFees): array
+    public function extractAdditionalFeeSnapshot(array $additionalFees): array
     {
         $total = 0.0;
         $merchantTotal = 0.0;
@@ -1304,7 +1315,7 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function extractOrderRemarkFromPayload(array $orderPayload): string
+    public function extractOrderRemarkFromPayload(array $orderPayload): string
     {
         $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
         $additionalInfo = $orderPayload['additionalInfo'] ?? null;
@@ -1602,7 +1613,7 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function persistOrderIntegrationState(Order $order, array $fields): void
+    public function persistOrderIntegrationState(Order $order, array $fields): void
     {
         $normalizedFields = [];
         foreach ($fields as $fieldName => $value) {
@@ -1635,7 +1646,7 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function decodeOrderOtherInformationsValue(mixed $value): array
+    public function decodeOrderOtherInformationsValue(mixed $value): array
     {
         if (is_array($value)) {
             return $value;
@@ -1659,7 +1670,7 @@ class iFoodService extends AbstractMarketplaceService implements
         return [];
     }
 
-    private function getDecodedOrderOtherInformations(Order $order): array
+    public function getDecodedOrderOtherInformations(Order $order): array
     {
         try {
             $otherInformations = $this->decodeOrderOtherInformationsValue($order->getOtherInformations(true));

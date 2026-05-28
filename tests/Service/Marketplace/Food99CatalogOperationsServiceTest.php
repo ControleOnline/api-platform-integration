@@ -3,11 +3,9 @@
 namespace ControleOnline\Integration\Tests\Service\Marketplace;
 
 use ControleOnline\Entity\People;
-use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Marketplace\Food99CatalogOperationsService;
 use ControleOnline\Service\Marketplace\Food99StoreOperationsService;
 use PHPUnit\Framework\TestCase;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 
 final class Food99CatalogOperationsServiceTest extends TestCase
 {
@@ -52,12 +50,8 @@ final class Food99CatalogOperationsServiceTest extends TestCase
             }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
-        $container->method('has')->willReturn(true);
-        $container->method('get')->willReturn($storeService);
-
         $service = (new \ReflectionClass(Food99CatalogOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+        $this->setObjectProperty(Food99CatalogOperationsService::class, $service, 'food99StoreOperationsService', $storeService);
 
         $provider = new People();
 

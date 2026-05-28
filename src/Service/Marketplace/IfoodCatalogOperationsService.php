@@ -45,19 +45,17 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
     private const IMAGE_UPLOAD_MAX_DIMENSION = 3000;
     private const CATALOG_CONCURRENT_RETRY_DELAYS_US = [500000, 1500000, 3000000, 5000000];
 
+    private ?IfoodStoreOperationsService $ifoodStoreOperationsService = null;
+
     protected function getMarketplaceApp(): string
     {
         return self::APP_CONTEXT;
     }
 
-    private function callIfoodStoreServiceMethod(string $method, array $arguments = []): mixed
+    #[Required]
+    public function setIfoodStoreOperationsService(IfoodStoreOperationsService $ifoodStoreOperationsService): void
     {
-        $service = $this->resolveMarketplaceServiceInstance(IfoodStoreOperationsService::class);
-        if (!is_object($service)) {
-            return null;
-        }
-
-        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+        $this->ifoodStoreOperationsService = $ifoodStoreOperationsService;
     }
 
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
@@ -93,16 +91,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private const CATALOG_V2_BASE = 'https://merchant-api.ifood.com.br/catalog/v2.0/merchants/';
 
-    private function resolveIfoodStoreOperationsService(): ?IfoodStoreOperationsService
-    {
-        $service = $this->resolveMarketplaceServiceInstance(IfoodStoreOperationsService::class);
-
-        return $service instanceof IfoodStoreOperationsService ? $service : null;
-    }
-
     public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array
     {
-        $storeService = $this->resolveIfoodStoreOperationsService();
+        $storeService = $this->ifoodStoreOperationsService;
 
         return $storeService instanceof IfoodStoreOperationsService
             ? $storeService->getStoredIntegrationState($provider, $includeAuthCheck)

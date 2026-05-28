@@ -121,6 +121,32 @@ class Food99Client
         ]);
     }
 
+    public function downloadContent(string $url): ?string
+    {
+        $normalizedUrl = trim($url);
+        if ($normalizedUrl === '' || !preg_match('/^https?:\\/\\//i', $normalizedUrl)) {
+            return null;
+        }
+
+        try {
+            $response = $this->httpClient->request('GET', $normalizedUrl);
+            if ($response->getStatusCode() >= 400) {
+                return null;
+            }
+
+            $content = $response->getContent(false);
+
+            return $content !== '' ? $content : null;
+        } catch (\Throwable $e) {
+            $this->logger()?->warning('Food99 image download failed', [
+                'url' => $normalizedUrl,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
     public function callOpenDeliveryEndpointWithResponse(
         string $method,
         string $uri,
@@ -630,7 +656,7 @@ class Food99Client
             return $this->logger;
         }
 
-        if (!$this->loggerService instanceof LoggerService) {
+        if (!isset($this->loggerService) || !$this->loggerService instanceof LoggerService) {
             return null;
         }
 
