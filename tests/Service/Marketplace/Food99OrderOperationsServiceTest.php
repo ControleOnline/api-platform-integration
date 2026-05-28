@@ -271,102 +271,53 @@ final class Food99OrderOperationsServiceTest extends TestCase
         self::assertSame('5764671854459555132', $food99Service->calls[0][3]);
     }
 
-    public function testFindFood99EntityByExtraDataUsesExtraDataServiceLookup(): void
+    public function testDiscoveryClientUsesInjectedExtraDataServiceLookup(): void
     {
-        $resolved = new \stdClass();
+        $resolved = new \ControleOnline\Entity\People();
         $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
         $extraDataService->expects(self::once())
             ->method('getEntityByExtraData')
             ->with(
                 'Food99',
                 'code',
-                '3',
+                'remote-1',
                 \ControleOnline\Entity\People::class
             )
             ->willReturn($resolved);
 
+        $peopleService = new class {
+            public array $calls = [];
+
+            public function resolveFood99RemoteClientId(array $address, array $payload = []): string
+            {
+                $this->calls[] = [$address, $payload];
+
+                return 'remote-1';
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($peopleService);
+
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
         $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
 
         $result = $this->invokePrivateMethod(
             $service,
-            'findFood99EntityByExtraData',
-            'People',
-            'code',
-            '3',
-            \ControleOnline\Entity\People::class
+            'discoveryClient',
+            ['street_name' => 'Rua A'],
+            ['data' => ['order_id' => '5764671854459555132']]
         );
 
         self::assertSame($resolved, $result);
-    }
-
-    public function testPersistFood99ExtraDataValueUsesInjectedExtraDataService(): void
-    {
-        $calls = [];
-        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
-        $extraDataService->expects(self::exactly(2))
-            ->method('upsertExtraDataValue')
-            ->willReturnCallback(static function (
-                string $context,
-                string $entityName,
-                int $entityId,
-                string $fieldName,
-                mixed $value,
-                string $fieldType,
-                ?string $source
-            ) use (&$calls): void {
-                $calls[] = compact(
-                    'context',
-                    'entityName',
-                    'entityId',
-                    'fieldName',
-                    'value',
-                    'fieldType',
-                    'source'
-                );
-            });
-
-        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
-        $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
-
-        $this->invokePrivateMethod(
-            $service,
-            'persistFood99ExtraDataValue',
-            'Order',
-            777,
-            'id',
-            '5764671854459555132'
-        );
-
-        $this->invokePrivateMethod(
-            $service,
-            'persistFood99ExtraDataValue',
-            'Order',
-            777,
-            'code',
-            '570004'
-        );
-
         self::assertSame([
             [
-                'context' => 'Food99',
-                'entityName' => 'Order',
-                'entityId' => 777,
-                'fieldName' => 'id',
-                'value' => '5764671854459555132',
-                'fieldType' => 'text',
-                'source' => 'Food99',
+                ['street_name' => 'Rua A'],
+                ['data' => ['order_id' => '5764671854459555132']],
             ],
-            [
-                'context' => 'Food99',
-                'entityName' => 'Order',
-                'entityId' => 777,
-                'fieldName' => 'code',
-                'value' => '570004',
-                'fieldType' => 'text',
-                'source' => 'Food99',
-            ],
-        ], $calls);
+        ], $peopleService->calls);
     }
 
     public function testStoredOrderIntegrationStateAndConfirmResultDelegateToFood99Service(): void

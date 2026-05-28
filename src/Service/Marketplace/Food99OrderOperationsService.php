@@ -104,50 +104,6 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    private function findFood99EntityByExtraData(
-        string $entityName,
-        string $fieldName,
-        mixed $value,
-        string $entityClass
-    ): ?object {
-        $normalizedValue = trim((string) $value);
-        if ($normalizedValue === '') {
-            return null;
-        }
-
-        $entity = $this->extraDataService->getEntityByExtraData(
-            self::APP_CONTEXT,
-            $fieldName,
-            $normalizedValue,
-            $entityClass
-        );
-
-        return is_object($entity) ? $entity : null;
-    }
-
-    private function persistFood99ExtraDataValue(
-        string $entityName,
-        int $entityId,
-        string $fieldName,
-        mixed $value,
-        string $fieldType = 'text'
-    ): void
-    {
-        if ($entityId <= 0) {
-            return;
-        }
-
-        $this->extraDataService->upsertExtraDataValue(
-            self::APP_CONTEXT,
-            $entityName,
-            $entityId,
-            $fieldName,
-            $value,
-            $fieldType,
-            self::APP_CONTEXT
-        );
-    }
-
     private function findFood99OrderByLegacyAwareExtraData(string $fieldName, mixed $value): ?Order
     {
         $normalizedValue = trim((string) $value);
@@ -222,16 +178,6 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
-    }
-
-    private function getFood99OrderExtraDataValue(int $entityId, string $fieldName): ?string
-    {
-        return $this->extraDataService->getExtraDataValue(
-            Order::APP_FOOD99,
-            'Order',
-            $entityId,
-            $fieldName
-        );
     }
 
     private function getStoredOrderIntegrationState(Order $order): array
@@ -1685,7 +1631,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
             $provider = null;
             if ($shopId !== '') {
-                $provider = $this->findFood99EntityByExtraData('People', 'code', $shopId, People::class);
+                $provider = $this->extraDataService->getEntityByExtraData(
+                    self::APP_CONTEXT,
+                    'code',
+                    $shopId,
+                    People::class
+                );
             }
 
             if (!$provider) {
@@ -1697,7 +1648,15 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                     'J'
                 );
                 if ($shopId !== '') {
-                    $this->persistFood99ExtraDataValue('People', (int) $provider->getId(), 'code', $shopId);
+                    $this->extraDataService->upsertExtraDataValue(
+                        self::APP_CONTEXT,
+                        'People',
+                        (int) $provider->getId(),
+                        'code',
+                        $shopId,
+                        'text',
+                        self::APP_CONTEXT
+                    );
                 }
             }
 
@@ -1710,8 +1669,24 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $this->entityManager->persist($order);
             $this->entityManager->flush();
 
-            $this->persistFood99ExtraDataValue('Order', (int) $order->getId(), 'id', $orderId);
-            $this->persistFood99ExtraDataValue('Order', (int) $order->getId(), 'code', $orderCode);
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Order',
+                (int) $order->getId(),
+                'id',
+                $orderId,
+                'text',
+                self::APP_CONTEXT
+            );
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Order',
+                (int) $order->getId(),
+                'code',
+                $orderCode,
+                'text',
+                self::APP_CONTEXT
+            );
             $deliveryState = $this->extractOrderDeliveryStateFields($json);
             $remoteState = 'new';
             $deliveryStatus = $this->extractOrderDeliveryStatus($json);
@@ -1952,7 +1927,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
     ): Product {
         $code = $this->resolveIncomingProductCode($item, $productType);
 
-        $product = $this->findFood99EntityByExtraData('Product', 'code', $code, Product::class);
+        $product = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $code,
+            Product::class
+        );
 
         if (!$product) {
             $unity = $this->entityManager
@@ -2001,7 +1981,15 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             }
         }
 
-        $this->persistFood99ExtraDataValue('Product', (int) $product->getId(), 'code', (string) $code);
+        $this->extraDataService->upsertExtraDataValue(
+            self::APP_CONTEXT,
+            'Product',
+            (int) $product->getId(),
+            'code',
+            (string) $code,
+            'text',
+            self::APP_CONTEXT
+        );
 
         return $product;
     }
