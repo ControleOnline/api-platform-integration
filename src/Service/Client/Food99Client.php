@@ -121,6 +121,107 @@ class Food99Client
         ]);
     }
 
+    public function callOpenDeliveryEndpointWithResponse(
+        string $method,
+        string $uri,
+        array $payload = [],
+        ?People $provider = null
+    ): ?array {
+        $accessToken = $this->resolveAccessToken($provider);
+
+        if (!$accessToken) {
+            $this->logger()?->warning('Food99 open delivery action skipped because access token is unavailable', [
+                'method' => strtoupper($method),
+                'uri' => $uri,
+                'payload' => $this->sanitizePayloadForLog($payload),
+                'provider_id' => $provider?->getId(),
+                'api_base_url' => self::API_BASE_URL,
+            ]);
+
+            return null;
+        }
+
+        $headers = [
+            'Authorization' => 'Bearer ' . $accessToken,
+        ];
+
+        $method = strtoupper($method);
+        if ($method === 'GET' && $payload !== []) {
+            $uri .= (str_contains($uri, '?') ? '&' : '?') . $this->buildQueryString($payload);
+            $payload = [];
+        }
+
+        return $this->requestOpenApiWithResponse($method, $uri, $payload, [
+            'provider_id' => $provider?->getId(),
+        ], $headers);
+    }
+
+    public function pollOpenDeliveryEvents(?People $provider, array $eventTypes, string $fromTime): ?array
+    {
+        return $this->callOpenDeliveryEndpointWithResponse('GET', '/v4/opendelivery/v1/events:polling', [
+            'eventType' => array_values(array_filter(array_map(
+                static fn (mixed $eventType): string => strtoupper(trim((string) $eventType)),
+                $eventTypes
+            ))),
+            'fromTime' => $fromTime,
+        ], $provider);
+    }
+
+    public function acknowledgeOpenDeliveryEvents(?People $provider, array $events): ?array
+    {
+        $acknowledgements = [];
+
+        foreach ($events as $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+
+            $eventId = trim((string) ($event['id'] ?? $event['eventId'] ?? $event['event_id'] ?? ''));
+            $orderId = trim((string) ($event['orderId'] ?? $event['order_id'] ?? ''));
+            $eventType = strtoupper(trim((string) ($event['eventType'] ?? $event['event_type'] ?? '')));
+
+            if ($eventId === '' || $orderId === '' || $eventType === '') {
+                continue;
+            }
+
+            $acknowledgements[] = [
+                'id' => $eventId,
+                'orderId' => $orderId,
+                'eventType' => $eventType,
+            ];
+        }
+
+        if ($acknowledgements === []) {
+            return [
+                'errno' => 0,
+                'errmsg' => '',
+                'data' => [],
+            ];
+        }
+
+        return $this->callOpenDeliveryEndpointWithResponse(
+            'POST',
+            '/v4/opendelivery/v1/events/acknowledgment',
+            $acknowledgements,
+            $provider
+        );
+    }
+
+    public function getOpenDeliveryOrderDetails(?People $provider, string $orderId): ?array
+    {
+        $normalizedOrderId = trim($orderId);
+        if ($normalizedOrderId === '') {
+            return null;
+        }
+
+        return $this->callOpenDeliveryEndpointWithResponse(
+            'GET',
+            '/v4/opendelivery/v1/orders/' . rawurlencode($normalizedOrderId),
+            [],
+            $provider
+        );
+    }
+
     public function getAccessToken(?People $provider = null): ?string
     {
         $appId = $this->resolveAppId();
@@ -181,9 +282,15 @@ class Food99Client
         return !empty($tokenData['auth_token']) ? (string) $tokenData['auth_token'] : null;
     }
 
-    private function requestOpenApiWithResponse(string $method, string $uri, array $payload, array $logContext = []): ?array
+    private function requestOpenApiWithResponse(
+        string $method,
+        string $uri,
+        array $payload,
+        array $logContext = [],
+        array $headers = []
+    ): ?array
     {
-        return $this->requestWithResponse(self::API_BASE_URL, $method, $uri, $payload, $logContext, false);
+        return $this->requestWithResponse(self::API_BASE_URL, $method, $uri, $payload, $logContext, false, $headers);
     }
 
     private function requestWithResponse(
@@ -192,7 +299,8 @@ class Food99Client
         string $uri,
         array $payload,
         array $logContext = [],
-        bool $multipart = false
+        bool $multipart = false,
+        array $headers = []
     ): ?array {
         $url = $baseUrl . $uri;
         $method = strtoupper($method);
@@ -210,9 +318,9 @@ class Food99Client
         }
 
         $requestOptions = [
-            'headers' => [
+            'headers' => array_merge([
                 'Content-Type' => 'application/json',
-            ],
+            ], $headers),
         ];
 
         if ($multipart) {
@@ -235,13 +343,30 @@ class Food99Client
             ], $logContext));
 
             $response = $this->httpClient->request($method, $url, $requestOptions);
-            $result = $response->toArray(false);
+            $statusCode = $response->getStatusCode();
+            $content = trim((string) $response->getContent(false));
+            $result = [];
+
+            if ($content !== '') {
+                $decoded = json_decode($content, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                    $result = $decoded;
+                } else {
+                    throw new \RuntimeException('Food99 endpoint returned invalid JSON.');
+                }
+            } elseif (in_array($statusCode, [202, 204], true)) {
+                $result = [
+                    'errno' => 0,
+                    'errmsg' => '',
+                    'data' => [],
+                ];
+            }
 
             $this->logger()?->info('Food99 ACTION RESPONSE', array_merge([
                 'method' => $method,
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
+                'status_code' => $statusCode,
                 'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                 'response' => $result,
                 'api_base_url' => $baseUrl,
@@ -451,6 +576,42 @@ class Food99Client
         }
 
         return $payload;
+    }
+
+    private function buildQueryString(array $payload): string
+    {
+        $pairs = [];
+
+        $append = function (string $key, mixed $value) use (&$pairs, &$append): void {
+            if (is_array($value)) {
+                foreach ($value as $nestedKey => $nestedValue) {
+                    $nextKey = is_int($nestedKey)
+                        ? $key
+                        : sprintf('%s[%s]', $key, (string) $nestedKey);
+                    $append($nextKey, $nestedValue);
+                }
+
+                return;
+            }
+
+            if ($value === null) {
+                return;
+            }
+
+            if ($value instanceof \DateTimeInterface) {
+                $value = $value->format(DateTimeInterface::ATOM);
+            } elseif (is_bool($value)) {
+                $value = $value ? 'true' : 'false';
+            }
+
+            $pairs[] = rawurlencode($key) . '=' . rawurlencode((string) $value);
+        };
+
+        foreach ($payload as $key => $value) {
+            $append((string) $key, $value);
+        }
+
+        return implode('&', $pairs);
     }
 
     private function resolveEnvironmentValue(string $name): string
