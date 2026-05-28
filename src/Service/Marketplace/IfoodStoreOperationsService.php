@@ -220,7 +220,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->httpClient->request(
+            $response = $this->ifoodClient->request(
                 'GET',
                 self::API_BASE_URL . '/merchant/v1.0/merchants',
                 [
@@ -286,7 +286,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function getMerchantDetailRaw(string $merchantId, string $token): array
     {
         try {
-            $response   = $this->httpClient->request('GET',
+            $response   = $this->ifoodClient->request('GET',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId),
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
@@ -839,7 +839,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
         try {
-            $response   = $this->httpClient->request('GET',
+            $response   = $this->ifoodClient->request('GET',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
@@ -1162,7 +1162,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response   = $this->httpClient->request('POST',
+            $response   = $this->ifoodClient->request('POST',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
@@ -1221,7 +1221,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $id = $this->normalizeString($interruption['id'] ?? null);
             if ($id === '') continue;
             try {
-                $resp = $this->httpClient->request('DELETE',
+                $resp = $this->ifoodClient->request('DELETE',
                     self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
                     ['headers' => ['Authorization' => 'Bearer ' . $token]]);
                 if ($resp->getStatusCode() < 300) {
@@ -1263,7 +1263,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->httpClient->request('DELETE',
+            $response = $this->ifoodClient->request('DELETE',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
@@ -1291,7 +1291,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function listInterruptionsRaw(string $merchantId, string $token): array
     {
         try {
-            $response   = $this->httpClient->request('GET',
+            $response   = $this->ifoodClient->request('GET',
                 self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
@@ -2572,58 +2572,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     // Autentica na API do iFood e retorna token de acesso
     private function getAccessToken(): ?string
     {
-        $cachedToken = self::$authTokenCache['token'] ?? null;
-        $cachedExpiresAt = self::$authTokenCache['expires_at'] ?? 0;
-        if (is_string($cachedToken) && $cachedToken !== '' && (int) $cachedExpiresAt > (time() + 30)) {
-            return $cachedToken;
-        }
-
-        try {
-            $response = $this->httpClient->request('POST', self::API_BASE_URL . '/authentication/v1.0/oauth/token', [
-                'headers' => ['content-type' => 'application/x-www-form-urlencoded'],
-                'body' => http_build_query([
-                    'grantType' => 'client_credentials',
-                    'clientId' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_ID'),
-                    'clientSecret' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_SECRET'),
-                ]),
-            ]);
-
-            $statusCode = $response->getStatusCode();
-            $responseBody = $response->getContent(false);
-
-            if ($statusCode !== 200) {
-                self::$logger->error('iFood access token request failed', [
-                    'status' => $statusCode,
-                    'response' => $responseBody,
-                ]);
-                return null;
-            }
-
-            $data = $response->toArray(false);
-            $token = $this->normalizeString($data['accessToken'] ?? null);
-            if ($token === '') {
-                self::$logger->error('iFood access token is missing in response', [
-                    'response' => $responseBody,
-                ]);
-                return null;
-            }
-
-            $expiresIn = isset($data['expiresIn']) && is_numeric($data['expiresIn'])
-                ? max(0, (int) $data['expiresIn'])
-                : 300;
-
-            self::$authTokenCache = [
-                'token' => $token,
-                'expires_at' => time() + $expiresIn,
-            ];
-
-            return $token;
-        } catch (\Throwable $e) {
-            self::$logger->error('iFood access token request error', [
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
+        return $this->ifoodClient->getAccessToken();
     }
 
     // FETCH DETALHES DO PEDIDO
@@ -2644,7 +2593,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             }
 
             try {
-                $response = $this->httpClient->request('GET', $endpoint, [
+                $response = $this->ifoodClient->request('GET', $endpoint, [
                     'headers' => [
                         'Authorization' => 'Bearer ' . $token,
                     ],
@@ -2663,7 +2612,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
                     if ($statusCode === 401) {
                         // Force token refresh on the next independent lookup.
-                        self::$authTokenCache = [];
+                        $this->ifoodClient->resetAccessTokenCache();
                     }
 
                     return null;

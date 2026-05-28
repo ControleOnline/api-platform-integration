@@ -10,6 +10,7 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\State;
 use ControleOnline\Entity\Street;
+use ControleOnline\Service\Client\IfoodClient;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\iFoodService;
 use Doctrine\DBAL\Connection;
@@ -21,6 +22,13 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class iFoodServiceTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        $this->setStaticProperty(IfoodClient::class, 'authTokenCache', []);
+
+        parent::tearDown();
+    }
+
     public function testWebhookMerchantStatusIsNormalizedToAvailabilityStates(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
@@ -187,7 +195,7 @@ class iFoodServiceTest extends TestCase
 
         $httpClient = $this->createMock(HttpClientInterface::class);
         $httpClient->expects(self::never())->method('request');
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         $event = [
             'orderId' => 'ifood-order-1',
@@ -220,7 +228,7 @@ class iFoodServiceTest extends TestCase
 
         $httpClient = $this->createMock(HttpClientInterface::class);
         $httpClient->expects(self::never())->method('request');
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->expects(self::once())
@@ -287,7 +295,7 @@ class iFoodServiceTest extends TestCase
 
         $httpClient = $this->createMock(HttpClientInterface::class);
         $httpClient->expects(self::never())->method('request');
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         $order = $this->createMock(Order::class);
         $order->expects(self::once())
@@ -518,7 +526,7 @@ class iFoodServiceTest extends TestCase
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
         $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
-        $this->setStaticProperty(iFoodService::class, 'authTokenCache', [
+        $this->setStaticProperty(IfoodClient::class, 'authTokenCache', [
             'token' => 'token-1',
             'expires_at' => time() + 300,
         ]);
@@ -541,7 +549,7 @@ class iFoodServiceTest extends TestCase
                 })
             )
             ->willReturn($createdResponse);
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         $remoteCategoriesByName = [
             'refrigerantes' => 'remote-refrigerantes',
@@ -566,7 +574,7 @@ class iFoodServiceTest extends TestCase
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
         $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
-        $this->setStaticProperty(iFoodService::class, 'authTokenCache', []);
+        $this->setStaticProperty(IfoodClient::class, 'authTokenCache', []);
 
         $envBackup = [
             'OAUTH_IFOOD_CLIENT_ID' => $_ENV['OAUTH_IFOOD_CLIENT_ID'] ?? null,
@@ -604,7 +612,7 @@ class iFoodServiceTest extends TestCase
                 })
             )
             ->willReturn($response);
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         try {
             self::assertSame('token-from-server', $this->invokePrivateMethod($service, 'getAccessToken'));
@@ -957,7 +965,7 @@ class iFoodServiceTest extends TestCase
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
         $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
-        $this->setStaticProperty(iFoodService::class, 'authTokenCache', []);
+        $this->setStaticProperty(IfoodClient::class, 'authTokenCache', []);
 
         $tokenResponse = $this->createStub(ResponseInterface::class);
         $tokenResponse->method('getStatusCode')->willReturn(200);
@@ -995,7 +1003,7 @@ class iFoodServiceTest extends TestCase
                 return $putResponse;
             });
 
-        $this->setObjectProperty($service, 'httpClient', $httpClient);
+        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
 
         $product = [
             'id' => 1343,
@@ -1115,6 +1123,11 @@ class iFoodServiceTest extends TestCase
     private function createNullLoggerStub(): NullLogger
     {
         return new NullLogger();
+    }
+
+    private function createIfoodClientStub(HttpClientInterface $httpClient): IfoodClient
+    {
+        return new IfoodClient($httpClient);
     }
 
     private function createComparableAddressStub(): Address

@@ -22,6 +22,7 @@
 - Em `iFood`, a invoice de repasse/cobranca deve usar `receiver = iFood`, com fechamento semanal e vencimento um mes depois do fechamento, sem compartilhar o fluxo de `Food99`.
 - `Food99Service` deve permanecer como fachada fina; catalogo de cancelamento e outros detalhes operacionais devem viver nos services de capacidade (`Food99FinancialOperationsService` e `Food99StoreOperationsService`).
 - `Food99FinancialOperationsService` deve tratar o JSON como fonte canônica e apenas materializar os blocos já gravados; nao calcular comissoes, logisticas, settlement ou percentuais a partir de `price`/`promotions` ou outros campos brutos.
+- `IfoodClient` e o unico ponto de consulta HTTP/autenticacao do iFood no modulo; os services de capacidade nao devem repetir leitura de credenciais nem consultar o iFood diretamente fora dele.
 - Em `Food99`, a carteira de repasse da loja vem somente de `store_settlement_wallet_id` configurado na tela de integracao; `provider_wallet` nao pode ser inferido nem cair em `99 Food`.
 - Em `Food99`, a geracao financeira deve ler somente `order.otherInformations.Food99`; o legado `iFood` nao pode ser usado para criar ou recriar invoices.
 - Em `Food99`, pedidos de segunda a domingo entram na mesma invoice semanal, com vencimento na quarta-feira seguinte ao fechamento.

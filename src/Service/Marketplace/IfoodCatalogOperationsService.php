@@ -85,27 +85,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private function getAccessToken(): ?string
     {
-        try {
-            $reflection = new \ReflectionProperty(iFoodService::class, 'authTokenCache');
-            $reflection->setAccessible(true);
-            $cache = $reflection->getValue();
-            $cachedToken = is_array($cache) ? ($cache['token'] ?? null) : null;
-            $cachedExpiresAt = is_array($cache) ? ($cache['expires_at'] ?? 0) : 0;
-            if (is_string($cachedToken) && $cachedToken !== '' && (int) $cachedExpiresAt > (time() + 30)) {
-                return $cachedToken;
-            }
-        } catch (\Throwable) {
-            // Fall back to the facade helper below.
-        }
-
-        $service = $this->resolveMarketplaceServiceInstance(iFoodService::class);
-        if (!is_object($service)) {
-            return null;
-        }
-
-        $token = $this->invokeMarketplaceServiceMethod($service, __FUNCTION__, []);
-
-        return is_string($token) && $token !== '' ? $token : null;
+        return $this->ifoodClient->getAccessToken();
     }
 
     /* Catalog v2                                                          */
@@ -1175,7 +1155,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         $token = $this->getAccessToken();
         if (!$token) return null;
         try {
-            $response = $this->httpClient->request('GET',
+            $response = $this->ifoodClient->request('GET',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]
             );
@@ -1198,7 +1178,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
             $catalogId = $this->fetchIfoodDefaultCatalogId($merchantId);
             if ($catalogId === null) return [];
 
-            $response = $this->httpClient->request('GET',
+            $response = $this->ifoodClient->request('GET',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token],
@@ -1232,7 +1212,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         if (!$token || $normalizedItemId === '') return null;
 
         try {
-            $response = $this->httpClient->request('GET',
+            $response = $this->ifoodClient->request('GET',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/' . rawurlencode($normalizedItemId) . '/flat',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]
             );
@@ -1462,7 +1442,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->httpClient->request('GET',
+            $response = $this->ifoodClient->request('GET',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]
             );
@@ -1497,7 +1477,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         string $token
     ): array {
         try {
-            $response = $this->httpClient->request('PATCH',
+            $response = $this->ifoodClient->request('PATCH',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($categoryId),
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
@@ -1625,7 +1605,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
         // Prioridade 3: Categoria nova — cria via POST e armazena vinculo
         try {
-            $response = $this->httpClient->request('POST',
+            $response = $this->ifoodClient->request('POST',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
@@ -2291,7 +2271,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
     private function fetchIfoodRemoteImageData(string $imageUrl): ?array
     {
         try {
-            $response = $this->httpClient->request('GET', $imageUrl);
+            $response = $this->ifoodClient->request('GET', $imageUrl);
             $statusCode = $response->getStatusCode();
             if ($statusCode < 200 || $statusCode >= 300) {
                 self::$logger->warning('iFood image fetch failed before upload', [
@@ -2393,7 +2373,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->httpClient->request('POST',
+            $response = $this->ifoodClient->request('POST',
                 self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/image/upload',
                 [
                     'headers' => [
@@ -2524,7 +2504,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
                 $lastPayload = $attemptPayload;
                 try {
-                    $response = $this->httpClient->request('PUT',
+                    $response = $this->ifoodClient->request('PUT',
                         self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
                         [
                             'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],

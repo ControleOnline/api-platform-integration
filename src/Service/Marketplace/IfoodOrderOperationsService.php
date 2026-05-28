@@ -781,7 +781,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                     'payload' => $payload,
                 ]);
 
-                $response = $this->httpClient->request(
+                $response = $this->ifoodClient->request(
                     'POST',
                     $endpoint,
                     [
@@ -861,7 +861,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                     'payload' => $payload,
                 ]);
 
-                $response = $this->httpClient->request(
+                $response = $this->ifoodClient->request(
                     'POST',
                     $endpoint,
                     [
@@ -937,7 +937,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 'payload' => $payload,
             ]);
 
-            $response = $this->httpClient->request(
+            $response = $this->ifoodClient->request(
                 'POST',
                 self::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
                 [
@@ -1023,7 +1023,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 'payload' => $payload,
             ]);
 
-            $response = $this->httpClient->request(
+            $response = $this->ifoodClient->request(
                 strtoupper($method),
                 self::API_BASE_URL . '/shipping/v1.0/merchants/' . rawurlencode($merchantId) . $path,
                 $options
@@ -1229,7 +1229,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
         try {
             foreach ($endpoints as $endpoint) {
-                $response = $this->httpClient->request('GET', $endpoint, [
+                $response = $this->ifoodClient->request('GET', $endpoint, [
                     'headers' => ['Authorization' => 'Bearer ' . $token],
                     'timeout' => 15,
                     'max_duration' => 20,

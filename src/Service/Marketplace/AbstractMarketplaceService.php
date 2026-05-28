@@ -54,16 +54,6 @@ abstract class AbstractMarketplaceService extends DefaultFoodService implements 
         return preg_replace('/\D+/', '', (string) $value) ?? '';
     }
 
-    protected function resolveEnvironmentValue(string $name): string
-    {
-        return trim((string) (
-            $_ENV[$name]
-            ?? $_SERVER[$name]
-            ?? getenv($name)
-            ?: ''
-        ));
-    }
-
     protected function isSuccessfulErrno(mixed $errno): bool
     {
         if ($errno === null) {

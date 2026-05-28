@@ -11,6 +11,7 @@
 - `Food99StoreOperationsService` e o dono do catalogo de cancelamento da loja; `Food99Service` nao deve reter a lista `SHOP_CANCEL_REASONS` nem outras constantes de tarifa/settlement.
 - `Food99OrderOperationsService` deve expor os forwards de acao esperados por `changeStatus` (`performReadyAction`, `performCancelAction`, `performDeliveredAction`) para nao depender de metodos inexistentes no service principal.
 - `Food99FinancialOperationsService` nao deve calcular comissoes, logisticas ou settlement a partir de `price` e `promotions`; ele so materializa as seções ja recebidas no JSON salvo (`financial`, `payment`, `customer`, `address`, `notes`, `identifiers`).
+- `IfoodClient` e o unico ponto de consulta HTTP e autenticacao do iFood nesta camada; services de capacidade nao devem chamar `HttpClientInterface` diretamente nem repetir a leitura de `OAUTH_IFOOD_CLIENT_ID` / `OAUTH_IFOOD_CLIENT_SECRET`.
 - Acesso a `extra_data` deve usar `ExtraDataService`; nao reimplementar leitura/escrita por queries diretas ou reflection entre `iFoodService`/`Food99Service` e as classes de capacidade.
 - Writers de `extra_data` desta camada devem ignorar valores vazios e preencher `source` com o app canonico da integracao. Se nao houver valor util, nada deve ser persistido.
 - `extra_data` e `extra_fields` nao podem guardar snapshot rico, pessoa, pedido, financeiro ou configuracao quando houver destino canonico no dominio. IDs e codigos remotos sao o unico uso aceito; o restante deve ser materializado e depois limpo.

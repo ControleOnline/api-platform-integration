@@ -18,6 +18,7 @@ use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\User;
 use ControleOnline\Service\Client\WebsocketClient;
+use ControleOnline\Service\Client\IfoodClient;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
@@ -39,6 +40,7 @@ class DefaultFoodService
         protected EntityManagerInterface $entityManager,
         protected LoggerService $loggerService,
         protected HttpClientInterface $httpClient,
+        protected IfoodClient $ifoodClient,
         protected ExtraDataService $extraDataService,
         protected PeopleService $peopleService,
         protected StatusService $statusService,
