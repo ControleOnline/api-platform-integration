@@ -1652,9 +1652,21 @@ class iFoodService extends AbstractMarketplaceService implements
 
     private function persistOrderIntegrationState(Order $order, array $fields): void
     {
+        $normalizedFields = [];
         foreach ($fields as $fieldName => $value) {
-            $this->upsertIfoodExtraDataValue('Order', (int) $order->getId(), (string) $fieldName, $value);
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '') {
+                continue;
+            }
+
+            $normalizedFields[$normalizedFieldName] = $value;
         }
+
+        if ($normalizedFields === []) {
+            return;
+        }
+
+        $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
     }
 
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string

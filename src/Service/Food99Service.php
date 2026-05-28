@@ -2312,7 +2312,10 @@ class Food99Service extends AbstractMarketplaceService implements
             $fields['last_webhook_shop_id'] = $meta['shop_id'];
         }
 
-        $this->persistProviderIntegrationState($provider, $fields);
+        $storeService = $this->resolveMarketplaceCapabilityService(Food99StoreOperationsService::class, false);
+        if (is_object($storeService)) {
+            $this->invokeMarketplaceServiceMethod($storeService, 'persistProviderIntegrationState', [$provider, $fields]);
+        }
     }
 
     private function waitForExistingIntegratedOrder(
@@ -2383,22 +2386,32 @@ class Food99Service extends AbstractMarketplaceService implements
 
     private function persistOrderIntegrationState(Order $order, array $fields): void
     {
+        $normalizedFields = [];
         foreach ($fields as $fieldName => $value) {
             $normalizedFieldName = trim((string) $fieldName);
             if ($normalizedFieldName === '' || !in_array($normalizedFieldName, self::ORDER_INTEGRATION_STATE_FIELDS, true)) {
                 continue;
             }
 
-            $this->upsertFood99ExtraDataValue('Order', (int) $order->getId(), $normalizedFieldName, $value);
+            $normalizedFields[$normalizedFieldName] = $value;
         }
+
+        if ($normalizedFields === []) {
+            return;
+        }
+
+        $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
     }
 
     public function getStoredOrderIntegrationState(Order $order): array
     {
         $this->init();
 
+        $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
+        $state = $fallbackState;
+
         $orderId = (int) $order->getId();
-        $state = [
+        $legacyState = [
             'food99_id' => $this->getFood99OrderExtraDataValue($orderId, 'id'),
             'food99_code' => $this->getFood99OrderExtraDataValue($orderId, 'code'),
             'remote_order_state' => $this->getFood99OrderExtraDataValue($orderId, 'remote_order_state'),
@@ -2431,14 +2444,12 @@ class Food99Service extends AbstractMarketplaceService implements
             'rider_to_store_eta' => $this->getFood99OrderExtraDataValue($orderId, 'rider_to_store_eta'),
         ];
 
-        $fallbackState = $this->extractOrderIntegrationStateFromOtherInformations($order);
-
-        foreach ($state as $key => $value) {
-            if ($value !== null && $value !== '') {
+        foreach ($legacyState as $key => $value) {
+            if (array_key_exists($key, $state) && $state[$key] !== null && $state[$key] !== '') {
                 continue;
             }
 
-            $state[$key] = $fallbackState[$key] ?? $value;
+            $state[$key] = $value;
         }
 
         $state = array_merge($state, $this->resolveOrderDeliveryFlags($state));

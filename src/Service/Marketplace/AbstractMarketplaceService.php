@@ -54,6 +54,26 @@ abstract class AbstractMarketplaceService extends DefaultFoodService implements 
         return preg_replace('/\D+/', '', (string) $value) ?? '';
     }
 
+    protected function resolveMarketplaceProviderCode(People $provider, string $context): ?string
+    {
+        $providerId = (int) $provider->getId();
+        if ($providerId <= 0 || trim($context) === '') {
+            return null;
+        }
+
+        $otherInformations = $this->getDecodedEntityOtherInformations($provider);
+        $contextInformation = $this->decodeEntityOtherInformationsValue($otherInformations[$context] ?? null);
+        $code = trim((string) ($contextInformation['code'] ?? ''));
+        if ($code !== '') {
+            return $code;
+        }
+
+        $legacyCode = $this->extraDataService->getExtraDataValue($context, 'People', $providerId, 'code');
+        $legacyCode = trim((string) $legacyCode);
+
+        return $legacyCode !== '' ? $legacyCode : null;
+    }
+
     abstract protected function getMarketplaceApp(): string;
 
     protected function resolveMarketplacePeople(): ?People

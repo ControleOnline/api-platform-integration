@@ -140,6 +140,82 @@ class DefaultFoodService
         return $reflection->invokeArgs($service, $arguments);
     }
 
+    protected function decodeEntityOtherInformationsValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            $normalized = json_decode(json_encode($value), true);
+
+            return is_array($normalized) ? $normalized : [];
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+            return $decoded;
+        }
+
+        return [];
+    }
+
+    protected function getDecodedEntityOtherInformations(object $entity): array
+    {
+        if (!method_exists($entity, 'getOtherInformations')) {
+            return [];
+        }
+
+        try {
+            return $this->decodeEntityOtherInformationsValue($entity->getOtherInformations(true) ?? $entity->getOtherInformations());
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    protected function normalizeOtherInformationsValue(mixed $value): mixed
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        if (is_bool($value) || is_int($value) || is_float($value) || is_string($value) || $value === null) {
+            return $value;
+        }
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            return $this->decodeEntityOtherInformationsValue($value);
+        }
+
+        return trim((string) $value);
+    }
+
+    protected function mergeEntityOtherInformations(object $entity, string $key, array $fields): void
+    {
+        if (!method_exists($entity, 'setOtherInformations')) {
+            return;
+        }
+
+        $otherInformations = $this->getDecodedEntityOtherInformations($entity);
+        $currentBlock = $this->decodeEntityOtherInformationsValue($otherInformations[$key] ?? []);
+
+        foreach ($fields as $fieldName => $fieldValue) {
+            $currentBlock[$fieldName] = $this->normalizeOtherInformationsValue($fieldValue);
+        }
+
+        $otherInformations[$key] = $currentBlock;
+        $entity->setOtherInformations($otherInformations);
+        $this->entityManager->persist($entity);
+    }
+
     protected function resolveAddressCandidate(mixed $candidate): ?Address
     {
         if ($candidate instanceof Address) {

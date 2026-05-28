@@ -878,7 +878,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $deliveryStatus = $this->extractOrderDeliveryStatus($json);
-        $currentRemoteState = $this->getFood99OrderExtraDataValue((int) $order->getId(), 'remote_order_state');
+        $storedState = $this->callFood99ServiceMethod('getStoredOrderIntegrationState', [$order]);
+        $currentRemoteState = $this->normalizeIncomingFood99Value($storedState['remote_order_state'] ?? null);
         $incomingRemoteState = $this->resolveCanonicalRemoteOrderState($eventType, $deliveryStatus);
         $incomingRemoteState = $this->resolveFallbackRemoteOrderStateForDeliveryEvent(
             $order,
@@ -919,10 +920,10 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $this->extractOrderDeliveryStateFields($json)
         );
 
-        $this->persistOrderIntegrationState($order, array_merge(
-            $integrationState,
-            $deliveryState
-        ));
+        $this->callFood99ServiceMethod('persistOrderIntegrationState', [
+            $order,
+            array_merge($integrationState, $deliveryState),
+        ]);
 
         $courier = $this->syncFood99CourierFromDeliveryState($order, $deliveryState);
         $this->syncFood99DeliveryOrder(
@@ -1464,12 +1465,15 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $this->persistLocalFoodIdByEntity('Order', (int) $order->getId(), $orderId);
             $this->persistLocalFoodCodeByEntity('Order', (int) $order->getId(), $orderCode);
             $deliveryState = $this->extractOrderDeliveryStateFields($json);
-            $this->persistOrderIntegrationState($order, array_merge([
-                'last_event_type' => 'orderNew',
-                'last_event_at' => $this->extractOrderEventTimestamp($json),
-                'remote_order_state' => 'new',
-                'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
-            ], $deliveryState));
+            $this->callFood99ServiceMethod('persistOrderIntegrationState', [
+                $order,
+                array_merge([
+                    'last_event_type' => 'orderNew',
+                    'last_event_at' => $this->extractOrderEventTimestamp($json),
+                    'remote_order_state' => 'new',
+                    'remote_delivery_status' => $this->extractOrderDeliveryStatus($json),
+                ], $deliveryState),
+            ]);
 
             self::$logger->info('Food99 order shell persisted locally before item/address processing', $this->buildLogContext(null, $json, [
                 'provider_id' => $provider?->getId(),

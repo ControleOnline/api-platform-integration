@@ -92,8 +92,29 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
     private function persistProviderIntegrationState(People $provider, array $fields): void
     {
+        $legacyFields = [];
+        $stateFields = [];
+
         foreach ($fields as $fieldName => $value) {
-            $this->upsertIfoodExtraDataValue('People', (int) $provider->getId(), (string) $fieldName, $value);
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '') {
+                continue;
+            }
+
+            if (in_array($normalizedFieldName, ['code', 'merchant_id'], true)) {
+                $legacyFields[$normalizedFieldName] = $value;
+                continue;
+            }
+
+            $stateFields[$normalizedFieldName] = $value;
+        }
+
+        if ($stateFields !== []) {
+            $this->mergeEntityOtherInformations($provider, self::APP_CONTEXT, $stateFields);
+        }
+
+        foreach ($legacyFields as $fieldName => $value) {
+            $this->upsertIfoodExtraDataValue('People', (int) $provider->getId(), $fieldName, $value);
         }
     }
 
@@ -346,16 +367,22 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         $this->init();
 
         $providerId = (int) $provider->getId();
+        $otherInformations = $this->getDecodedEntityOtherInformations($provider);
+        $context = $this->decodeEntityOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
         $merchantId = $this->normalizeString(
-            $this->getIfoodExtraDataValue('People', $providerId, 'code')
+            $context['code']
+                ?? $context['merchant_id']
+                ?? $this->getIfoodExtraDataValue('People', $providerId, 'code')
                 ?? $this->getIfoodExtraDataValue('People', $providerId, 'merchant_id')
                 ?? null
         );
         $merchantStatus = strtoupper($this->normalizeString(
-            $this->getIfoodExtraDataValue('People', $providerId, 'merchant_status')
+            $context['merchant_status']
+                ?? $this->getIfoodExtraDataValue('People', $providerId, 'merchant_status')
         ));
         $remoteConnectedRaw = $this->normalizeString(
-            $this->getIfoodExtraDataValue('People', $providerId, 'remote_connected')
+            $context['remote_connected']
+                ?? $this->getIfoodExtraDataValue('People', $providerId, 'remote_connected')
         );
 
         $connected = $merchantId !== '';
@@ -366,15 +393,15 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'remote_connected' => $remoteConnected,
             'ifood_code' => $merchantId !== '' ? $merchantId : null,
             'merchant_id' => $merchantId !== '' ? $merchantId : null,
-            'merchant_name' => $this->getIfoodExtraDataValue('People', $providerId, 'merchant_name'),
+            'merchant_name' => $context['merchant_name'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'merchant_name'),
             'merchant_status' => $merchantStatus !== '' ? $merchantStatus : null,
             'merchant_status_label' => $this->normalizeMerchantStatusLabel($merchantStatus),
             'online' => in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true),
-            'connected_at' => $this->getIfoodExtraDataValue('People', $providerId, 'connected_at'),
-            'disconnected_at' => $this->getIfoodExtraDataValue('People', $providerId, 'disconnected_at'),
-            'last_sync_at' => $this->getIfoodExtraDataValue('People', $providerId, 'last_sync_at'),
-            'last_error_code' => $this->getIfoodExtraDataValue('People', $providerId, 'last_error_code'),
-            'last_error_message' => $this->getIfoodExtraDataValue('People', $providerId, 'last_error_message'),
+            'connected_at' => $context['connected_at'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'connected_at'),
+            'disconnected_at' => $context['disconnected_at'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'disconnected_at'),
+            'last_sync_at' => $context['last_sync_at'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_sync_at'),
+            'last_error_code' => $context['last_error_code'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_error_code'),
+            'last_error_message' => $context['last_error_message'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_error_message'),
             'auth_available' => $includeAuthCheck ? $this->isAuthAvailable() : null,
         ];
     }

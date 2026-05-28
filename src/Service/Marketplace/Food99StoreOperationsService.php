@@ -206,8 +206,29 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
 
     private function persistProviderIntegrationState(People $provider, array $fields): void
     {
+        $legacyFields = [];
+        $stateFields = [];
+
         foreach ($fields as $fieldName => $value) {
-            $this->upsertFood99ExtraDataValue('People', (int) $provider->getId(), (string) $fieldName, $value);
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '') {
+                continue;
+            }
+
+            if ($normalizedFieldName === 'code') {
+                $legacyFields[$normalizedFieldName] = $value;
+                continue;
+            }
+
+            $stateFields[$normalizedFieldName] = $value;
+        }
+
+        if ($stateFields !== []) {
+            $this->mergeEntityOtherInformations($provider, self::APP_CONTEXT, $stateFields);
+        }
+
+        foreach ($legacyFields as $fieldName => $value) {
+            $this->upsertFood99ExtraDataValue('People', (int) $provider->getId(), $fieldName, $value);
         }
     }
 
@@ -221,7 +242,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
 
     private function persistProviderStoreState(People $provider, array $storeData): void
     {
-        $shopId = isset($storeData['shop_id']) ? (string) $storeData['shop_id'] : $this->getIntegratedStoreCode($provider);
+        $shopId = isset($storeData['shop_id']) ? (string) $storeData['shop_id'] : $this->resolveMarketplaceProviderCode($provider, self::APP_CONTEXT);
         $bizStatus = isset($storeData['biz_status']) ? (int) $storeData['biz_status'] : null;
         $subBizStatus = isset($storeData['sub_biz_status']) ? (int) $storeData['sub_biz_status'] : null;
         $storeStatus = isset($storeData['store_status']) ? (int) $storeData['store_status'] : null;
@@ -628,10 +649,8 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
             WHERE ef.context = :context
               AND LOWER(ed.entity_name) = 'people'
-              AND (
-                    (ef.field_name = 'code' AND ed.data_value <> '')
-                    OR (ef.field_name = 'remote_connected' AND ed.data_value = '1')
-              )
+              AND ef.field_name = 'code'
+              AND ed.data_value <> ''
             ORDER BY ed.entity_id ASC
             LIMIT {$safeLimit}
         SQL;
@@ -692,16 +711,18 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
 
         $providerId = (int) $provider->getId();
         $normalize = static fn(mixed $value): ?string => (trim((string) $value) === '' ? null : trim((string) $value));
+        $otherInformations = $this->getDecodedEntityOtherInformations($provider);
+        $context = $this->decodeEntityOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
 
         return [
-            'delivery_radius' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_radius')),
-            'open_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_open_time')),
-            'close_time' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_close_time')),
-            'delivery_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_method')),
-            'confirm_method' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_confirm_method')),
-            'delivery_area_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_area_id')),
-            'settlement_wallet_id' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settlement_wallet_id')),
-            'settings_synced_at' => $normalize($this->getFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at')),
+            'delivery_radius' => $normalize($context['store_delivery_radius'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_radius')),
+            'open_time' => $normalize($context['store_open_time'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_open_time')),
+            'close_time' => $normalize($context['store_close_time'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_close_time')),
+            'delivery_method' => $normalize($context['store_delivery_method'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_method')),
+            'confirm_method' => $normalize($context['store_confirm_method'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_confirm_method')),
+            'delivery_area_id' => $normalize($context['store_delivery_area_id'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_delivery_area_id')),
+            'settlement_wallet_id' => $normalize($context['store_settlement_wallet_id'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_settlement_wallet_id')),
+            'settings_synced_at' => $normalize($context['store_settings_synced_at'] ?? $this->getFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at')),
         ];
     }
 
@@ -709,7 +730,6 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
 
-        $providerId = (int) $provider->getId();
         $fieldMap = [
             'delivery_radius' => 'store_delivery_radius',
             'open_time' => 'store_open_time',
@@ -720,6 +740,8 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             'settlement_wallet_id' => 'store_settlement_wallet_id',
         ];
 
+        $currentSettings = $this->getStoredOperationalSettings($provider);
+        $stateFields = [];
         $persisted = false;
         foreach ($fieldMap as $settingKey => $fieldName) {
             if (!array_key_exists($settingKey, $settings)) {
@@ -731,17 +753,18 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
                 continue;
             }
 
-            $existing = trim((string) ($this->getFood99ExtraDataValue('People', $providerId, $fieldName) ?? ''));
+            $existing = trim((string) ($currentSettings[$settingKey] ?? ''));
             if ($existing === $normalized) {
                 continue;
             }
 
-            $this->upsertFood99ExtraDataValue('People', $providerId, $fieldName, $normalized);
+            $stateFields[$fieldName] = $normalized;
             $persisted = true;
         }
 
         if ($persisted) {
-            $this->upsertFood99ExtraDataValue('People', $providerId, 'store_settings_synced_at', date('Y-m-d H:i:s'));
+            $stateFields['store_settings_synced_at'] = date('Y-m-d H:i:s');
+            $this->persistProviderIntegrationState($provider, $stateFields);
         }
     }
 
@@ -787,31 +810,16 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             return null;
         }
 
-        $sql = <<<SQL
-            SELECT ed.data_value
-            FROM orders o
-            INNER JOIN extra_data ed
-                ON ed.entity_id = o.id
-               AND LOWER(ed.entity_name) = 'order'
-            INNER JOIN extra_fields ef
-                ON ef.id = ed.extra_fields_id
-            WHERE o.provider_id = :providerId
-              AND ef.context = :context
-              AND ef.field_name = 'delivery_type'
-            ORDER BY o.order_date DESC, o.id DESC, ed.id DESC
-            LIMIT 1
-        SQL;
+        $order = $this->entityManager->getRepository(Order::class)
+            ->findLatestMarketplaceOrderForProvider($providerId, self::APP_CONTEXT);
 
-        $value = $this->entityManager->getConnection()->fetchOne($sql, [
-            'providerId' => $providerId,
-            'context' => self::APP_CONTEXT,
-        ]);
-
-        if ($value === null) {
+        if (!$order instanceof Order) {
             return null;
         }
 
-        $normalized = trim((string) $value);
+        $otherInformations = $this->getDecodedEntityOtherInformations($order);
+        $context = $this->decodeEntityOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
+        $normalized = trim((string) ($context['delivery_type'] ?? ''));
         if (!in_array($normalized, ['1', '2'], true)) {
             return null;
         }
@@ -823,14 +831,16 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
 
-        $bizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'biz_status');
-        $subBizStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'sub_biz_status');
-        $storeStatus = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'store_status');
-        $food99Code = $this->getIntegratedStoreCode($provider);
-        $menuCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_count');
-        $menuItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_item_count');
-        $deliveryAreaCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'delivery_area_count');
-        $remoteOnlyItemCount = $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_only_item_count');
+        $otherInformations = $this->getDecodedEntityOtherInformations($provider);
+        $context = $this->decodeEntityOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
+        $bizStatus = $context['biz_status'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'biz_status');
+        $subBizStatus = $context['sub_biz_status'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'sub_biz_status');
+        $storeStatus = $context['store_status'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'store_status');
+        $food99Code = $this->resolveMarketplaceProviderCode($provider, self::APP_CONTEXT);
+        $menuCount = $context['menu_count'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_count');
+        $menuItemCount = $context['menu_item_count'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'menu_item_count');
+        $deliveryAreaCount = $context['delivery_area_count'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'delivery_area_count');
+        $remoteOnlyItemCount = $context['remote_only_item_count'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_only_item_count');
 
         return [
             'connected' => !empty($food99Code),
@@ -839,32 +849,32 @@ class Food99StoreOperationsService extends AbstractMarketplaceService
             'biz_status' => is_numeric($bizStatus) ? (int) $bizStatus : null,
             'sub_biz_status' => is_numeric($subBizStatus) ? (int) $subBizStatus : null,
             'store_status' => is_numeric($storeStatus) ? (int) $storeStatus : null,
-            'remote_connected' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_connected') === '1',
-            'online' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'online') === '1',
-            'last_sync_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_sync_at'),
-            'last_menu_task_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_id'),
-            'last_menu_task_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_status'),
-            'last_menu_task_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_message'),
-            'last_menu_task_checked_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_checked_at'),
-            'last_menu_publish_state' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_publish_state'),
+            'remote_connected' => ($context['remote_connected'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'remote_connected')) === '1',
+            'online' => ($context['online'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'online')) === '1',
+            'last_sync_at' => $context['last_sync_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_sync_at'),
+            'last_menu_task_id' => $context['last_menu_task_id'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_id'),
+            'last_menu_task_status' => $context['last_menu_task_status'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_status'),
+            'last_menu_task_message' => $context['last_menu_task_message'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_message'),
+            'last_menu_task_checked_at' => $context['last_menu_task_checked_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_task_checked_at'),
+            'last_menu_publish_state' => $context['last_menu_publish_state'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_menu_publish_state'),
             'menu_count' => is_numeric($menuCount) ? (int) $menuCount : 0,
             'menu_item_count' => is_numeric($menuItemCount) ? (int) $menuItemCount : 0,
             'delivery_area_count' => is_numeric($deliveryAreaCount) ? (int) $deliveryAreaCount : 0,
             'remote_only_item_count' => is_numeric($remoteOnlyItemCount) ? (int) $remoteOnlyItemCount : 0,
-            'last_error_code' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
-            'last_error_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
-            'last_webhook_event_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_id'),
-            'last_webhook_event_type' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_type'),
-            'last_webhook_event_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_at'),
-            'last_webhook_received_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_received_at'),
-            'last_webhook_processed_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_processed_at'),
-            'last_webhook_order_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_order_id'),
-            'last_webhook_shop_id' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_shop_id'),
-            'last_reconcile_at' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_at'),
-            'last_reconcile_status' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_status'),
-            'last_reconcile_message' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_message'),
-            'last_reconcile_source' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
-            'last_reconcile_duration_ms' => $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
+            'last_error_code' => $context['last_error_code'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_code'),
+            'last_error_message' => $context['last_error_message'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_error_message'),
+            'last_webhook_event_id' => $context['last_webhook_event_id'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_id'),
+            'last_webhook_event_type' => $context['last_webhook_event_type'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_type'),
+            'last_webhook_event_at' => $context['last_webhook_event_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_event_at'),
+            'last_webhook_received_at' => $context['last_webhook_received_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_received_at'),
+            'last_webhook_processed_at' => $context['last_webhook_processed_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_processed_at'),
+            'last_webhook_order_id' => $context['last_webhook_order_id'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_order_id'),
+            'last_webhook_shop_id' => $context['last_webhook_shop_id'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_webhook_shop_id'),
+            'last_reconcile_at' => $context['last_reconcile_at'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_at'),
+            'last_reconcile_status' => $context['last_reconcile_status'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_status'),
+            'last_reconcile_message' => $context['last_reconcile_message'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_message'),
+            'last_reconcile_source' => $context['last_reconcile_source'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_source'),
+            'last_reconcile_duration_ms' => $context['last_reconcile_duration_ms'] ?? $this->getFood99ExtraDataValue('People', (int) $provider->getId(), 'last_reconcile_duration_ms'),
         ];
     }
 

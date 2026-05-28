@@ -29,6 +29,7 @@
 - Em `Food99`, pedidos com status terminal `canceled`/`cancelled` devem ser tratados como sem geracao financeira, mas a limpeza das invoices gerenciadas do proprio pedido continua obrigatoria.
 - Em `Food99`, os valores financeiros devem ser lidos apenas dos campos já materializados no snapshot salvo; nao recalcular comissao, logistica, settlement ou qualquer percentual a partir de `price`, `promotions` ou outros campos brutos.
 - Em pedidos filhos de logistica gerados pela integracao `Food99`, `provider` e o motoboy, `payer` e `99 Food`, `client` e a empresa do pedido pai, `deliveryContact` e o cliente do pedido pai, `addressOrigin` deve estar sempre preenchido e o filho nao deve copiar `otherInformations`.
+- `extra_data` e `extra_fields` nesta camada so podem guardar IDs, chaves remotas e codigos que nao tenham destino materializado equivalente. Snapshot rico, pessoas, pedidos, financeiro, logistica e configuracoes devem ir para as tabelas/JSON canonicos do dominio dono e devem ser limpos do legado assim que o backfill confirmar a materializacao.
 - Alertas humanos do `MANAGER` devem usar `queue_name = PushNotification` e FCM direto; nao criar alerta humano novo como `Websocket`.
 - `Websocket` e `PushNotification` sao filas efemeras: item entregue deve ser removido da tabela `integration`, e qualquer registro remanescente com mais de 24 horas deve ser removido pela manutencao.
 - O canal Android de FCM do `MANAGER` usa o som nativo `caixa.m4a` empacotado; URL de audio configurada nao toca quando o push chega com app fechado.

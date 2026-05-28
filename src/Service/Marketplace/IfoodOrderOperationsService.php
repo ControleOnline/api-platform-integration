@@ -216,13 +216,22 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             'last_integration_id' => $this->getIfoodExtraDataValue('Order', $orderId, 'last_integration_id'),
         ];
 
+        $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::$app] ?? null);
+        foreach ($context as $fieldName => $fieldValue) {
+            if (($state[$fieldName] ?? '') !== '' || $fieldValue === null || $fieldValue === '') {
+                continue;
+            }
+
+            $state[$fieldName] = $fieldValue;
+        }
+
         $storedRemoteId = $this->normalizeString($state['ifood_id'] ?? null);
         $storedDisplayId = $this->normalizeString($state['ifood_code'] ?? null);
         if ($storedDisplayId !== '' && ($storedDisplayId === $storedRemoteId || str_contains($storedDisplayId, '-'))) {
             $state['ifood_code'] = '';
         }
 
-        $otherInformations = $this->getDecodedOrderOtherInformations($order);
         $latestEventType = $this->normalizeString($otherInformations['latest_event_type'] ?? null);
         if ($latestEventType !== '' && is_array($otherInformations[$latestEventType] ?? null)) {
             $payload = $otherInformations[$latestEventType];
@@ -450,8 +459,11 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
         if ((string) ($result['errno'] ?? '') === '0' && ($normalizedReason !== '' || $normalizedCancellationCode !== '')) {
             try {
-                $this->persistOrderIntegrationState($order, [
-                    'cancel_reason' => $normalizedCancellationCode !== '' ? $normalizedCancellationCode : $normalizedReason,
+                $this->callIfoodServiceMethod('persistOrderIntegrationState', [
+                    $order,
+                    [
+                        'cancel_reason' => $normalizedCancellationCode !== '' ? $normalizedCancellationCode : $normalizedReason,
+                    ],
                 ]);
                 $this->entityManager->flush();
             } catch (\Throwable $e) {

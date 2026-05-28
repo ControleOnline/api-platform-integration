@@ -706,7 +706,7 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         $this->init();
 
         $products = $this->listSelectableMenuProducts($provider);
-        $integratedStoreCode = $this->getIntegratedStoreCode($provider);
+        $integratedStoreCode = $this->resolveMarketplaceProviderCode($provider, self::APP_CONTEXT);
         $connected = !empty($integratedStoreCode);
 
         $detail = [
