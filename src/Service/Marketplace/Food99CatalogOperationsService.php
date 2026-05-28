@@ -116,6 +116,40 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService
         return is_array($response) ? $response : null;
     }
 
+    private function callFood99StoreServiceMethod(string $method, array $arguments = []): mixed
+    {
+        $service = $this->resolveFood99StoreOperationsService();
+        if (!$service instanceof Food99StoreOperationsService) {
+            return null;
+        }
+
+        return $this->invokeMarketplaceServiceMethod($service, $method, $arguments);
+    }
+
+    private function persistProviderLastError(People $provider, mixed $code = null, mixed $message = null): void
+    {
+        $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $code, $message]);
+    }
+
+    private function persistProviderMenuUploadSubmission(People $provider, array $response, mixed $taskId = null): void
+    {
+        $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $response, $taskId]);
+    }
+
+    private function normalizeMenuTaskResponse(array $response, int|string|null $fallbackTaskId = null): array
+    {
+        $normalized = $this->callFood99StoreServiceMethod(__FUNCTION__, [$response, $fallbackTaskId]);
+
+        return is_array($normalized) ? $normalized : $response;
+    }
+
+    private function persistProviderMenuTaskState(People $provider, array $response, int|string|null $fallbackTaskId = null): string
+    {
+        $state = $this->callFood99StoreServiceMethod(__FUNCTION__, [$provider, $response, $fallbackTaskId]);
+
+        return is_string($state) && $state !== '' ? $state : 'processing';
+    }
+
     private function normalizeProductIds(array $productIds): array
     {
         $normalized = [];
