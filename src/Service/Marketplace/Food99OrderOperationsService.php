@@ -127,6 +127,11 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         throw new \RuntimeException('Food99 marketplace people could not be resolved.');
     }
 
+    private function syncProviderWebhookReceiptState(array $json): void
+    {
+        $this->callFood99ServiceMethod(__FUNCTION__, [$json]);
+    }
+
     private function decodeOrderOtherInformationsValue(mixed $value): array
     {
         $decoded = $this->callFood99ServiceMethod(__FUNCTION__, [$value]);

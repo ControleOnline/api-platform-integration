@@ -3,8 +3,10 @@
 namespace ControleOnline\Integration\Tests\Service\Marketplace;
 
 use ControleOnline\Entity\Integration;
+use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Marketplace\Food99OrderOperationsService;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 final class Food99OrderOperationsServiceTest extends TestCase
 {
@@ -46,6 +48,44 @@ final class Food99OrderOperationsServiceTest extends TestCase
         self::assertSame(4, $context['retry']);
     }
 
+    public function testSyncProviderWebhookReceiptStateDelegatesToFood99Service(): void
+    {
+        $food99Service = new class {
+            public array $calls = [];
+
+            public function syncProviderWebhookReceiptState(array $json): void
+            {
+                $this->calls[] = $json;
+            }
+        };
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($food99Service);
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        $this->invokePrivateMethod(
+            $service,
+            'syncProviderWebhookReceiptState',
+            [
+                'type' => 'orderNew',
+                'data' => ['order_id' => '5764671854459555132'],
+            ]
+        );
+
+        self::assertSame(
+            [
+                [
+                    'type' => 'orderNew',
+                    'data' => ['order_id' => '5764671854459555132'],
+                ],
+            ],
+            $food99Service->calls
+        );
+    }
+
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
     {
         $method = new \ReflectionMethod($object, $methodName);
@@ -59,5 +99,12 @@ final class Food99OrderOperationsServiceTest extends TestCase
         $property = new \ReflectionProperty(Integration::class, 'id');
         $property->setAccessible(true);
         $property->setValue($entity, $id);
+    }
+
+    private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
+    {
+        $property = new \ReflectionProperty($className, $propertyName);
+        $property->setAccessible(true);
+        $property->setValue($object, $value);
     }
 }
