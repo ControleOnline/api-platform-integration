@@ -1384,6 +1384,42 @@ class IntegrationController extends AbstractController
         ]));
     }
 
+    #[Route('/marketplace/integrations/99food/orders/sync', name: 'marketplace_integrations_food99_orders_sync', methods: ['POST'])]
+    public function syncOrdersFromPolling(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $fromTime = trim((string) ($payload['from_time'] ?? $payload['fromTime'] ?? $request->query->get('from_time', '')));
+        $eventTypesInput = $payload['event_types'] ?? $payload['eventTypes'] ?? [];
+        if (is_string($eventTypesInput)) {
+            $eventTypes = array_values(array_filter(array_map('trim', explode(',', $eventTypesInput))));
+        } elseif (is_array($eventTypesInput)) {
+            $eventTypes = array_values(array_filter(array_map(
+                static fn (mixed $eventType): string => trim((string) $eventType),
+                $eventTypesInput
+            )));
+        } else {
+            $eventTypes = [];
+        }
+
+        $syncResult = $this->food99Service->syncOrdersFromPolling(
+            $provider,
+            $fromTime !== '' ? $fromTime : null,
+            $eventTypes
+        );
+
+        return new JsonResponse($syncResult);
+    }
+
     #[Route('/marketplace/integrations/99food/store/authorization-page', name: 'marketplace_integrations_food99_authorization_page', methods: ['POST'])]
     public function getAuthorizationPage(Request $request): JsonResponse
     {

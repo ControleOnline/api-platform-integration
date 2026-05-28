@@ -24,7 +24,9 @@ use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterfac
 use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface;
 use ControleOnline\Event\EntityChangedEvent;
 use DateTime;
+use DateTimeImmutable;
 use DateTimeInterface;
+use DateTimeZone;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
@@ -32,6 +34,19 @@ use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 class Food99OrderOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
+    private const OPEN_DELIVERY_SYNC_EVENT_TYPES = [
+        'CREATED',
+        'CONFIRMED',
+        'READY_FOR_PICKUP',
+        'DISPATCHED',
+        'DELIVERED',
+        'CONCLUDED',
+        'CANCELLATION_REQUESTED',
+        'CANCELLATION_REQUEST_DENIED',
+        'CANCELLED',
+        'ORDER_CANCELLATION_REQUEST',
+        'CANCELLED_DENIED',
+    ];
 
     protected function getMarketplaceApp(): string
     {
@@ -1545,7 +1560,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         };
     }
 
-    private function addOrder(array $json): ?Order
+    private function addOrder(
+        array $json,
+        bool $autoConfirm = true,
+        bool $autoPrint = true,
+        ?People $provider = null
+    ): ?Order
     {
         $data = $json['data'] ?? [];
         if (!is_array($data)) {
@@ -1637,8 +1657,9 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
             $shopId = $this->normalizeIncomingFood99Value($shop['shop_id'] ?? null);
 
-            $provider = null;
-            if ($shopId !== '') {
+            $provider = $provider instanceof People ? $provider : null;
+
+            if (!$provider instanceof People && $shopId !== '') {
                 $provider = $this->extraDataService->getEntityByExtraData(
                     self::APP_CONTEXT,
                     'code',
@@ -1666,6 +1687,18 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                         self::APP_CONTEXT
                     );
                 }
+            }
+
+            if ($provider instanceof People && $shopId !== '') {
+                $this->extraDataService->upsertExtraDataValue(
+                    self::APP_CONTEXT,
+                    'People',
+                    (int) $provider->getId(),
+                    'code',
+                    $shopId,
+                    'text',
+                    self::APP_CONTEXT
+                );
             }
 
             $client = $this->resolveOrderClient($provider, $receiveAddress, $json, $orderId);
@@ -1759,9 +1792,14 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
             // O financeiro do marketplace e reconstruido pelo gerador central usando otherInformations.
 
-            $confirmResult = $this->confirmOrder($order, $orderId, $provider);
-            $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
-            $this->printOrder($order);
+            if ($autoConfirm) {
+                $confirmResult = $this->confirmOrder($order, $orderId, $provider);
+                $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
+            }
+
+            if ($autoPrint) {
+                $this->printOrder($order);
+            }
 
             return $order;
         } finally {
@@ -1769,6 +1807,998 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                 $this->releaseOrderIntegrationLock($orderId);
             }
         }
+    }
+
+    public function syncOrdersFromPolling(
+        People $provider,
+        ?string $fromTime = null,
+        array $eventTypes = []
+    ): array {
+        $this->init();
+
+        $client = $this->resolveFood99Client();
+        if (!$client) {
+            return [
+                'errno' => 10001,
+                'errmsg' => 'Token de acesso indisponivel para sincronizar pedidos na 99Food.',
+                'data' => [],
+            ];
+        }
+
+        $resolvedFromTime = $this->resolveOpenDeliverySyncFromTime($fromTime);
+        $resolvedEventTypes = $this->resolveOpenDeliveryEventTypes($eventTypes);
+
+        self::$logger?->info('Food99 open delivery sync started', [
+            'provider_id' => $provider->getId(),
+            'from_time' => $resolvedFromTime,
+            'event_types' => $resolvedEventTypes,
+        ]);
+
+        $pollResponse = $client->pollOpenDeliveryEvents($provider, $resolvedEventTypes, $resolvedFromTime);
+        if (!is_array($pollResponse)) {
+            return [
+                'errno' => 10001,
+                'errmsg' => 'Nao foi possivel consultar os eventos da 99Food.',
+                'data' => [],
+            ];
+        }
+
+        $eventList = $this->extractOpenDeliveryEvents($pollResponse);
+        $normalizedEventsById = [];
+
+        foreach ($eventList as $event) {
+            $normalizedEvent = $this->normalizeOpenDeliveryEvent($event);
+            if (!$normalizedEvent) {
+                continue;
+            }
+
+            $eventId = $normalizedEvent['event_id'];
+            if (!isset($normalizedEventsById[$eventId]) || $normalizedEvent['created_at_ts'] >= ($normalizedEventsById[$eventId]['created_at_ts'] ?? 0)) {
+                $normalizedEventsById[$eventId] = $normalizedEvent;
+            }
+        }
+
+        $normalizedEvents = array_values($normalizedEventsById);
+        usort($normalizedEvents, static function (array $left, array $right): int {
+            $comparison = ($left['created_at_ts'] ?? 0) <=> ($right['created_at_ts'] ?? 0);
+            if ($comparison !== 0) {
+                return $comparison;
+            }
+
+            return strcmp((string) ($left['event_id'] ?? ''), (string) ($right['event_id'] ?? ''));
+        });
+
+        $groupedEvents = [];
+        foreach ($normalizedEvents as $event) {
+            $groupedEvents[$event['order_id']][] = $event;
+        }
+
+        $processedOrders = [];
+        $failedOrders = [];
+        $processedEvents = 0;
+        $ackEvents = [];
+
+        foreach ($groupedEvents as $orderId => $orderEvents) {
+            $orderDetails = $client->getOpenDeliveryOrderDetails($provider, $orderId);
+            if (!is_array($orderDetails)) {
+                $failedOrders[] = [
+                    'order_id' => $orderId,
+                    'reason' => 'Nao foi possivel carregar os detalhes do pedido.',
+                ];
+
+                continue;
+            }
+
+            $order = null;
+            $orderFailed = false;
+            $lastMappedEventType = null;
+
+            foreach ($orderEvents as $event) {
+                $payload = $this->buildOpenDeliveryWebhookPayload($provider, $orderDetails, $event);
+                $this->syncProviderWebhookReceiptState($payload);
+
+                if (!$order instanceof Order) {
+                    $order = $this->addOrder($payload, false, false, $provider);
+                    if (!$order instanceof Order) {
+                        $orderFailed = true;
+                        $failedOrders[] = [
+                            'order_id' => $orderId,
+                            'event_id' => $event['event_id'],
+                            'reason' => 'Nao foi possivel criar o pedido localmente.',
+                        ];
+                        break;
+                    }
+                }
+
+                $mappedEventType = (string) ($event['mapped_event_type'] ?? '');
+                if ($mappedEventType !== '') {
+                    $updatedOrder = $this->handleGenericOrderEvent($payload, $mappedEventType, false);
+                    if ($updatedOrder instanceof Order) {
+                        $order = $updatedOrder;
+                    }
+                }
+
+                $ackEvents[] = [
+                    'id' => $event['event_id'],
+                    'orderId' => $orderId,
+                    'eventType' => $event['original_event_type'],
+                ];
+                $processedEvents++;
+                $lastMappedEventType = $mappedEventType !== '' ? $mappedEventType : $lastMappedEventType;
+            }
+
+            if ($orderFailed) {
+                continue;
+            }
+
+            $processedOrders[] = [
+                'order_id' => $orderId,
+                'local_order_id' => $order instanceof Order ? $order->getId() : null,
+                'event_count' => count($orderEvents),
+                'last_event_type' => $lastMappedEventType,
+                'status' => $order instanceof Order ? $order->getStatus()?->getRealStatus() : null,
+            ];
+        }
+
+        $acknowledgedCount = 0;
+        $ackResponse = null;
+        if ($ackEvents !== []) {
+            $ackResponse = $client->acknowledgeOpenDeliveryEvents($provider, $ackEvents);
+            if (is_array($ackResponse) && $this->isSuccessfulErrno($ackResponse['errno'] ?? null)) {
+                $acknowledgedCount = count($ackEvents);
+            } else {
+                self::$logger?->warning('Food99 open delivery acknowledgment failed', [
+                    'provider_id' => $provider->getId(),
+                    'response' => $ackResponse,
+                ]);
+            }
+        }
+
+        $this->callFood99StoreServiceMethod('persistProviderIntegrationState', [
+            $provider,
+            [
+                'last_sync_at' => date('Y-m-d H:i:s'),
+            ],
+        ]);
+
+        return [
+            'errno' => 0,
+            'errmsg' => '',
+            'data' => [
+                'from_time' => $resolvedFromTime,
+                'event_types' => $resolvedEventTypes,
+                'polled_event_count' => count($normalizedEvents),
+                'unique_order_count' => count($groupedEvents),
+                'processed_order_count' => count($processedOrders),
+                'failed_order_count' => count($failedOrders),
+                'processed_event_count' => $processedEvents,
+                'acknowledged_event_count' => $acknowledgedCount,
+                'failed_acknowledged_count' => max(0, count($ackEvents) - $acknowledgedCount),
+                'orders' => $processedOrders,
+                'errors' => $failedOrders,
+                'ack_response' => $ackResponse,
+            ],
+        ];
+    }
+
+    private function resolveOpenDeliverySyncFromTime(?string $fromTime): string
+    {
+        try {
+            if (trim((string) $fromTime) !== '') {
+                $reference = new DateTimeImmutable(trim((string) $fromTime));
+            } else {
+                $reference = (new DateTimeImmutable('now', new DateTimeZone('America/Sao_Paulo')))
+                    ->setTime(0, 0, 0);
+            }
+        } catch (\Throwable) {
+            $reference = (new DateTimeImmutable('now', new DateTimeZone('America/Sao_Paulo')))
+                ->setTime(0, 0, 0);
+        }
+
+        return $reference
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format(DateTimeInterface::ATOM);
+    }
+
+    private function resolveOpenDeliveryEventTypes(array $eventTypes): array
+    {
+        $resolved = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $eventType): string => strtoupper(trim((string) $eventType)),
+            $eventTypes
+        ))));
+
+        return $resolved !== [] ? $resolved : self::OPEN_DELIVERY_SYNC_EVENT_TYPES;
+    }
+
+    private function extractOpenDeliveryEvents(array $response): array
+    {
+        foreach ([
+            $response,
+            $response['data'] ?? null,
+            $response['events'] ?? null,
+            $response['eventList'] ?? null,
+            $response['items'] ?? null,
+            $response['result'] ?? null,
+        ] as $candidate) {
+            $events = $this->extractOpenDeliveryEventListFromPayload($candidate);
+            if ($events !== []) {
+                return $events;
+            }
+        }
+
+        return [];
+    }
+
+    private function extractOpenDeliveryEventListFromPayload(mixed $payload): array
+    {
+        if (!is_array($payload) || $payload === []) {
+            return [];
+        }
+
+        if ($this->isSequentialArray($payload) && isset($payload[0]) && is_array($payload[0])) {
+            return array_values(array_filter($payload, 'is_array'));
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $events = $this->extractOpenDeliveryEventListFromPayload($value);
+            if ($events !== []) {
+                return $events;
+            }
+        }
+
+        return [];
+    }
+
+    private function normalizeOpenDeliveryEvent(array $event): ?array
+    {
+        $eventId = $this->normalizeOpenDeliveryString($event['id'] ?? $event['eventId'] ?? $event['event_id'] ?? '');
+        $orderId = $this->normalizeOpenDeliveryString($event['orderId'] ?? $event['order_id'] ?? '');
+        $eventType = $this->normalizeOpenDeliveryString($event['eventType'] ?? $event['event_type'] ?? $event['type'] ?? '');
+
+        if ($eventId === '' || $orderId === '' || $eventType === '') {
+            return null;
+        }
+
+        $createdAt = $this->normalizeOpenDeliveryString($event['createdAt'] ?? $event['created_at'] ?? $event['event_time'] ?? '');
+        $createdAtTs = $this->normalizeOpenDeliveryTimestamp($createdAt);
+
+        return [
+            'event_id' => $eventId,
+            'order_id' => $orderId,
+            'original_event_type' => $eventType,
+            'mapped_event_type' => $this->mapOpenDeliveryEventType($eventType),
+            'created_at' => $createdAt !== '' ? $createdAt : date('Y-m-d H:i:s'),
+            'created_at_ts' => $createdAtTs,
+        ];
+    }
+
+    private function normalizeOpenDeliveryTimestamp(mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return 0;
+        }
+
+        if (is_numeric($value)) {
+            $timestamp = (int) $value;
+            if ($timestamp > 1000000000000) {
+                $timestamp = (int) floor($timestamp / 1000);
+            }
+
+            return $timestamp > 0 ? $timestamp : 0;
+        }
+
+        try {
+            $parsed = new DateTimeImmutable((string) $value);
+
+            return $parsed->getTimestamp();
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    private function mapOpenDeliveryEventType(string $eventType): string
+    {
+        $normalized = strtoupper(trim($eventType));
+
+        return match (true) {
+            in_array($normalized, ['CREATED', 'NEW', 'ORDER_CREATED', 'ORDER_NEW'], true) => 'orderNew',
+            in_array($normalized, ['CONFIRMED', 'ACCEPTED', 'ORDER_CONFIRMED', 'ORDER_ACCEPTED'], true) => 'orderConfirm',
+            in_array($normalized, ['READY_FOR_PICKUP', 'READY', 'ORDER_READY', 'PREPARED', 'PREPARING'], true) => 'orderReady',
+            in_array($normalized, ['DISPATCHED', 'PICKED_UP', 'DELIVERING', 'COURIER_TO_STORE', 'IN_TRANSIT', 'ON_THE_WAY'], true) => 'deliveryStatus',
+            in_array($normalized, ['DELIVERED', 'CONCLUDED', 'FINISHED', 'COMPLETED', 'CLOSED'], true) => 'orderFinish',
+            in_array($normalized, ['CANCELLATION_REQUESTED', 'CANCELLATION_REQUEST', 'ORDER_CANCELLATION_REQUEST', 'ORDER_CANCEL_REQUEST'], true) => 'orderCancelRequest',
+            in_array($normalized, ['CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCEL'], true) => 'orderCancel',
+            in_array($normalized, ['CANCELLATION_REQUEST_DENIED', 'CANCELLED_DENIED', 'CANCEL_REQUEST_DENIED', 'CANCEL_DENIED'], true) => 'orderDetailSync',
+            default => 'orderDetailSync',
+        };
+    }
+
+    private function buildOpenDeliveryWebhookPayload(People $provider, array $orderDetails, array $event): array
+    {
+        $data = is_array($orderDetails['data'] ?? null) ? $orderDetails['data'] : $orderDetails;
+
+        $merchant = $this->findFirstArrayByKeysRecursive($data, ['merchant', 'store', 'shop']) ?? [];
+        $customer = $this->findFirstArrayByKeysRecursive($data, ['customer', 'buyer', 'receiver', 'recipient', 'consumer']) ?? [];
+        $delivery = $this->findFirstArrayByKeysRecursive($data, ['delivery', 'logistics', 'shipping']) ?? [];
+
+        $items = $this->findFirstValueByKeysRecursive($data, ['items', 'orderItems', 'order_items', 'products']);
+        $items = is_array($items) ? $items : [];
+        $otherFees = $this->findFirstValueByKeysRecursive($data, ['otherFees', 'other_fees', 'fees']);
+        $otherFees = is_array($otherFees) ? $otherFees : [];
+        $discounts = $this->findFirstValueByKeysRecursive($data, ['discounts', 'discountList', 'promotion', 'promotions', 'discount']);
+        $discounts = is_array($discounts) ? $discounts : [];
+        $payments = $this->findFirstValueByKeysRecursive($data, ['payments', 'payment', 'pay']);
+        $payments = is_array($payments) ? $payments : [];
+        $total = $this->findFirstValueByKeysRecursive($data, ['total', 'totals', 'price', 'summary']);
+        $total = is_array($total) ? $total : [];
+        $extraInfo = $this->findFirstArrayByKeysRecursive($data, ['extraInfo', 'extra_info', 'extra']) ?? [];
+
+        $orderId = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($orderDetails, ['id', 'orderId', 'order_id']) ?? $event['order_id']);
+        $displayId = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($orderDetails, ['displayId', 'display_id', 'orderIndex', 'order_index']) ?? $orderId);
+        $merchantId = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($merchant, ['id', 'merchantId', 'merchant_id', 'shopId', 'shop_id']) ?? '');
+        $merchantName = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($merchant, ['name', 'merchantName', 'storeName', 'shopName', 'title']) ?? '');
+        if ($merchantName === '') {
+            $merchantName = 'Loja Food99';
+        }
+
+        $customerUid = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($customer, ['uid', 'id', 'customerId', 'customer_id', 'userId', 'user_id']) ?? '');
+        $customerNameFallback = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($customer, ['name', 'fullName', 'full_name', 'displayName', 'display_name', 'firstName', 'first_name']) ?? '');
+        $customerPhone = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($customer, ['phone', 'phoneNumber', 'mobile', 'mobilePhone', 'contactPhone']) ?? '');
+
+        $addressSource = $this->findFirstArrayByKeysRecursive($delivery, ['address', 'deliveryAddress', 'dropoffAddress', 'recipientAddress', 'receiverAddress'])
+            ?? $this->findFirstArrayByKeysRecursive($customer, ['address', 'deliveryAddress', 'dropoffAddress'])
+            ?? $this->findFirstArrayByKeysRecursive($data, ['address'])
+            ?? [];
+
+        $receiveAddress = [
+            'uid' => $customerUid,
+            'name' => $customerNameFallback,
+            'first_name' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($customer, ['first_name', 'firstName']) ?? ''),
+            'last_name' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($customer, ['last_name', 'lastName']) ?? ''),
+            'phone' => $customerPhone,
+            'street_name' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['street_name', 'streetName', 'street', 'addressLine1', 'line1', 'address1', 'road']) ?? ''),
+            'street_number' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['street_number', 'streetNumber', 'number', 'house_number', 'houseNumber']) ?? ''),
+            'district' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['district', 'neighborhood', 'neighbourhood', 'area']) ?? ''),
+            'city' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['city', 'city_name', 'municipality']) ?? ''),
+            'state' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['state', 'uf', 'province']) ?? ''),
+            'country_code' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['country_code', 'countryCode']) ?? 'BR'),
+            'postal_code' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['postal_code', 'postalCode', 'zip', 'zip_code']) ?? ''),
+            'reference' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['reference', 'reference_point', 'referencePoint']) ?? ''),
+            'complement' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['complement', 'complemento']) ?? ''),
+            'poi_address' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($addressSource, ['poi_address', 'poiAddress', 'address_line', 'addressLine']) ?? ''),
+            'poi_lat' => $this->findFirstValueByKeysRecursive($addressSource, ['poi_lat', 'poiLat', 'lat', 'latitude']) ?? 0,
+            'poi_lng' => $this->findFirstValueByKeysRecursive($addressSource, ['poi_lng', 'poiLng', 'lng', 'lon', 'longitude']) ?? 0,
+        ];
+
+        $resolvedCustomerName = $this->callFood99PeopleServiceMethod('resolveFood99CustomerName', [
+            $receiveAddress,
+            $customerNameFallback !== '' ? $customerNameFallback : 'Cliente Food99',
+        ]);
+        if (is_string($resolvedCustomerName) && trim($resolvedCustomerName) !== '') {
+            $receiveAddress['name'] = trim($resolvedCustomerName);
+        } elseif ($receiveAddress['name'] === '') {
+            $receiveAddress['name'] = 'Cliente Food99';
+        }
+
+        if ($receiveAddress['uid'] === '') {
+            $receiveAddress['uid'] = $customerUid !== '' ? $customerUid : $orderId;
+        }
+
+        $deliveryType = $this->resolveOpenDeliveryDeliveryType($delivery, $extraInfo, $receiveAddress);
+        $fulfillmentMode = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['fulfillmentMode', 'fulfillment_mode', 'mode']) ?? '');
+        if ($fulfillmentMode === '') {
+            $fulfillmentMode = $deliveryType === '2' ? 'store_delivery' : 'platform_delivery';
+        }
+
+        $expectedArrivedEta = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['expected_arrived_eta', 'expectedArrivedEta', 'expected_time', 'expectedTime', 'eta']) ?? '');
+        $pickupCode = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['pickup_code', 'pickupCode']) ?? $this->findFirstValueByKeysRecursive($extraInfo, ['pickup_code', 'pickupCode']) ?? '');
+        $locator = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['locator']) ?? $this->findFirstValueByKeysRecursive($extraInfo, ['locator']) ?? '');
+        $handoverPageUrl = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['handover_page_url', 'handoverPageUrl']) ?? '');
+        $virtualPhoneNumber = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['virtual_phone_number', 'virtualPhoneNumber']) ?? '');
+        $handoverCode = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['handover_code', 'handoverCode']) ?? $this->findFirstValueByKeysRecursive($extraInfo, ['handover_code', 'handoverCode']) ?? '');
+        $riderName = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['rider_name', 'riderName', 'courier_name', 'courierName', 'driver_name', 'driverName']) ?? '');
+        $riderPhone = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['rider_phone', 'riderPhone', 'courier_phone', 'courierPhone', 'driver_phone', 'driverPhone']) ?? '');
+        $riderToStoreEta = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($delivery, ['rider_to_store_eta', 'riderToStoreEta', 'courier_to_store_eta', 'courierToStoreEta', 'eta_to_store', 'etaToStore']) ?? '');
+
+        $mappedItems = $this->mapOpenDeliveryItems($items);
+        $itemsTotalCents = $this->calculateOpenDeliveryItemsTotal($mappedItems);
+        $deliveryFeeCents = $this->extractOpenDeliveryMoneyValue($otherFees);
+        $discountTotalCents = $this->extractOpenDeliveryMoneyValue($discounts);
+        $tipTotalCents = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($data, ['tips', 'tip', 'gratitude']) ?? []);
+        $customerTotalCents = $this->extractOpenDeliveryMoneyValue($total);
+
+        if ($customerTotalCents <= 0) {
+            $customerTotalCents = max(0, $itemsTotalCents + $deliveryFeeCents + $tipTotalCents - $discountTotalCents);
+        }
+
+        $orderPriceCents = $customerTotalCents > 0 ? $customerTotalCents : $itemsTotalCents;
+        $serviceFeeCents = 0;
+        $smallOrderFeeCents = 0;
+        $mealTopUpFeeCents = 0;
+        $subtotalBeforeDiscountsCents = max(0, $itemsTotalCents + $deliveryFeeCents + $serviceFeeCents + $smallOrderFeeCents + $mealTopUpFeeCents + $tipTotalCents);
+        $storeReceivableTotalCents = $customerTotalCents > 0 ? $customerTotalCents : $subtotalBeforeDiscountsCents;
+        $weeklySettlementAmountCents = $storeReceivableTotalCents;
+        $shopPaidMoneyCents = $storeReceivableTotalCents;
+
+        $paymentEntry = $this->isSequentialArray($payments) ? ($payments[0] ?? []) : $payments;
+        $paymentEntry = is_array($paymentEntry) ? $paymentEntry : [];
+
+        $payType = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($paymentEntry, ['payType', 'pay_type', 'type']) ?? $this->findFirstValueByKeysRecursive($data, ['pay_type', 'payType']) ?? '');
+        $payMethod = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($paymentEntry, ['payMethod', 'pay_method', 'method']) ?? $this->findFirstValueByKeysRecursive($data, ['pay_method', 'payMethod']) ?? '');
+        $payChannel = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($paymentEntry, ['payChannel', 'pay_channel', 'channel']) ?? $this->findFirstValueByKeysRecursive($data, ['pay_channel', 'payChannel']) ?? '');
+
+        $paymentTypeLabel = $this->callFood99FinancialServiceMethod('resolveFood99PaymentTypeLabel', [$payType, $deliveryType]);
+        $paymentMethodLabel = $this->callFood99FinancialServiceMethod('resolveFood99PaymentMethodLabel', [$payMethod]);
+        $paymentChannelLabel = $this->callFood99FinancialServiceMethod('resolveFood99PaymentChannelLabel', [$payChannel, $payMethod, $deliveryType]);
+        $selectedPaymentLabel = $this->callFood99FinancialServiceMethod('resolveFood99SelectedPaymentLabel', [
+            is_string($paymentChannelLabel) ? $paymentChannelLabel : '',
+            is_string($paymentTypeLabel) ? $paymentTypeLabel : '',
+            is_string($paymentMethodLabel) ? $paymentMethodLabel : '',
+        ]);
+
+        $amountPaidCents = $this->extractOpenDeliveryMoneyValue($paymentEntry);
+        if ($amountPaidCents <= 0) {
+            $amountPaidCents = $customerTotalCents;
+        }
+
+        $amountPendingCents = max(0, $customerTotalCents - $amountPaidCents);
+        $changeForCents = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($paymentEntry, ['changeFor', 'change_for']) ?? []);
+        $changeAmountCents = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($paymentEntry, ['changeAmount', 'change_amount']) ?? []);
+        $needsChange = $changeForCents > 0 || $changeAmountCents > 0;
+        $isPaidOnline = !in_array(strtolower($payMethod), ['2', 'cash', 'offline', 'offline_payment'], true)
+            && !in_array(strtolower($payType), ['2', 'cash'], true);
+        $shouldConfirmPayment = false;
+
+        $deliveryStatus = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($data, ['delivery_status', 'deliveryStatus', 'status_desc', 'statusDesc', 'status']) ?? '');
+        $deliveryStatusLabel = $deliveryStatus;
+        $needCutlery = $this->normalizeOpenDeliveryBoolean($this->findFirstValueByKeysRecursive($data, ['need_cutlery', 'needCutlery', 'cutlery', 'cutlery_needed']));
+        if ($needCutlery === null) {
+            $needCutlery = $this->normalizeOpenDeliveryBoolean($this->findFirstValueByKeysRecursive($customer, ['need_cutlery', 'needCutlery']));
+        }
+
+        $addressDisplay = $this->buildOpenDeliveryAddressDisplay($receiveAddress);
+
+        $financialSection = [
+            'currency' => 'BRL',
+            'items_total' => $itemsTotalCents,
+            'delivery_fee' => $deliveryFeeCents,
+            'service_fee' => $serviceFeeCents,
+            'small_order_fee' => $smallOrderFeeCents,
+            'meal_top_up_fee' => $mealTopUpFeeCents,
+            'tip_total' => $tipTotalCents,
+            'subtotal_before_discounts' => $subtotalBeforeDiscountsCents,
+            'discount_total' => $discountTotalCents,
+            'store_discount_total' => $discountTotalCents,
+            'platform_discount_total' => 0,
+            'store_non_delivery_discount_total' => $discountTotalCents,
+            'platform_non_delivery_discount_total' => 0,
+            'store_delivery_discount_total' => 0,
+            'platform_delivery_discount_total' => 0,
+            'charge_base_amount' => $customerTotalCents,
+            'commission_distribution_amount' => 0,
+            'payment_processing_amount' => 0,
+            'logistics_cost_amount' => $deliveryFeeCents,
+            'platform_charges_amount' => $deliveryFeeCents,
+            'weekly_settlement_amount' => $weeklySettlementAmountCents,
+            'promotions_total' => $discountTotalCents,
+            'items_discount_total' => $discountTotalCents,
+            'delivery_discount_total' => 0,
+            'coupon_discount_total' => 0,
+            'customer_total' => $customerTotalCents,
+            'customer_need_paying_money' => $customerTotalCents,
+            'store_receivable_total' => $storeReceivableTotalCents,
+            'real_pay_total' => $customerTotalCents,
+            'refund_total' => 0,
+            'store_charged_delivery_price' => $deliveryFeeCents,
+            'shop_paid_money' => $shopPaidMoneyCents,
+        ];
+
+        $paymentSection = [
+            'pay_type' => $payType,
+            'pay_type_label' => is_string($paymentTypeLabel) ? $paymentTypeLabel : '',
+            'pay_method' => $payMethod,
+            'pay_method_label' => is_string($paymentMethodLabel) ? $paymentMethodLabel : '',
+            'pay_channel' => $payChannel,
+            'pay_channel_label' => is_string($paymentChannelLabel) ? $paymentChannelLabel : '',
+            'selected_payment_label' => is_string($selectedPaymentLabel) ? $selectedPaymentLabel : '',
+            'amount_paid' => $amountPaidCents,
+            'amount_pending' => $amountPendingCents,
+            'customer_need_paying_money' => $customerTotalCents,
+            'collect_on_delivery_amount' => !$isPaidOnline ? $customerTotalCents : 0,
+            'shop_paid_money' => $shopPaidMoneyCents,
+            'change_for' => $changeForCents,
+            'change_amount' => $changeAmountCents,
+            'needs_change' => $needsChange,
+            'is_fully_paid' => $amountPendingCents <= 0,
+            'should_confirm_payment' => $shouldConfirmPayment,
+            'is_paid_online' => $isPaidOnline,
+            'delivery_99_always_paid_rule' => $deliveryType === '1',
+        ];
+
+        $customerSection = [
+            'name' => $receiveAddress['name'] !== '' ? $receiveAddress['name'] : 'Cliente Food99',
+            'phone' => $customerPhone,
+            'uid' => $receiveAddress['uid'],
+        ];
+
+        $normalizedDelivery = $delivery;
+        $normalizedDelivery['delivery_type'] = $deliveryType;
+        $normalizedDelivery['fulfillment_mode'] = $fulfillmentMode;
+        $normalizedDelivery['expected_arrived_eta'] = $expectedArrivedEta;
+        $normalizedDelivery['pickup_code'] = $pickupCode;
+        $normalizedDelivery['locator'] = $locator;
+        $normalizedDelivery['handover_page_url'] = $handoverPageUrl;
+        $normalizedDelivery['virtual_phone_number'] = $virtualPhoneNumber;
+        $normalizedDelivery['handover_code'] = $handoverCode;
+        $normalizedDelivery['rider_name'] = $riderName;
+        $normalizedDelivery['rider_phone'] = $riderPhone;
+        $normalizedDelivery['rider_to_store_eta'] = $riderToStoreEta;
+        $normalizedDelivery['delivery_status'] = $deliveryStatus;
+        $normalizedDelivery['status_desc'] = $deliveryStatusLabel;
+
+        $notesSection = [
+            'remark' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($data, ['remark', 'note', 'notes', 'observation']) ?? ''),
+            'need_cutlery' => $needCutlery,
+        ];
+
+        $identifiersSection = [
+            'remote_order_id' => $orderId,
+            'order_index' => $displayId,
+            'delivery_type' => $deliveryType,
+            'pickup_code' => $pickupCode,
+            'handover_code' => $handoverCode,
+        ];
+
+        $priceSection = [
+            'order_price' => $orderPriceCents,
+            'delivery_fee' => $deliveryFeeCents,
+            'service_fee' => $serviceFeeCents,
+            'small_order_fee' => $smallOrderFeeCents,
+            'meal_top_up_fee' => $mealTopUpFeeCents,
+            'tip_total' => $tipTotalCents,
+            'discount_total' => $discountTotalCents,
+            'customer_total' => $customerTotalCents,
+            'customer_need_paying_money' => $customerTotalCents,
+            'store_receivable_total' => $storeReceivableTotalCents,
+            'weekly_settlement_amount' => $weeklySettlementAmountCents,
+            'shop_paid_money' => $shopPaidMoneyCents,
+        ];
+
+        $mappedItems = $this->mapOpenDeliveryItems($items);
+        $eventTime = $event['created_at'] ?? date('Y-m-d H:i:s');
+        $mappedEventType = (string) ($event['mapped_event_type'] ?? 'orderDetailSync');
+        $originalEventType = (string) ($event['original_event_type'] ?? $mappedEventType);
+
+        return [
+            'type' => $mappedEventType,
+            'event_time' => $eventTime,
+            'event_id' => $event['event_id'] ?? null,
+            'latest_event_type' => $mappedEventType,
+            'latest_event_at' => $eventTime,
+            '__webhook' => [
+                'event_id' => $event['event_id'] ?? null,
+                'event_type' => $originalEventType,
+                'received_at' => date('Y-m-d H:i:s'),
+                'shop_id' => (string) $provider->getId(),
+                'order_id' => $orderId,
+            ],
+            'app_shop_id' => (string) $provider->getId(),
+            'data' => [
+                'order_id' => $orderId,
+                'order_info' => [
+                    'order_id' => $orderId,
+                    'order_index' => $displayId,
+                    'shop' => [
+                        'shop_id' => (string) $provider->getId(),
+                        'shop_name' => $merchantName,
+                        'merchant_id' => $merchantId !== '' ? $merchantId : null,
+                        'merchant_name' => $merchantName,
+                    ],
+                    'merchant' => $merchant,
+                    'order_items' => $mappedItems,
+                    'receive_address' => $receiveAddress,
+                    'price' => $priceSection,
+                    'delivery_type' => $deliveryType,
+                    'pay_type' => $payType,
+                    'pay_method' => $payMethod,
+                    'pay_channel' => $payChannel,
+                    'remark' => $notesSection['remark'],
+                    'delivery_status' => $deliveryStatus,
+                    'status_desc' => $deliveryStatusLabel,
+                    'customer' => $customerSection,
+                    'payment' => $paymentSection,
+                    'delivery' => $normalizedDelivery,
+                ],
+                'shop' => [
+                    'shop_id' => (string) $provider->getId(),
+                    'shop_name' => $merchantName,
+                    'merchant_id' => $merchantId !== '' ? $merchantId : null,
+                    'merchant_name' => $merchantName,
+                ],
+                'order_items' => $mappedItems,
+                'receive_address' => $receiveAddress,
+                'price' => $priceSection,
+                'delivery_type' => $deliveryType,
+                'pay_type' => $payType,
+                'pay_method' => $payMethod,
+                'pay_channel' => $payChannel,
+                'delivery_status' => $deliveryStatus,
+                'status_desc' => $deliveryStatusLabel,
+                'remark' => $notesSection['remark'],
+                'customer' => $customerSection,
+                'payment' => $paymentSection,
+                'delivery' => $normalizedDelivery,
+            ],
+            'financial' => $financialSection,
+            'payment' => $paymentSection,
+            'customer' => $customerSection,
+            'address' => array_merge($receiveAddress, [
+                'display' => $addressDisplay,
+            ]),
+            'notes' => $notesSection,
+            'identifiers' => $identifiersSection,
+        ];
+    }
+
+    private function findFirstValueByKeysRecursive(mixed $payload, array $keys): mixed
+    {
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        foreach ($keys as $key) {
+            if (!array_key_exists($key, $payload)) {
+                continue;
+            }
+
+            $value = $payload[$key];
+            if (is_array($value)) {
+                return $value;
+            }
+
+            if ($value !== null && trim((string) $value) !== '') {
+                return $value;
+            }
+        }
+
+        foreach ($payload as $value) {
+            if (!is_array($value)) {
+                continue;
+            }
+
+            $resolved = $this->findFirstValueByKeysRecursive($value, $keys);
+            if ($resolved !== null && $resolved !== []) {
+                return $resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private function findFirstArrayByKeysRecursive(mixed $payload, array $keys): ?array
+    {
+        $value = $this->findFirstValueByKeysRecursive($payload, $keys);
+
+        return is_array($value) ? $value : null;
+    }
+
+    private function findFirstScalarByKeysRecursive(mixed $payload, array $keys): ?string
+    {
+        $value = $this->findFirstValueByKeysRecursive($payload, $keys);
+        if (is_array($value) || $value === null) {
+            return null;
+        }
+
+        $normalized = $this->normalizeOpenDeliveryString($value);
+
+        return $normalized !== '' ? $normalized : null;
+    }
+
+    private function normalizeOpenDeliveryString(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_scalar($value)) {
+            return trim((string) $value);
+        }
+
+        return '';
+    }
+
+    private function normalizeOpenDeliveryMoneyValue(mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return 0;
+        }
+
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_float($value)) {
+            return (int) round($value * 100);
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return 0;
+        }
+
+        $clean = preg_replace('/[^\d,.\-]/', '', $normalized) ?: '';
+        if ($clean === '') {
+            return 0;
+        }
+
+        if (str_contains($clean, '.') || str_contains($clean, ',')) {
+            $clean = str_replace(',', '.', $clean);
+
+            return (int) round(((float) $clean) * 100);
+        }
+
+        return (int) $clean;
+    }
+
+    private function extractOpenDeliveryMoneyValue(mixed $section): int
+    {
+        if ($section === null || $section === '' || $section === []) {
+            return 0;
+        }
+
+        if (!is_array($section)) {
+            return $this->normalizeOpenDeliveryMoneyValue($section);
+        }
+
+        if ($this->isSequentialArray($section)) {
+            $sum = 0;
+            foreach ($section as $entry) {
+                if (is_array($entry)) {
+                    $sum += $this->extractOpenDeliveryMoneyValue($entry);
+                    continue;
+                }
+
+                $sum += $this->normalizeOpenDeliveryMoneyValue($entry);
+            }
+
+            return $sum;
+        }
+
+        $candidate = $this->findFirstValueByKeysRecursive($section, ['value', 'amount', 'total', 'price', 'money', 'fee']);
+        if ($candidate !== null && $candidate !== []) {
+            return $this->extractOpenDeliveryMoneyValue($candidate);
+        }
+
+        $sum = 0;
+        foreach ($section as $value) {
+            if (is_array($value)) {
+                $sum += $this->extractOpenDeliveryMoneyValue($value);
+            }
+        }
+
+        return $sum;
+    }
+
+    private function normalizeOpenDeliveryQuantity(mixed $value): float
+    {
+        if ($value === null || $value === '') {
+            return 1.0;
+        }
+
+        if (is_numeric($value)) {
+            $quantity = (float) $value;
+
+            return $quantity > 0 ? $quantity : 1.0;
+        }
+
+        return 1.0;
+    }
+
+    private function isSequentialArray(array $value): bool
+    {
+        return array_keys($value) === range(0, count($value) - 1);
+    }
+
+    private function extractOpenDeliveryNestedItems(array $item): array
+    {
+        foreach ([
+            'sub_item_list',
+            'subItems',
+            'sub_items',
+            'items',
+            'modifierItems',
+            'modifiers',
+            'options',
+            'children',
+            'childItems',
+        ] as $key) {
+            $candidate = $item[$key] ?? null;
+            if (!is_array($candidate) || $candidate === []) {
+                continue;
+            }
+
+            if ($this->isSequentialArray($candidate)) {
+                return array_values(array_filter($candidate, 'is_array'));
+            }
+
+            if (isset($candidate[0]) && is_array($candidate[0])) {
+                return array_values(array_filter($candidate, 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    private function mapOpenDeliveryItems(array $items, string $groupName = ''): array
+    {
+        $mappedItems = [];
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $mappedItems[] = $this->mapOpenDeliveryItem($item, $groupName);
+        }
+
+        return $mappedItems;
+    }
+
+    private function mapOpenDeliveryItem(array $item, string $groupName = ''): array
+    {
+        $name = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($item, ['name', 'title', 'productName', 'product_name']) ?? '');
+        if ($name === '') {
+            $name = 'Produto Food99';
+        }
+
+        $quantity = $this->normalizeOpenDeliveryQuantity($this->findFirstValueByKeysRecursive($item, ['amount', 'quantity', 'qty', 'count']) ?? 1);
+        $unitPrice = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($item, ['sku_price', 'price', 'unitPrice', 'unit_price', 'value']) ?? 0);
+        if ($unitPrice <= 0) {
+            $totalPrice = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($item, ['totalPrice', 'total_price', 'subtotal']) ?? 0);
+            if ($totalPrice > 0 && $quantity > 0) {
+                $unitPrice = (int) round($totalPrice / $quantity);
+            }
+        }
+
+        $mappedItem = [
+            'id' => $this->resolveOpenDeliveryItemCode($item, 'item'),
+            'app_item_id' => $this->resolveOpenDeliveryItemCode($item, 'item'),
+            'mdu_id' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($item, ['mdu_id', 'mduId', 'skuId', 'sku_id', 'productId', 'product_id', 'id']) ?? ''),
+            'app_external_id' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($item, ['app_external_id', 'appExternalId', 'externalId', 'external_id']) ?? ''),
+            'name' => $name,
+            'amount' => $quantity,
+            'sku_price' => $unitPrice,
+            'content_name' => $groupName !== '' ? $groupName : $name,
+            'app_content_id' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($item, ['app_content_id', 'appContentId', 'contentId', 'content_id', 'groupId', 'group_id', 'modifierGroupId', 'modifier_group_id']) ?? ''),
+            'remark' => $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($item, ['remark', 'remarks', 'note', 'notes', 'comment', 'comments', 'observation']) ?? ''),
+        ];
+
+        $nestedItems = $this->extractOpenDeliveryNestedItems($item);
+        if ($nestedItems !== []) {
+            $mappedItem['sub_item_list'] = $this->mapOpenDeliveryItems($nestedItems, $name);
+        }
+
+        return $mappedItem;
+    }
+
+    private function resolveOpenDeliveryItemCode(array $item, string $fallbackPrefix): string
+    {
+        foreach (['app_item_id', 'mdu_id', 'app_external_id', 'id', 'skuId', 'sku_id', 'productId', 'product_id', 'externalId', 'external_id'] as $key) {
+            $candidate = $this->normalizeOpenDeliveryString($item[$key] ?? '');
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        $fallbackSource = implode('|', array_filter([
+            $fallbackPrefix,
+            $this->normalizeOpenDeliveryString($item['name'] ?? ''),
+            $this->normalizeOpenDeliveryString($item['content_name'] ?? ''),
+            $this->normalizeOpenDeliveryString($item['app_content_id'] ?? ''),
+            $this->normalizeOpenDeliveryString($item['sku_price'] ?? ''),
+        ]));
+
+        return 'open-delivery:' . substr(sha1($fallbackSource !== '' ? $fallbackSource : json_encode($item)), 0, 24);
+    }
+
+    private function calculateOpenDeliveryItemsTotal(array $items): int
+    {
+        $total = 0;
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $quantity = $this->normalizeOpenDeliveryQuantity($item['amount'] ?? 1);
+            $unitPrice = $this->normalizeOpenDeliveryMoneyValue($item['sku_price'] ?? 0);
+            $total += (int) round($quantity * $unitPrice);
+
+            if (!empty($item['sub_item_list']) && is_array($item['sub_item_list'])) {
+                $total += $this->calculateOpenDeliveryItemsTotal($item['sub_item_list']);
+            }
+        }
+
+        return $total;
+    }
+
+    private function buildOpenDeliveryAddressDisplay(array $address): ?string
+    {
+        $parts = array_filter([
+            $this->normalizeOpenDeliveryString($address['poi_address'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['street_name'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['street_number'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['district'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['city'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['state'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['postal_code'] ?? ''),
+            $this->normalizeOpenDeliveryString($address['reference'] ?? ''),
+        ], static fn (string $part): bool => $part !== '');
+
+        if ($parts === []) {
+            return null;
+        }
+
+        return implode(', ', array_values(array_unique($parts)));
+    }
+
+    private function normalizeOpenDeliveryBoolean(mixed $value): ?bool
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value !== 0;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        if ($normalized === '') {
+            return null;
+        }
+
+        return in_array($normalized, ['1', 'true', 'yes', 'y', 'sim', 's'], true);
+    }
+
+    private function resolveOpenDeliveryDeliveryType(array $delivery, array $extraInfo, array $address): string
+    {
+        $candidate = strtolower(trim((string) ($this->findFirstScalarByKeysRecursive($delivery, ['deliveredBy', 'deliveryType', 'type', 'fulfillmentMode', 'fulfillment_mode']) ?? '')));
+        if (in_array($candidate, ['1', 'platform', 'platform_delivery', 'delivery', '99', '99food', '99food_delivery'], true)) {
+            return '1';
+        }
+
+        if (in_array($candidate, ['2', 'store', 'shop', 'merchant', 'self', 'self_delivery', 'store_delivery'], true)) {
+            return '2';
+        }
+
+        if ($this->normalizeOpenDeliveryString($this->findFirstScalarByKeysRecursive($delivery, ['pickupCode', 'pickup_code', 'handoverCode', 'handover_code', 'locator', 'handoverPageUrl', 'handover_page_url']) ?? '') !== '') {
+            return '2';
+        }
+
+        $riderName = $this->normalizeOpenDeliveryString($this->findFirstScalarByKeysRecursive($delivery, ['riderName', 'rider_name', 'courierName', 'courier_name', 'driverName', 'driver_name']) ?? '');
+        $riderPhone = $this->normalizeOpenDeliveryString($this->findFirstScalarByKeysRecursive($delivery, ['riderPhone', 'rider_phone', 'courierPhone', 'courier_phone', 'driverPhone', 'driver_phone']) ?? '');
+        if ($riderName !== '' || $riderPhone !== '') {
+            return '1';
+        }
+
+        $deliveryMode = strtolower(trim((string) ($this->findFirstScalarByKeysRecursive($extraInfo, ['deliveryMode', 'delivery_mode', 'fulfillmentMode', 'fulfillment_mode']) ?? '')));
+        if (in_array($deliveryMode, ['pickup', 'self', 'store', 'merchant'], true)) {
+            return '2';
+        }
+
+        return '1';
     }
 
     private function confirmOrder(Order $order, string $orderId, ?People $provider = null): array

@@ -599,7 +599,7 @@ class Food99Client
             }
 
             if ($value instanceof \DateTimeInterface) {
-                $value = $value->format(DateTimeInterface::ATOM);
+                $value = $value->format(\DateTimeInterface::ATOM);
             } elseif (is_bool($value)) {
                 $value = $value ? 'true' : 'false';
             }
