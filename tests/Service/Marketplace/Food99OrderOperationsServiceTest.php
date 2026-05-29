@@ -487,6 +487,47 @@ final class Food99OrderOperationsServiceTest extends TestCase
         self::assertTrue($result);
     }
 
+    public function testResolveIncomingProductCodePrefersRemoteItemIdentifiers(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        self::assertSame(
+            '1343',
+            $this->invokePrivateMethod(
+                $service,
+                'resolveIncomingProductCode',
+                [
+                    'app_item_id' => '1343',
+                    'mdu_id' => '41596A06507E5D0E6F5B03122F1CB380_2',
+                    'app_external_id' => 'external-1',
+                    'name' => 'Combo Alpha Gyros',
+                    'sku_price' => 7300,
+                ],
+                'product'
+            )
+        );
+    }
+
+    public function testResolveIncomingProductCodeBuildsFallbackWhenIdentifiersAreMissing(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        self::assertSame(
+            'food99:66af4de2f6ef66e34eec3b76',
+            $this->invokePrivateMethod(
+                $service,
+                'resolveIncomingProductCode',
+                [
+                    'name' => 'Combo Alpha Gyros',
+                    'content_name' => 'Escolha sua batata',
+                    'app_content_id' => 'mg_194',
+                    'sku_price' => 7300,
+                ],
+                'product'
+            )
+        );
+    }
+
     public function testMapOpenDeliveryEventTypeKeepsCancellationRequestNeutral(): void
     {
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
