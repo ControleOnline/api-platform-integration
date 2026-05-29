@@ -2116,6 +2116,9 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
             if ($autoConfirm) {
                 $confirmResult = $this->confirmOrder($order, $orderId, $provider);
+                if ($this->handleCancelledOrderConfirmationResponse($order, $orderId, $confirmResult)) {
+                    return $order;
+                }
                 $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
             }
 
@@ -3205,7 +3208,39 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $confirmResult = $this->confirmOrder($order, $orderId, $order->getProvider());
+        if ($this->handleCancelledOrderConfirmationResponse($order, $orderId, $confirmResult)) {
+            return;
+        }
         $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
+    }
+
+    private function handleCancelledOrderConfirmationResponse(Order $order, string $orderId, array $confirmResult): bool
+    {
+        $message = strtolower(trim((string) ($confirmResult['errmsg'] ?? '')));
+        if ($message === '') {
+            $body = is_array($confirmResult['data'] ?? null) ? $confirmResult['data'] : [];
+            $message = strtolower(trim((string) (
+                $body['message']
+                    ?? $body['msg']
+                    ?? $body['description']
+                    ?? ''
+            )));
+        }
+
+        if ($message === '' || (!str_contains($message, 'cancelled') && !str_contains($message, 'canceled'))) {
+            return false;
+        }
+
+        self::$logger?->warning('Food99 order confirmation skipped because the remote order was already cancelled', [
+            'order_id' => $orderId,
+            'local_order_id' => $order->getId(),
+            'message' => $confirmResult['errmsg'] ?? null,
+        ]);
+
+        $this->applyLocalCanceledStatus($order);
+        $this->entityManager->flush();
+
+        return true;
     }
 
     private function throwIfConfirmationShouldRetry(array $confirmResult, string $orderId, Order $order): void

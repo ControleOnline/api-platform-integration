@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service\Marketplace;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Marketplace\Food99OrderOperationsService;
+use ControleOnline\Entity\Status;
 use PHPUnit\Framework\TestCase;
 
 final class Food99OrderOperationsServiceTest extends TestCase
@@ -436,6 +437,54 @@ final class Food99OrderOperationsServiceTest extends TestCase
         );
 
         self::assertTrue(true);
+    }
+
+    public function testHandleCancelledOrderConfirmationResponseMarksOrderAsCancelled(): void
+    {
+        $currentStatus = $this->createConfiguredMock(Status::class, [
+            'getRealStatus' => 'open',
+            'getStatus' => 'open',
+        ]);
+        $cancelledStatus = $this->createMock(Status::class);
+
+        $order = $this->createMock(\ControleOnline\Entity\Order::class);
+        $order->method('getId')->willReturn(903);
+        $order->method('getStatus')->willReturn($currentStatus);
+        $order->expects(self::once())->method('setStatus')->with($cancelledStatus);
+
+        $statusService = $this->createMock(\ControleOnline\Service\StatusService::class);
+        $statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('canceled', 'canceled', 'order')
+            ->willReturn($cancelledStatus);
+
+        $entityManager = $this->createMock(\Doctrine\ORM\EntityManagerInterface::class);
+        $entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->with($order);
+        $entityManager
+            ->expects(self::once())
+            ->method('flush');
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(\ControleOnline\Service\DefaultFoodService::class, $service, 'entityManager', $entityManager);
+        $this->setObjectProperty(\ControleOnline\Service\DefaultFoodService::class, $service, 'statusService', $statusService);
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'handleCancelledOrderConfirmationResponse',
+            $order,
+            '5764672126908958267',
+            [
+                'errno' => 400,
+                'errmsg' => 'The order has been cancelled. Please check the order status.',
+                'data' => [],
+            ]
+        );
+
+        self::assertTrue($result);
     }
 
     public function testMapOpenDeliveryEventTypeKeepsCancellationRequestNeutral(): void
