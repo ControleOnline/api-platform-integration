@@ -4,6 +4,7 @@ namespace ControleOnline\Service\Marketplace;
 
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Address;
+use ControleOnline\Entity\ExtraData;
 use ControleOnline\Entity\Invoice;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
@@ -2137,7 +2138,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
     public function syncOrdersFromPolling(
         People $provider,
         ?string $fromTime = null,
-        array $eventTypes = []
+        array $eventTypes = [],
+        ?string $untilTime = null
     ): array {
         $this->init();
 
@@ -2151,11 +2153,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $resolvedFromTime = $this->resolveOpenDeliverySyncFromTime($fromTime);
+        $resolvedUntilTime = $this->resolveOpenDeliverySyncUntilTime($untilTime);
         $resolvedEventTypes = $this->resolveOpenDeliveryEventTypes($eventTypes);
 
         self::$logger?->info('Food99 open delivery sync started', [
             'provider_id' => $provider->getId(),
             'from_time' => $resolvedFromTime,
+            'until_time' => $resolvedUntilTime,
             'event_types' => $resolvedEventTypes,
         ]);
 
@@ -2169,9 +2173,14 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $eventList = $this->extractOpenDeliveryEvents($pollResponse);
+        $normalizedEventsWindow = $this->filterOpenDeliveryEventsByWindow(
+            array_values(array_filter($eventList, 'is_array')),
+            $resolvedFromTime,
+            $resolvedUntilTime
+        );
         $normalizedEventsById = [];
 
-        foreach ($eventList as $event) {
+        foreach ($normalizedEventsWindow as $event) {
             $normalizedEvent = $this->normalizeOpenDeliveryEvent($event);
             if (!$normalizedEvent) {
                 continue;
@@ -2303,6 +2312,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             'errmsg' => '',
             'data' => [
                 'from_time' => $resolvedFromTime,
+                'until_time' => $resolvedUntilTime,
                 'event_types' => $resolvedEventTypes,
                 'polled_event_count' => count($normalizedEvents),
                 'unique_order_count' => count($groupedEvents),
@@ -2335,6 +2345,43 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         return $reference
             ->setTimezone(new DateTimeZone('UTC'))
             ->format(DateTimeInterface::ATOM);
+    }
+
+    private function resolveOpenDeliverySyncUntilTime(?string $untilTime): ?string
+    {
+        try {
+            if (trim((string) $untilTime) === '') {
+                return null;
+            }
+
+            $reference = new DateTimeImmutable(trim((string) $untilTime));
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $reference
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format(DateTimeInterface::ATOM);
+    }
+
+    private function filterOpenDeliveryEventsByWindow(array $events, string $resolvedFromTime, ?string $resolvedUntilTime = null): array
+    {
+        $fromTimestamp = $this->normalizeOpenDeliveryTimestamp($resolvedFromTime);
+        $untilTimestamp = $resolvedUntilTime !== null ? $this->normalizeOpenDeliveryTimestamp($resolvedUntilTime) : 0;
+        $hasUpperBound = $resolvedUntilTime !== null && $untilTimestamp > 0;
+
+        return array_values(array_filter($events, static function (array $event) use ($fromTimestamp, $hasUpperBound, $untilTimestamp): bool {
+            $createdAtTs = (int) ($event['created_at_ts'] ?? 0);
+            if ($createdAtTs < $fromTimestamp) {
+                return false;
+            }
+
+            if ($hasUpperBound && $createdAtTs >= $untilTimestamp) {
+                return false;
+            }
+
+            return true;
+        }));
     }
 
     private function resolveOpenDeliveryEventTypes(array $eventTypes): array
@@ -3381,12 +3428,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
     ): Product {
         $code = $this->resolveIncomingProductCode($item, $productType);
 
-        $product = $this->extraDataService->getEntityByExtraData(
-            self::APP_CONTEXT,
-            'code',
-            $code,
-            Product::class
-        );
+        $product = $this->findIncomingProductByCode($code);
 
         if (!$product) {
             $unity = $this->entityManager
@@ -3446,6 +3488,64 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         );
 
         return $product;
+    }
+
+    private function findIncomingProductByCode(string $code): ?Product
+    {
+        $normalizedCode = trim($code);
+        if ($normalizedCode === '') {
+            return null;
+        }
+
+        $extraFields = $this->extraDataService->discoveryExtraFields('code', self::APP_CONTEXT, '{}');
+        $extraDataRows = $this->entityManager->getRepository(ExtraData::class)->findBy([
+            'extra_fields' => $extraFields,
+            'entity_name' => 'Product',
+            'value' => $normalizedCode,
+        ]);
+
+        $candidates = [];
+        foreach ($extraDataRows as $extraDataRow) {
+            if (!$extraDataRow instanceof ExtraData) {
+                continue;
+            }
+
+            $productId = (int) $extraDataRow->getEntityId();
+            if ($productId <= 0 || isset($candidates[$productId])) {
+                continue;
+            }
+
+            $product = $this->entityManager->getRepository(Product::class)->find($productId);
+            if ($product instanceof Product) {
+                $candidates[$productId] = $product;
+            }
+        }
+
+        if (empty($candidates)) {
+            return null;
+        }
+
+        $candidates = array_values($candidates);
+        usort(
+            $candidates,
+            static function (Product $left, Product $right): int {
+                $leftScore = $left->getQueue() !== null ? 0 : 1;
+                $rightScore = $right->getQueue() !== null ? 0 : 1;
+                if ($leftScore !== $rightScore) {
+                    return $leftScore <=> $rightScore;
+                }
+
+                $leftActive = $left->isActive() ? 0 : 1;
+                $rightActive = $right->isActive() ? 0 : 1;
+                if ($leftActive !== $rightActive) {
+                    return $leftActive <=> $rightActive;
+                }
+
+                return (int) $left->getId() <=> (int) $right->getId();
+            }
+        );
+
+        return $candidates[0] ?? null;
     }
 
     public function resolveIncomingProductGroup(

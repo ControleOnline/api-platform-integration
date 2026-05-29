@@ -115,10 +115,15 @@ class Food99Service extends AbstractMarketplaceService implements
             ->integrate($integration);
     }
 
-    public function syncOrdersFromPolling(People $provider, ?string $fromTime = null, array $eventTypes = []): array
+    public function syncOrdersFromPolling(
+        People $provider,
+        ?string $fromTime = null,
+        array $eventTypes = [],
+        ?string $untilTime = null
+    ): array
     {
         return $this->resolveMarketplaceCapabilityService(Food99OrderOperationsService::class)
-            ->syncOrdersFromPolling($provider, $fromTime, $eventTypes);
+            ->syncOrdersFromPolling($provider, $fromTime, $eventTypes, $untilTime);
     }
 
     public function getStoredIntegrationState(People $provider): array

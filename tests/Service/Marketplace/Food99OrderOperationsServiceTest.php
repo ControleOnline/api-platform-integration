@@ -528,6 +528,141 @@ final class Food99OrderOperationsServiceTest extends TestCase
         );
     }
 
+    public function testFindIncomingProductByCodePrefersProductThatAlreadyHasQueue(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        $queuedProduct = new \ControleOnline\Entity\Product();
+        $this->setEntityIdOnProduct($queuedProduct, 1923);
+        $queuedProduct->setProduct('Zetta Gyros');
+        $queuedProduct->setQueue($this->createMock(\ControleOnline\Entity\Queue::class));
+
+        $duplicateProduct = new \ControleOnline\Entity\Product();
+        $this->setEntityIdOnProduct($duplicateProduct, 1927);
+        $duplicateProduct->setProduct('Zetta Gyros (Pernil)');
+
+        $extraFields = $this->createMock(\ControleOnline\Entity\ExtraFields::class);
+        $queuedExtraData = $this->createConfiguredMock(\ControleOnline\Entity\ExtraData::class, [
+            'getEntityId' => '1923',
+        ]);
+        $duplicateExtraData = $this->createConfiguredMock(\ControleOnline\Entity\ExtraData::class, [
+            'getEntityId' => '1927',
+        ]);
+
+        $extraDataRepository = $this->getMockBuilder(\Doctrine\ORM\EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['findBy'])
+            ->getMock();
+        $extraDataRepository
+            ->expects(self::once())
+            ->method('findBy')
+            ->with(self::callback(function (array $criteria) use ($extraFields): bool {
+                return ($criteria['extra_fields'] ?? null) === $extraFields
+                    && ($criteria['entity_name'] ?? null) === 'Product'
+                    && ($criteria['value'] ?? null) === '1923';
+            }))
+            ->willReturn([$duplicateExtraData, $queuedExtraData]);
+
+        $productRepository = $this->getMockBuilder(\Doctrine\ORM\EntityRepository::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['find'])
+            ->getMock();
+        $productRepository
+            ->expects(self::exactly(2))
+            ->method('find')
+            ->willReturnCallback(static function (int $id) use ($queuedProduct, $duplicateProduct): ?\ControleOnline\Entity\Product {
+                return match ($id) {
+                    1923 => $queuedProduct,
+                    1927 => $duplicateProduct,
+                    default => null,
+                };
+            });
+
+        $entityManager = $this->createMock(\Doctrine\ORM\EntityManagerInterface::class);
+        $entityManager
+            ->method('getRepository')
+            ->willReturnCallback(static function (string $className) use ($extraDataRepository, $productRepository): object {
+                return match ($className) {
+                    \ControleOnline\Entity\ExtraData::class => $extraDataRepository,
+                    \ControleOnline\Entity\Product::class => $productRepository,
+                    default => throw new \RuntimeException('Unexpected repository: ' . $className),
+                };
+            });
+
+        $extraDataService = new class($extraFields) extends \ControleOnline\Service\ExtraDataService {
+            public array $calls = [];
+
+            public function __construct(private \ControleOnline\Entity\ExtraFields $extraFields)
+            {
+            }
+
+            public function discoveryExtraFields(
+                string $fieldName,
+                string $context,
+                ?string $configs = '{}',
+                ?string $fieldType = 'text',
+                ?bool $required = false
+            ): \ControleOnline\Entity\ExtraFields {
+                $this->calls[] = [$fieldName, $context, $configs, $fieldType, $required];
+                return $this->extraFields;
+            }
+        };
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'entityManager', $entityManager);
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'extraDataService', $extraDataService);
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'findIncomingProductByCode',
+            '1923'
+        );
+
+        self::assertSame($queuedProduct, $result);
+        self::assertSame([
+            ['code', 'Food99', '{}', 'text', false],
+        ], $extraDataService->calls);
+    }
+
+    public function testFilterOpenDeliveryEventsByWindowKeepsOnlyEventsWithinTheRequestedDay(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+
+        $events = [
+            [
+                'event_id' => 'yesterday',
+                'order_id' => '1',
+                'original_event_type' => 'orderNew',
+                'mapped_event_type' => 'orderNew',
+                'created_at_ts' => (new \DateTimeImmutable('2026-05-28 12:00:00', new \DateTimeZone('UTC')))->getTimestamp(),
+            ],
+            [
+                'event_id' => 'today',
+                'order_id' => '2',
+                'original_event_type' => 'orderNew',
+                'mapped_event_type' => 'orderNew',
+                'created_at_ts' => (new \DateTimeImmutable('2026-05-29 03:00:00', new \DateTimeZone('UTC')))->getTimestamp(),
+            ],
+            [
+                'event_id' => 'before-window',
+                'order_id' => '3',
+                'original_event_type' => 'orderNew',
+                'mapped_event_type' => 'orderNew',
+                'created_at_ts' => (new \DateTimeImmutable('2026-05-27 23:59:59', new \DateTimeZone('UTC')))->getTimestamp(),
+            ],
+        ];
+
+        $result = $this->invokePrivateMethod(
+            $service,
+            'filterOpenDeliveryEventsByWindow',
+            $events,
+            '2026-05-28T03:00:00Z',
+            '2026-05-29T03:00:00Z'
+        );
+
+        self::assertCount(1, $result);
+        self::assertSame('yesterday', $result[0]['event_id']);
+    }
+
     public function testMapOpenDeliveryEventTypeKeepsCancellationRequestNeutral(): void
     {
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
@@ -567,6 +702,13 @@ final class Food99OrderOperationsServiceTest extends TestCase
     private function setEntityIdOnOrder(object $entity, int $id): void
     {
         $property = new \ReflectionProperty(\ControleOnline\Entity\Order::class, 'id');
+        $property->setAccessible(true);
+        $property->setValue($entity, $id);
+    }
+
+    private function setEntityIdOnProduct(object $entity, int $id): void
+    {
+        $property = new \ReflectionProperty(\ControleOnline\Entity\Product::class, 'id');
         $property->setAccessible(true);
         $property->setValue($entity, $id);
     }
