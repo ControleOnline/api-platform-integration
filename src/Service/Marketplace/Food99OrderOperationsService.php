@@ -3353,6 +3353,26 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
     }
 
+    private function resolveIncomingProductCode(array $item, string $productType): string
+    {
+        foreach (['app_item_id', 'mdu_id', 'app_external_id'] as $key) {
+            $candidate = $this->normalizeIncomingFood99Value($item[$key] ?? null);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        $fallbackSource = implode('|', array_filter([
+            $productType,
+            $this->normalizeIncomingFood99Value($item['name'] ?? null),
+            $this->normalizeIncomingFood99Value($item['content_name'] ?? null),
+            $this->normalizeIncomingFood99Value($item['app_content_id'] ?? null),
+            $this->normalizeIncomingFood99Value($item['sku_price'] ?? null),
+        ]));
+
+        return 'food99:' . substr(sha1($fallbackSource !== '' ? $fallbackSource : json_encode($item)), 0, 24);
+    }
+
     private function discoveryProduct(
         Order $order,
         array $item,
