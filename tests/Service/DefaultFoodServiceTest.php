@@ -7,6 +7,7 @@ use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\People;
+use ControleOnline\Service\DomainService;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\DefaultFoodService;
@@ -101,12 +102,13 @@ class DefaultFoodServiceTest extends TestCase
         $constructor = new \ReflectionMethod(DefaultFoodService::class, '__construct');
         $parameters = $constructor->getParameters();
 
-        self::assertCount(21, $parameters);
-        self::assertSame(17, $constructor->getNumberOfRequiredParameters());
-        self::assertTrue($parameters[17]->isOptional());
+        self::assertCount(23, $parameters);
+        self::assertSame(18, $constructor->getNumberOfRequiredParameters());
         self::assertTrue($parameters[18]->isOptional());
         self::assertTrue($parameters[19]->isOptional());
         self::assertTrue($parameters[20]->isOptional());
+        self::assertTrue($parameters[21]->isOptional());
+        self::assertTrue($parameters[22]->isOptional());
     }
 
     public function testResolveAddressCandidateAcceptsObjectIds(): void
@@ -146,6 +148,24 @@ class DefaultFoodServiceTest extends TestCase
         self::assertSame($resolvedAddress, $service->resolveAddressCandidateValue($candidate));
     }
 
+    public function testBuildPublicFileDownloadUrlUsesMainDomainFromDomainService(): void
+    {
+        $service = (new \ReflectionClass(DefaultFoodServiceProbe::class))->newInstanceWithoutConstructor();
+
+        $domainService = $this->createMock(DomainService::class);
+        $domainService
+            ->expects(self::once())
+            ->method('getMainDomain')
+            ->willReturn('api.custom-domain.test');
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
+
+        self::assertSame(
+            'https://api.custom-domain.test/files/123/download?app-domain=admin.controleonline.com',
+            $service->buildPublicFileDownloadUrlValue(123)
+        );
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
@@ -164,5 +184,10 @@ final class DefaultFoodServiceProbe extends DefaultFoodService
     public function resolveAddressCandidateValue(mixed $candidate): ?Address
     {
         return $this->resolveAddressCandidate($candidate);
+    }
+
+    public function buildPublicFileDownloadUrlValue(mixed $fileId): ?string
+    {
+        return $this->buildPublicFileDownloadUrl($fileId);
     }
 }

@@ -155,6 +155,43 @@ class Food99FinancialOperationsService extends AbstractMarketplaceService
         return $this->resolveBestPayloadFromStoredOrderCandidate($candidate, $latestEventType);
     }
 
+    private function resolveBestPayloadFromStoredOrderCandidate(array $candidate, string $latestEventType): array
+    {
+        $normalizedLatestEventType = trim($latestEventType);
+        if ($normalizedLatestEventType !== '') {
+            $preferredCandidate = $candidate[$normalizedLatestEventType] ?? null;
+            if (is_array($preferredCandidate) && $preferredCandidate !== []) {
+                return $preferredCandidate;
+            }
+
+            if (is_string($preferredCandidate)) {
+                $decodedPreferredCandidate = $this->decodeEntityOtherInformationsValue($preferredCandidate);
+                if (is_array($decodedPreferredCandidate) && $decodedPreferredCandidate !== []) {
+                    return $decodedPreferredCandidate;
+                }
+            }
+        }
+
+        foreach ($candidate as $key => $value) {
+            if (in_array((string) $key, ['latest_event_type', 'latestEventType'], true)) {
+                continue;
+            }
+
+            if (is_array($value) && $value !== []) {
+                return $value;
+            }
+
+            if (is_string($value)) {
+                $decodedValue = $this->decodeEntityOtherInformationsValue($value);
+                if (is_array($decodedValue) && $decodedValue !== []) {
+                    return $decodedValue;
+                }
+            }
+        }
+
+        return [];
+    }
+
     public function resolveFood99CustomerName(array $address, string $fallback = 'Cliente Food99'): string
     {
         $peopleService = $this->food99PeopleOperationsService;

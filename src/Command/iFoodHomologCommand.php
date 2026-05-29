@@ -94,31 +94,28 @@ class iFoodHomologCommand extends Command
         // ----------------------------------------------------------------
         $this->section('MODULO 2 — MERCHANT');
         try {
-            // GET store status (GET /merchant/v1.0/merchants/{id}/status)
             $statusResult = $this->iFoodService->getStoreStatus($provider);
             $statusOk = $statusResult['errno'] === 0;
             $this->check(
-                'GET /merchant/v1.0/merchants/{id}/status',
+                'Status da loja',
                 $statusOk,
                 $statusOk
                     ? sprintf('online=%s', isset($statusResult['data']['online']) ? ($statusResult['data']['online'] ? 'true' : 'false') : 'ver dados')
                     : ($statusResult['errmsg'] ?? 'erro desconhecido'),
             );
 
-            // GET opening hours (GET /merchant/v1.0/merchants/{id}/opening-hours)
             $hoursResult = $this->iFoodService->getOpeningHours($provider);
             $hoursOk = $hoursResult['errno'] === 0;
             $this->check(
-                'GET /merchant/v1.0/merchants/{id}/opening-hours',
+                'Horarios da loja',
                 $hoursOk,
                 $hoursOk
                     ? sprintf('%d dia(s) configurado(s)', count($hoursResult['data'] ?? []))
                     : ($hoursResult['errmsg'] ?? 'erro desconhecido'),
             );
 
-            // PUT opening hours — apenas valida implementacao, nao executa escrita
             $this->checkImpl(
-                'PUT /merchant/v1.0/merchants/{id}/opening-hours',
+                'Atualizacao de horarios',
                 'updateOpeningHours(People, array)',
                 'implementado — execucao omitida para evitar efeitos colaterais',
             );
@@ -140,33 +137,17 @@ class iFoodHomologCommand extends Command
             );
 
             // Endpoints de escrita — valida implementacao sem executar
+            $this->checkImpl('Atualizacao de preco de item', 'updateItemPrice(People, itemId, price)', 'implementado');
+            $this->checkImpl('Atualizacao de status de item', 'updateItemStatus(People, itemId, status)', 'implementado');
+            $this->checkImpl('Atualizacao de preco de complemento', 'updateOptionPrice(People, optionId, price)', 'implementado');
+            $this->checkImpl('Atualizacao de status de complemento', 'updateOptionStatus(People, optionId, status)', 'implementado');
             $this->checkImpl(
-                'PATCH /catalog/v2.0/merchants/{id}/items/price',
-                'updateItemPrice(People, itemId, price)',
-                'implementado',
-            );
-            $this->checkImpl(
-                'PATCH /catalog/v2.0/merchants/{id}/items/status',
-                'updateItemStatus(People, itemId, status)',
-                'implementado',
-            );
-            $this->checkImpl(
-                'PATCH /catalog/v2.0/merchants/{id}/options/price',
-                'updateOptionPrice(People, optionId, price)',
-                'implementado',
-            );
-            $this->checkImpl(
-                'PATCH /catalog/v2.0/merchants/{id}/options/status',
-                'updateOptionStatus(People, optionId, status)',
-                'implementado',
-            );
-            $this->checkImpl(
-                'POST catalog upload (menu completo)',
+                'Upload de catalogo',
                 'uploadMenu(People, productIds[])',
                 'implementado',
             );
             $this->checkImpl(
-                'POST catalog sync (importar do iFood)',
+                'Sincronizacao de catalogo',
                 'syncCatalogFromIfood(People)',
                 'implementado',
             );
@@ -187,12 +168,12 @@ class iFoodHomologCommand extends Command
             );
 
             $orderEndpoints = [
-                'POST /order/v1.0/orders/{id}/confirm'            => 'confirmOrder',
-                'POST /order/v1.0/orders/{id}/startPreparation'   => 'startPreparation',
-                'POST /order/v1.0/orders/{id}/readyToPickup'      => 'markOrderReady',
-                'POST /order/v1.0/orders/{id}/requestDrivers'     => 'requestDrivers (N/A)',
-                'POST /order/v1.0/orders/{id}/delivered'          => 'markOrderDelivered',
-                'POST /order/v1.0/orders/{id}/cancellationRequest' => 'cancelOrder',
+                'Confirmacao de pedido' => 'confirmOrder',
+                'Inicio de preparo' => 'startPreparation',
+                'Pedido pronto para retirada' => 'markOrderReady',
+                'Solicitacao de entregador' => 'requestDrivers (N/A)',
+                'Pedido entregue' => 'markOrderDelivered',
+                'Cancelamento do pedido' => 'cancelOrder',
             ];
 
             foreach ($orderEndpoints as $endpoint => $method) {

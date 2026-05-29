@@ -11,6 +11,7 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\State;
 use ControleOnline\Entity\Street;
 use ControleOnline\Service\ConfigService;
+use ControleOnline\Service\Client\UberClient;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\RequestPayloadService;
 use ControleOnline\Service\UberService;
@@ -399,10 +400,7 @@ class UberServiceTest extends TestCase
 
     private function resetUberAuthTokenCache(): void
     {
-        $reflection = new \ReflectionClass(UberService::class);
-        $property = $reflection->getProperty('authTokenCache');
-        $property->setAccessible(true);
-        $property->setValue(null, null);
+        UberClient::resetAccessTokenCache();
     }
 
     private function address(): Address

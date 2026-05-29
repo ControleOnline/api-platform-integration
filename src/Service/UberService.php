@@ -9,6 +9,7 @@ use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Phone;
+use ControleOnline\Service\Client\UberClient;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
 use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
@@ -18,16 +19,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 class UberService implements MarketplaceIntegrationHandlerInterface, MarketplaceIntegrationStateProviderInterface, MarketplaceLogisticsQuoteProviderInterface
 {
     private const APP_CONTEXT = 'Uber';
-    private const API_BASE_URL = 'https://api.uber.com';
-    private const AUTHORIZATION_URL = 'https://auth.uber.com/oauth/v2/authorize';
-    private const AUTH_URL = 'https://auth.uber.com/oauth/v2/token';
-    private const STORE_LIST_URL = 'https://api.uber.com/v1/eats/stores';
     private const TOKEN_SCOPE = 'eats.deliveries';
-    private const POS_PROVISIONING_SCOPE = 'eats.pos_provisioning';
     private const CURRENCY_CODE = 'BRL';
-
-    private static ?array $authTokenCache = null;
     protected static $logger;
+
+    private readonly UberClient $uberClient;
 
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
@@ -35,8 +31,10 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
         private readonly LoggerService $loggerService,
         private readonly RequestPayloadService $requestPayloadService,
         private readonly ConfigService $configService,
+        ?UberClient $uberClient = null,
     ) {
         self::$logger = $this->loggerService->getLogger(self::APP_CONTEXT);
+        $this->uberClient = $uberClient ?? new UberClient($this->httpClient, $this->loggerService);
     }
 
     public function getMarketplaceKey(): string
@@ -727,20 +725,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             throw new \RuntimeException('Uber app_id nao configurado.');
         }
 
-        $authorizationUrl = self::AUTHORIZATION_URL . '?' . http_build_query([
-            'client_id' => $clientId,
-            'response_type' => 'code',
-            'redirect_uri' => $redirectUri,
-            'scope' => self::POS_PROVISIONING_SCOPE,
-            'state' => $state,
-        ], '', '&', PHP_QUERY_RFC3986);
-
-        return [
-            'authorization_url' => $authorizationUrl,
-            'url' => $authorizationUrl,
-            'auth_url' => $authorizationUrl,
-            'redirect_uri' => $redirectUri,
-        ];
+        return $this->uberClient->buildAuthorizationUrl($clientId, $redirectUri, $state);
     }
 
     public function connectStoreViaOAuth(People $provider, string $authorizationCode, string $redirectUri): array
@@ -956,35 +941,11 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             ];
         }
 
-        try {
-            $response = $this->httpClient->request('GET', self::API_BASE_URL . '/v1/eats/deliveries/stores', [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Accept' => 'application/json',
-                ],
-                'query' => [
-                    'latitude' => (float) $latitude,
-                    'longitude' => (float) $longitude,
-                    'pickup_at' => 0,
-                ],
-                'timeout' => 20,
-                'max_duration' => 30,
-            ]);
-
-            return [
-                'status' => $response->getStatusCode(),
-                'body' => $this->decodeResponseBody((string) $response->getContent(false)),
-            ];
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber store lookup failed', [
-                'error' => $exception->getMessage(),
-            ]);
-
-            return [
-                'status' => 500,
-                'body' => ['message' => $exception->getMessage()],
-            ];
-        }
+        return $this->uberClient->requestDeliverableStores($token, [
+            'latitude' => (float) $latitude,
+            'longitude' => (float) $longitude,
+            'pickup_at' => 0,
+        ]);
     }
 
     private function requestDeliveryEstimate(
@@ -1015,32 +976,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             $payload['order_summary'] = $orderSummary;
         }
 
-        try {
-            $response = $this->httpClient->request('POST', self::API_BASE_URL . '/v1/eats/deliveries/estimates', [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'json' => $this->cleanupPayload($payload),
-                'timeout' => 20,
-                'max_duration' => 30,
-            ]);
-
-            return [
-                'status' => $response->getStatusCode(),
-                'body' => $this->decodeResponseBody((string) $response->getContent(false)),
-            ];
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber estimate request failed', [
-                'error' => $exception->getMessage(),
-            ]);
-
-            return [
-                'status' => 500,
-                'body' => ['message' => $exception->getMessage()],
-            ];
-        }
+        return $this->uberClient->requestDeliveryEstimate($token, $this->cleanupPayload($payload));
     }
 
     private function createDelivery(
@@ -1088,33 +1024,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             'order_summary' => $orderSummary,
         ];
 
-        try {
-            $response = $this->httpClient->request('POST', self::API_BASE_URL . '/v1/eats/deliveries/orders', [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'json' => $this->cleanupPayload($payload),
-                'timeout' => 20,
-                'max_duration' => 30,
-            ]);
-
-            return [
-                'status' => $response->getStatusCode(),
-                'body' => $this->decodeResponseBody((string) $response->getContent(false)),
-            ];
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber delivery request failed', [
-                'order_id' => $order->getId(),
-                'error' => $exception->getMessage(),
-            ]);
-
-            return [
-                'status' => 500,
-                'body' => ['message' => $exception->getMessage()],
-            ];
-        }
+        return $this->uberClient->requestDeliveryOrder($token, $this->cleanupPayload($payload));
     }
 
     private function getAccessToken(?People $provider = null): ?string
@@ -1127,7 +1037,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
         }
 
         $cacheKey = $clientId . '|' . $clientSecret;
-        return $this->requestOAuthToken([
+        return $this->uberClient->getAccessToken([
             'client_id' => $clientId,
             'client_secret' => $clientSecret,
             'grant_type' => 'client_credentials',
@@ -1180,56 +1090,6 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
         return '';
     }
 
-    private function requestOAuthToken(array $formFields, ?string $cacheKey = null): ?string
-    {
-        if ($cacheKey !== null) {
-            $cached = self::$authTokenCache[$cacheKey] ?? null;
-            $expiresAt = is_array($cached) ? (int) ($cached['expires_at'] ?? 0) : 0;
-            if (is_array($cached) && !empty($cached['access_token']) && $expiresAt > (time() + 60)) {
-                return (string) $cached['access_token'];
-            }
-        }
-
-        try {
-            $response = $this->httpClient->request('POST', self::AUTH_URL, [
-                'headers' => [
-                    'Content-Type' => 'application/x-www-form-urlencoded',
-                    'Accept' => 'application/json',
-                ],
-                'body' => http_build_query($formFields, '', '&', PHP_QUERY_RFC3986),
-                'timeout' => 20,
-                'max_duration' => 30,
-            ]);
-
-            if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-                return null;
-            }
-
-            $body = $this->decodeResponseBody((string) $response->getContent(false));
-            $token = $this->extractValue($body, ['access_token']);
-            $expiresIn = (int) ($body['expires_in'] ?? 0);
-
-            if ($token === '') {
-                return null;
-            }
-
-            if ($cacheKey !== null) {
-                self::$authTokenCache[$cacheKey] = [
-                    'access_token' => $token,
-                    'expires_at' => time() + max(60, $expiresIn),
-                ];
-            }
-
-            return $token;
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber access token request failed', [
-                'error' => $exception->getMessage(),
-            ]);
-
-            return null;
-        }
-    }
-
     private function exchangeAuthorizationCodeForToken(string $authorizationCode, string $redirectUri): ?string
     {
         $clientId = $this->resolveClientId();
@@ -1239,7 +1099,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             return null;
         }
 
-        return $this->requestOAuthToken([
+        return $this->uberClient->getAccessToken([
             'client_id' => $clientId,
             'client_secret' => $clientSecret,
             'grant_type' => 'authorization_code',
@@ -1250,60 +1110,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
 
     private function listAuthorizedStores(string $token): array
     {
-        $stores = [];
-        $startKey = null;
-        $pageCount = 0;
-
-        try {
-            do {
-                $query = ['limit' => 100];
-                if (is_string($startKey) && trim($startKey) !== '') {
-                    $query['start_key'] = $startKey;
-                }
-
-                $response = $this->httpClient->request('GET', self::STORE_LIST_URL, [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Accept' => 'application/json',
-                        'Accept-Encoding' => 'gzip',
-                    ],
-                    'query' => $query,
-                    'timeout' => 20,
-                    'max_duration' => 30,
-                ]);
-
-                $statusCode = $response->getStatusCode();
-                if ($statusCode < 200 || $statusCode >= 300) {
-                    return [
-                        'status' => $statusCode,
-                        'body' => $this->decodeResponseBody((string) $response->getContent(false)),
-                    ];
-                }
-
-                $body = $this->decodeResponseBody((string) $response->getContent(false));
-                $pageStores = is_array($body['stores'] ?? null) ? $body['stores'] : [];
-                $stores = array_merge($stores, $pageStores);
-                $startKey = trim((string) ($body['next_key'] ?? ''));
-                $pageCount++;
-            } while ($startKey !== '' && $pageCount < 10 && count($stores) < 1000);
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber store listing failed', [
-                'error' => $exception->getMessage(),
-            ]);
-
-            return [
-                'status' => 500,
-                'body' => ['message' => $exception->getMessage()],
-            ];
-        }
-
-        return [
-            'status' => 200,
-            'body' => [
-                'stores' => $stores,
-                'next_key' => $startKey,
-            ],
-        ];
+        return $this->uberClient->listAuthorizedStores($token);
     }
 
     private function selectAuthorizationStore(array $stores, ?People $provider = null): ?array
@@ -1372,33 +1179,7 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
             $payload['integrator_store_id'] = (string) $provider->getId();
         }
 
-        try {
-            $response = $this->httpClient->request('POST', self::STORE_LIST_URL . '/' . rawurlencode($storeId) . '/pos_data', [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json',
-                ],
-                'json' => $this->cleanupPayload($payload),
-                'timeout' => 20,
-                'max_duration' => 30,
-            ]);
-
-            return [
-                'status' => $response->getStatusCode(),
-                'body' => $this->decodeResponseBody((string) $response->getContent(false)),
-            ];
-        } catch (\Throwable $exception) {
-            self::$logger?->error('Uber store activation failed', [
-                'store_id' => $storeId,
-                'error' => $exception->getMessage(),
-            ]);
-
-            return [
-                'status' => 500,
-                'body' => ['message' => $exception->getMessage()],
-            ];
-        }
+        return $this->uberClient->activateStore($token, $storeId, $this->cleanupPayload($payload));
     }
 
     private function persistConfiguredStoreId(People $provider, string $storeId): void
@@ -1734,13 +1515,6 @@ class UberService implements MarketplaceIntegrationHandlerInterface, Marketplace
         }
 
         return $payload;
-    }
-
-    private function decodeResponseBody(string $rawBody): array
-    {
-        $decoded = json_decode($rawBody, true);
-
-        return is_array($decoded) ? $decoded : [];
     }
 
     private function getUberState(Order $order): array

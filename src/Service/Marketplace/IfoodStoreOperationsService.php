@@ -466,15 +466,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'GET',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                    ],
-                ]
-            );
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants');
 
             $statusCode = $response->getStatusCode();
             $content = $response->getContent(false);
@@ -532,9 +524,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function getMerchantDetailRaw(string $merchantId, string $token): array
     {
         try {
-            $response   = $this->ifoodClient->request('GET',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId),
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId));
             $statusCode = $response->getStatusCode();
             $content    = (string) $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -1085,9 +1075,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
         try {
-            $response   = $this->ifoodClient->request('GET',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/status');
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -1127,7 +1115,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             }
 
             /* Obtém interrupções ativas */
-            $interruptions = $this->listInterruptionsRaw($merchantId, $token);
+            $interruptions = $this->listInterruptionsRaw($merchantId);
 
             return [
                 'errno'  => 0,
@@ -1413,12 +1401,9 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response   = $this->ifoodClient->request('POST',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
-                [
-                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => $interruption,
-                ]);
+            $response = $this->ifoodClient->requestMerchantEndpoint('POST', '/merchants/' . rawurlencode($merchantId) . '/interruptions', [
+                'json' => $interruption,
+            ]);
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -1461,7 +1446,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $interruptions = $this->listInterruptionsRaw($merchantId, $token);
+        $interruptions = $this->listInterruptionsRaw($merchantId);
         if (empty($interruptions)) {
             return ['errno' => 0, 'errmsg' => 'ok', 'data' => ['removed' => 0, 'online' => true]];
         }
@@ -1472,9 +1457,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $id = $this->normalizeString($interruption['id'] ?? null);
             if ($id === '') continue;
             try {
-                $resp = $this->ifoodClient->request('DELETE',
-                    IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
-                    ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+                $resp = $this->ifoodClient->requestMerchantEndpoint('DELETE', '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id));
                 if ($resp->getStatusCode() < 300) {
                     $removed++;
                 } else {
@@ -1514,9 +1497,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->request('DELETE',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $response = $this->ifoodClient->requestMerchantEndpoint('DELETE', '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId));
             $statusCode = $response->getStatusCode();
 
             if ($statusCode >= 200 && $statusCode < 300) {
@@ -1539,12 +1520,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
     }
 
-    private function listInterruptionsRaw(string $merchantId, string $token): array
+    private function listInterruptionsRaw(string $merchantId): array
     {
         try {
-            $response   = $this->ifoodClient->request('GET',
-                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]);
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/interruptions');
             $statusCode = $response->getStatusCode();
             // Aceita qualquer 2xx; 204 = lista vazia valida
             if ($statusCode < 200 || $statusCode >= 300) return [];
@@ -2847,7 +2826,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         try {
             $encodedOrderId = rawurlencode($orderId);
-            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
+            $endpoint = '/order/v1.0/orders/' . $encodedOrderId;
             $token = $this->getAccessToken();
             if (!$token) {
                 self::$logger->warning('iFood order details request skipped because token is unavailable', [
@@ -2859,11 +2838,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             }
 
             try {
-                $response = $this->ifoodClient->request('GET', $endpoint, [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                    ],
-                ]);
+                $response = $this->ifoodClient->requestOrderEndpoint('GET', '/orders/' . $encodedOrderId);
 
                 $statusCode = $response->getStatusCode();
                 $rawBody = $response->getContent(false);

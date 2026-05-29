@@ -602,7 +602,9 @@ class iFoodServiceTest extends TestCase
             ->method('request')
             ->with(
                 'POST',
-                'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token',
+                self::callback(static function (string $url): bool {
+                    return parse_url($url, PHP_URL_PATH) === '/authentication/v1.0/oauth/token';
+                }),
                 self::callback(static function (array $options): bool {
                     parse_str((string) ($options['body'] ?? ''), $body);
 
@@ -991,13 +993,13 @@ class iFoodServiceTest extends TestCase
 
                 if ($requestCount === 1) {
                     self::assertSame('POST', $method);
-                    self::assertSame('https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', $url);
+                    self::assertSame('/authentication/v1.0/oauth/token', parse_url($url, PHP_URL_PATH));
 
                     return $tokenResponse;
                 }
 
                 self::assertSame('PUT', $method);
-                self::assertSame('https://merchant-api.ifood.com.br/catalog/v2.0/merchants/merchant-1/items', $url);
+                self::assertSame('/catalog/v2.0/merchants/merchant-1/items', parse_url($url, PHP_URL_PATH));
                 $capturedPayload = $options['json'] ?? null;
 
                 return $putResponse;

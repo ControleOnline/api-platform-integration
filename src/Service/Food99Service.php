@@ -312,6 +312,16 @@ class Food99Service extends AbstractMarketplaceService implements
             ->fetchMenuProducts(...$arguments);
     }
 
+    private function resolveAppShopId(?People $provider = null): ?string
+    {
+        if (!$provider instanceof People) {
+            return null;
+        }
+
+        $providerId = (int) $provider->getId();
+        return $providerId > 0 ? (string) $providerId : null;
+    }
+
     private function resolveFood99RemoteClientId(...$arguments): mixed
     {
         return $this->resolveMarketplaceCapabilityService(Food99PeopleOperationsService::class)
@@ -646,16 +656,6 @@ class Food99Service extends AbstractMarketplaceService implements
         return $payload;
     }
 
-    private function getFood99BaseUrl(): string
-    {
-        return 'https://openapi.99food.com';
-    }
-
-    private function getFood99BorderBaseUrl(): string
-    {
-        return 'https://b.99app.com';
-    }
-
     public function persistIntegrationAuthError(People $provider, ?string $message = null): void
     {
         $this->init();
@@ -844,55 +844,9 @@ class Food99Service extends AbstractMarketplaceService implements
 
     public function call99BorderEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
     {
-        $url = $this->getFood99BorderBaseUrl() . $uri;
-        $method = strtoupper($method);
-        $requestOptions = [
-            'headers' => [
-                'Content-Type' => 'application/json',
-            ],
-        ];
+        $client = $this->resolveFood99Client();
 
-        if ($method === 'GET') {
-            $requestOptions['query'] = $payload;
-        } else {
-            $requestOptions['json'] = $payload;
-        }
-
-        try {
-            $startedAt = microtime(true);
-
-            self::$logger->info('Food99 BORDER REQUEST', [
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'api_base_url' => $this->getFood99BorderBaseUrl(),
-            ]);
-
-            $response = $this->httpClient->request($method, $url, $requestOptions);
-            $result = $response->toArray(false);
-
-            self::$logger->info('Food99 BORDER RESPONSE', [
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'status_code' => $response->getStatusCode(),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-                'response' => $result,
-                'api_base_url' => $this->getFood99BorderBaseUrl(),
-            ]);
-
-            return $result;
-        } catch (\Throwable $e) {
-            self::$logger->error('Food99 BORDER ERROR', [
-                'method' => $method,
-                'uri' => $uri,
-                'payload' => $this->sanitizePayloadForLog($payload),
-                'error' => $e->getMessage(),
-                'api_base_url' => $this->getFood99BorderBaseUrl(),
-            ]);
-
-            return null;
-        }
+        return $client ? $client->requestBorderWithResponse($method, $uri, $payload) : null;
     }
 
     private function verifyStoreDeliveryLocatorRequest(string $locator): ?array

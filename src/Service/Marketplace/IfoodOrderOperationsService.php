@@ -778,7 +778,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             }
 
             $encodedOrderId = rawurlencode($orderId);
-            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
+            $endpoint = '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
 
             try {
                 self::$logger->info('iFood order action request', [
@@ -787,19 +787,11 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                     'payload' => $payload,
                 ]);
 
-                $response = $this->ifoodClient->request(
-                    'POST',
-                    $endpoint,
-                    [
-                        'headers' => [
-                            'Authorization' => 'Bearer ' . $token,
-                            'Content-Type' => 'application/json',
-                        ],
-                        'json' => $this->normalizeIfoodRequestPayload($payload),
-                        'timeout' => 15,
-                        'max_duration' => 20,
-                    ]
-                );
+                $response = $this->ifoodClient->requestOrderEndpoint('POST', '/orders/' . $encodedOrderId . $actionPath, [
+                    'json' => $this->normalizeIfoodRequestPayload($payload),
+                    'timeout' => 15,
+                    'max_duration' => 20,
+                ]);
 
                 $statusCode = $response->getStatusCode();
                 $rawBody = $response->getContent(false);
@@ -858,7 +850,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 return null;
             }
 
-            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
+            $endpoint = '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
 
             try {
                 self::$logger->info('iFood dispute action request', [
@@ -867,19 +859,11 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                     'payload' => $payload,
                 ]);
 
-                $response = $this->ifoodClient->request(
-                    'POST',
-                    $endpoint,
-                    [
-                        'headers' => [
-                            'Authorization' => 'Bearer ' . $token,
-                            'Content-Type' => 'application/json',
-                        ],
-                        'json' => $this->normalizeIfoodRequestPayload($payload),
-                        'timeout' => 15,
-                        'max_duration' => 20,
-                    ]
-                );
+                $response = $this->ifoodClient->requestOrderEndpoint('POST', '/disputes/' . rawurlencode($disputeId) . $actionPath, [
+                    'json' => $this->normalizeIfoodRequestPayload($payload),
+                    'timeout' => 15,
+                    'max_duration' => 20,
+                ]);
 
                 $statusCode = $response->getStatusCode();
                 $body = $this->decodeIfoodActionResponseBody((string) $response->getContent(false));
@@ -943,19 +927,11 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 'payload' => $payload,
             ]);
 
-            $response = $this->ifoodClient->request(
-                'POST',
-                IfoodClient::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type' => 'application/json',
-                    ],
-                    'json' => $this->normalizeIfoodRequestPayload($payload),
-                    'timeout' => 15,
-                    'max_duration' => 20,
-                ]
-            );
+            $response = $this->ifoodClient->requestShippingEndpoint('POST', '/orders/' . rawurlencode($orderId) . $actionPath, [
+                'json' => $this->normalizeIfoodRequestPayload($payload),
+                'timeout' => 15,
+                'max_duration' => 20,
+            ]);
 
             $statusCode = $response->getStatusCode();
             $rawBody = $response->getContent(false);
@@ -1029,9 +1005,9 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 'payload' => $payload,
             ]);
 
-            $response = $this->ifoodClient->request(
+            $response = $this->ifoodClient->requestShippingEndpoint(
                 strtoupper($method),
-                IfoodClient::API_BASE_URL . '/shipping/v1.0/merchants/' . rawurlencode($merchantId) . $path,
+                '/merchants/' . rawurlencode($merchantId) . $path,
                 $options
             );
 
@@ -1229,14 +1205,13 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         $normalizedOrderId = $this->normalizeString($orderId);
         if ($normalizedOrderId !== '') {
             $encodedOrderId = rawurlencode($normalizedOrderId);
-            $endpoints[] = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
+            $endpoints[] = '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
         }
-        $endpoints[] = IfoodClient::API_BASE_URL . '/order/v1.0/cancellation/reasons';
+        $endpoints[] = '/order/v1.0/cancellation/reasons';
 
         try {
             foreach ($endpoints as $endpoint) {
-                $response = $this->ifoodClient->request('GET', $endpoint, [
-                    'headers' => ['Authorization' => 'Bearer ' . $token],
+                $response = $this->ifoodClient->requestOrderEndpoint('GET', $endpoint, [
                     'timeout' => 15,
                     'max_duration' => 20,
                 ]);

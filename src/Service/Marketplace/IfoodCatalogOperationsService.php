@@ -89,8 +89,6 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
     /* Catalog v2                                                          */
     /* ------------------------------------------------------------------ */
 
-    private const CATALOG_V2_BASE = 'https://merchant-api.ifood.com.br/catalog/v2.0/merchants/';
-
     public function getStoredIntegrationState(People $provider, bool $includeAuthCheck = false): array
     {
         $storeService = $this->ifoodStoreOperationsService;
@@ -1146,10 +1144,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         $token = $this->getAccessToken();
         if (!$token) return null;
         try {
-            $response = $this->ifoodClient->request('GET',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs');
             if ($response->getStatusCode() !== 200) return null;
             $catalogs = $response->toArray(false);
             if (!is_array($catalogs) || empty($catalogs)) return null;
@@ -1169,13 +1164,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
             $catalogId = $this->fetchIfoodDefaultCatalogId($merchantId);
             if ($catalogId === null) return [];
 
-            $response = $this->ifoodClient->request('GET',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
-                [
-                    'headers' => ['Authorization' => 'Bearer ' . $token],
-                    'query'   => ['includeItems' => 'true'],
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs/' . rawurlencode($catalogId) . '/categories', [
+                'query' => ['includeItems' => 'true'],
+            ]);
             if ($response->getStatusCode() !== 200) return [];
             $categories = $response->toArray(false);
             if (!is_array($categories)) return [];
@@ -1203,10 +1194,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         if (!$token || $normalizedItemId === '') return null;
 
         try {
-            $response = $this->ifoodClient->request('GET',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/' . rawurlencode($normalizedItemId) . '/flat',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/items/' . rawurlencode($normalizedItemId) . '/flat');
 
             if ($response->getStatusCode() !== 200) return null;
             $item = $response->toArray(false);
@@ -1433,10 +1421,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->request('GET',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs/' . rawurlencode($catalogId) . '/categories');
             if ($response->getStatusCode() !== 200) {
                 return [];
             }
@@ -1464,17 +1449,12 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         string $merchantId,
         string $catalogId,
         string $categoryId,
-        array $categoryBody,
-        string $token
+        array $categoryBody
     ): array {
         try {
-            $response = $this->ifoodClient->request('PATCH',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($categoryId),
-                [
-                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => $categoryBody,
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('PATCH', $merchantId, '/catalogs/' . rawurlencode($catalogId) . '/categories/' . rawurlencode($categoryId), [
+                'json' => $categoryBody,
+            ]);
 
             $statusCode = $response->getStatusCode();
             $body = $statusCode >= 200 && $statusCode < 300 ? '' : substr($response->getContent(false), 0, 2000);
@@ -1538,7 +1518,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         if ($storedIfoodId !== '') {
             $storedIdKnownRemotely = in_array($storedIfoodId, $knownRemoteCategoryIds, true);
             if ($storedIdKnownRemotely || empty($knownRemoteCategoryIds)) {
-                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $storedIfoodId, $categoryBody, $token);
+                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $storedIfoodId, $categoryBody);
                 if ($patchResult['ok']) {
                     $remoteCategoriesByName[$normalizedName] = $storedIfoodId;
                     return $storedIfoodId;
@@ -1574,7 +1554,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
             $existingId = $this->normalizeString($remoteCategoriesByName[$normalizedName]);
             // Persiste vinculo local → remoto para proximas publicacoes
             if ($existingId !== '') {
-                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $existingId, $categoryBody, $token);
+                $patchResult = $this->patchIfoodCatalogCategoryV2($merchantId, $catalogId, $existingId, $categoryBody);
                 if ($patchResult['ok'] || !$patchResult['not_found']) {
                     $this->persistIfoodCategoryCode($localCategoryId, $existingId);
                     return $existingId;
@@ -1596,13 +1576,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
         // Prioridade 3: Categoria nova — cria via POST e armazena vinculo
         try {
-            $response = $this->ifoodClient->request('POST',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/catalogs/' . rawurlencode($catalogId) . '/categories',
-                [
-                    'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                    'json'    => $categoryBody,
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('POST', $merchantId, '/catalogs/' . rawurlencode($catalogId) . '/categories', [
+                'json' => $categoryBody,
+            ]);
 
             $statusCode = $response->getStatusCode();
             if ($statusCode < 200 || $statusCode >= 300) {
@@ -2364,18 +2340,11 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->request('POST',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/image/upload',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type' => 'application/json',
-                    ],
-                    'json' => [
-                        'image' => $dataUri,
-                    ],
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('POST', $merchantId, '/image/upload', [
+                'json' => [
+                    'image' => $dataUri,
+                ],
+            ]);
 
             $statusCode = $response->getStatusCode();
             $body = $response->toArray(false);
@@ -2495,13 +2464,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
                 $lastPayload = $attemptPayload;
                 try {
-                    $response = $this->ifoodClient->request('PUT',
-                        self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items',
-                        [
-                            'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
-                            'json'    => $attemptPayload,
-                        ]
-                    );
+                    $response = $this->ifoodClient->requestCatalogEndpoint('PUT', $merchantId, '/items', [
+                        'json' => $attemptPayload,
+                    ]);
                     $status = $response->getStatusCode();
                     $body = substr($response->getContent(false), 0, 2000);
                     if ($status >= 200 && $status < 300) {

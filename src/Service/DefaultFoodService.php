@@ -35,6 +35,7 @@ class DefaultFoodService
     protected static $foodPeople;
     protected static $logger;
     protected static $app;
+    protected ?DomainService $domainService = null;
 
 
     public function __construct(
@@ -101,6 +102,26 @@ class DefaultFoodService
         $this->whatsAppService = $service;
 
         return $this->whatsAppService;
+    }
+
+    protected function resolveDomainService(): ?DomainService
+    {
+        if (isset($this->domainService) && $this->domainService instanceof DomainService) {
+            return $this->domainService;
+        }
+
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(DomainService::class)) {
+            return null;
+        }
+
+        $service = $this->container->get(DomainService::class);
+        if (!$service instanceof DomainService) {
+            return null;
+        }
+
+        $this->domainService = $service;
+
+        return $this->domainService;
     }
 
     protected function resolveFood99Client(): ?Food99Client
@@ -629,31 +650,6 @@ class DefaultFoodService
         self::$logger->$type($log);
     }
 
-    protected function resolvePublicApiEntrypoint(): string
-    {
-        $baseUrl = $_ENV['PUBLIC_API_ENTRYPOINT']
-            ?? $_ENV['API_ENTRYPOINT']
-            ?? $_ENV['API_BASE_URL']
-            ?? $_SERVER['PUBLIC_API_ENTRYPOINT']
-            ?? $_SERVER['API_ENTRYPOINT']
-            ?? $_SERVER['API_BASE_URL']
-            ?? getenv('PUBLIC_API_ENTRYPOINT')
-            ?? getenv('API_ENTRYPOINT')
-            ?? getenv('API_BASE_URL')
-            ?: 'https://api.controleonline.com';
-
-        $baseUrl = trim((string) $baseUrl);
-        if ($baseUrl === '') {
-            $baseUrl = 'https://api.controleonline.com';
-        }
-
-        if (!preg_match('#^https?://#i', $baseUrl)) {
-            $baseUrl = 'https://' . ltrim($baseUrl, '/');
-        }
-
-        return rtrim($baseUrl, '/');
-    }
-
     protected function resolvePublicAppDomain(): string
     {
         $domain = $_ENV['PUBLIC_APP_DOMAIN']
@@ -695,9 +691,19 @@ class DefaultFoodService
             return null;
         }
 
+        $domainService = $this->resolveDomainService();
+        $mainDomain = trim((string) ($domainService?->getMainDomain() ?? ''));
+        if ($mainDomain === '') {
+            $mainDomain = 'api.controleonline.com';
+        }
+
+        if (!preg_match('#^https?://#i', $mainDomain)) {
+            $mainDomain = 'https://' . ltrim($mainDomain, '/');
+        }
+
         return sprintf(
             '%s/files/%s/download?app-domain=%s',
-            $this->resolvePublicApiEntrypoint(),
+            rtrim($mainDomain, '/'),
             $normalizedFileId,
             rawurlencode($this->resolvePublicAppDomain())
         );

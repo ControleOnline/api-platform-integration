@@ -48,7 +48,6 @@ class iFoodService extends AbstractMarketplaceService implements
     EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_IFOOD;
-    private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
     private const SELF_DELIVERY_CONFIRMATION_URL = 'https://confirmacao-entrega-propria.ifood.com.br/';
     private const MAX_IMAGE_UPLOAD_BYTES = 5242880; // 5MB
     private const IMAGE_UPLOAD_PAYLOAD_MARGIN_BYTES = 512;
@@ -507,7 +506,6 @@ class iFoodService extends AbstractMarketplaceService implements
         $storedOrderDetails = $order instanceof Order
             ? $this->findStoredIfoodOrderDetailsFromContext($otherInformations)
             : [];
-        $fetchedOrderDetails = [];
         $orderDetails = [];
 
         if ($eventOrderDetails !== []) {
@@ -516,11 +514,6 @@ class iFoodService extends AbstractMarketplaceService implements
                 : $eventOrderDetails;
         } elseif ($storedOrderDetails !== []) {
             $orderDetails = $storedOrderDetails;
-        } else {
-            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
-            if (is_array($fetchedOrderDetails)) {
-                $orderDetails = $fetchedOrderDetails;
-            }
         }
 
         if ($order instanceof Order && $orderDetails !== []) {
@@ -531,7 +524,7 @@ class iFoodService extends AbstractMarketplaceService implements
             'order_id' => $orderId,
             'has_event_snapshot' => $eventOrderDetails !== [],
             'has_stored_snapshot' => $storedOrderDetails !== [],
-            'has_fetched_details' => is_array($fetchedOrderDetails) && $fetchedOrderDetails !== [],
+            'has_fetched_details' => false,
             'resolved_customer_id' => $this->normalizeString($orderDetails['customer']['id'] ?? null),
             'resolved_customer_document' => $this->normalizeString($orderDetails['customer']['documentNumber'] ?? null),
             'resolved_delivery_address' => $this->normalizeString($orderDetails['delivery']['deliveryAddress']['formattedAddress'] ?? null),
@@ -541,18 +534,6 @@ class iFoodService extends AbstractMarketplaceService implements
         ]);
 
         return is_array($orderDetails) ? $orderDetails : [];
-    }
-
-    private function fetchOrderDetails(string $orderId): ?array
-    {
-        $service = $this->resolveMarketplaceCapabilityService(IfoodStoreOperationsService::class, false);
-        if (!$service instanceof IfoodStoreOperationsService) {
-            return null;
-        }
-
-        $details = $service->fetchOrderDetails($orderId);
-
-        return is_array($details) ? $details : null;
     }
 
     private function getIfoodContextOtherInformations(Order $order): array
@@ -1730,23 +1711,15 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'PATCH',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/price',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type'  => 'application/json',
+            $response = $this->ifoodClient->requestCatalogEndpoint('PATCH', $merchantId, '/items/price', [
+                'json' => [
+                    'itemId' => $normalizedItemId,
+                    'price'  => [
+                        'value'         => $roundedPrice,
+                        'originalValue' => $roundedPrice,
                     ],
-                    'json' => [
-                        'itemId' => $normalizedItemId,
-                        'price'  => [
-                            'value'         => $roundedPrice,
-                            'originalValue' => $roundedPrice,
-                        ],
-                    ],
-                ]
-            );
+                ],
+            ]);
 
             $status = $response->getStatusCode();
             if ($status >= 200 && $status < 300) {
@@ -1791,11 +1764,7 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'GET',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/opening-hours',
-                ['headers' => ['Authorization' => 'Bearer ' . $token]]
-            );
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/opening-hours');
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1854,17 +1823,9 @@ class iFoodService extends AbstractMarketplaceService implements
         $payload = ['storeId' => $merchantId, 'shifts' => $flatShifts];
 
         try {
-            $response = $this->ifoodClient->request(
-                'PUT',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/opening-hours',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type'  => 'application/json',
-                    ],
-                    'json' => $payload,
-                ]
-            );
+            $response = $this->ifoodClient->requestMerchantEndpoint('PUT', '/merchants/' . rawurlencode($merchantId) . '/opening-hours', [
+                'json' => $payload,
+            ]);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1917,23 +1878,15 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'PATCH',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/options/price',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type'  => 'application/json',
+            $response = $this->ifoodClient->requestCatalogEndpoint('PATCH', $merchantId, '/options/price', [
+                'json' => [
+                    'optionId' => $normalizedOptionId,
+                    'price'    => [
+                        'value'         => $roundedPrice,
+                        'originalValue' => $roundedPrice,
                     ],
-                    'json' => [
-                        'optionId' => $normalizedOptionId,
-                        'price'    => [
-                            'value'         => $roundedPrice,
-                            'originalValue' => $roundedPrice,
-                        ],
-                    ],
-                ]
-            );
+                ],
+            ]);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1989,20 +1942,12 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'PATCH',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/items/status',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type'  => 'application/json',
-                    ],
-                    'json' => [
-                        'itemId' => $normalizedItemId,
-                        'status' => $normalizedStatus,
-                    ],
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('PATCH', $merchantId, '/items/status', [
+                'json' => [
+                    'itemId' => $normalizedItemId,
+                    'status' => $normalizedStatus,
+                ],
+            ]);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -2058,20 +2003,12 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->request(
-                'PATCH',
-                self::CATALOG_V2_BASE . rawurlencode($merchantId) . '/options/status',
-                [
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                        'Content-Type'  => 'application/json',
-                    ],
-                    'json' => [
-                        'optionId' => $normalizedOptionId,
-                        'status'   => $normalizedStatus,
-                    ],
-                ]
-            );
+            $response = $this->ifoodClient->requestCatalogEndpoint('PATCH', $merchantId, '/options/status', [
+                'json' => [
+                    'optionId' => $normalizedOptionId,
+                    'status'   => $normalizedStatus,
+                ],
+            ]);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {

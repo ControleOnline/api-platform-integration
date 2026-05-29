@@ -9,7 +9,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class IfoodClient
 {
-    public const API_BASE_URL = 'https://merchant-api.ifood.com.br';
+    private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
 
     private static array $authTokenCache = [];
 
@@ -19,6 +19,42 @@ class IfoodClient
         private HttpClientInterface $httpClient,
         private ?LoggerService $loggerService = null,
     ) {}
+
+    public function getAuthorizationUrl(): string
+    {
+        return $this->buildApiUrl('/authentication/v1.0/oauth/authorize');
+    }
+
+    public function getAccessTokenUrl(): string
+    {
+        return $this->buildApiUrl('/authentication/v1.0/oauth/token');
+    }
+
+    public function requestMerchantEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    {
+        return $this->requestApi($method, '/merchant/v1.0' . $this->normalizePath($path), $options);
+    }
+
+    public function requestOrderEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    {
+        return $this->requestApi($method, '/order/v1.0' . $this->normalizePath($path), $options);
+    }
+
+    public function requestShippingEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    {
+        return $this->requestApi($method, '/shipping/v1.0' . $this->normalizePath($path), $options);
+    }
+
+    public function requestCatalogEndpoint(string $method, string $merchantId, string $path, array $options = []): ResponseInterface
+    {
+        $normalizedMerchantId = rawurlencode(trim($merchantId));
+
+        return $this->requestApi(
+            $method,
+            '/catalog/v2.0/merchants/' . $normalizedMerchantId . $this->normalizePath($path),
+            $options
+        );
+    }
 
     public function request(string $method, string $url, array $options = []): ResponseInterface
     {
@@ -46,7 +82,7 @@ class IfoodClient
         }
 
         try {
-            $response = $this->httpClient->request('POST', self::API_BASE_URL . '/authentication/v1.0/oauth/token', [
+            $response = $this->request('POST', $this->getAccessTokenUrl(), [
                 'headers' => ['content-type' => 'application/x-www-form-urlencoded'],
                 'body' => http_build_query([
                     'grantType' => 'client_credentials',
@@ -104,6 +140,26 @@ class IfoodClient
     public function resetAccessTokenCache(): void
     {
         self::$authTokenCache = [];
+    }
+
+    private function requestApi(string $method, string $path, array $options = []): ResponseInterface
+    {
+        return $this->request($method, $this->buildApiUrl($path), $options);
+    }
+
+    private function buildApiUrl(string $path): string
+    {
+        return self::API_BASE_URL . $this->normalizePath($path);
+    }
+
+    private function normalizePath(string $path): string
+    {
+        $normalized = trim($path);
+        if ($normalized === '') {
+            return '';
+        }
+
+        return '/' . ltrim($normalized, '/');
     }
 
     private function shouldAttachAuthHeader(string $url): bool

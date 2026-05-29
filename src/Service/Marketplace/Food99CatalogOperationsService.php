@@ -299,7 +299,7 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         return [];
     }
 
-    private function fetchMenuProducts(People $provider, array $productIds = []): array
+    public function fetchMenuProducts(People $provider, array $productIds = []): array
     {
         $connection = $this->entityManager->getConnection();
         $params = [
