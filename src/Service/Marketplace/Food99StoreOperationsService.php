@@ -235,6 +235,8 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
             ?? $payload['appDomain']
             ?? $this->resolvePublicAppDomain();
 
+        unset($payload['appDomain']);
+
         return $payload;
     }
 
@@ -1588,6 +1590,8 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
+        $payload = $this->prepareFood99PortalPayload($payload);
+
         return $this->resolveFood99Client()?->listAuthorizedStores($payload);
     }
 
@@ -1595,12 +1599,16 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
+        $payload = $this->prepareFood99PortalPayload($payload);
+
         return $this->resolveFood99Client()?->listBindStores($payload);
     }
 
     public function unbindStore(People $provider, array $payload = []): ?array
     {
         $this->init();
+
+        $payload = $this->prepareFood99PortalPayload($payload);
 
         return $this->resolveFood99Client()?->unbindStore($payload);
     }

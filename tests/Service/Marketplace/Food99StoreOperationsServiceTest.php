@@ -51,7 +51,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $fakeClient = new FakeFood99Client();
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
 
-        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore'], true)) {
+        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore', 'listAuthorizedStores', 'listBindStores'], true)) {
             $domainService = $this->createMock(DomainService::class);
             $domainService->expects(self::once())
                 ->method('getMainDomain')
@@ -62,7 +62,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $response = $service->{$serviceMethod}(...$arguments);
 
         $expectedPayload = $arguments[0] ?? [];
-        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore'], true)) {
+        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore', 'listAuthorizedStores', 'listBindStores'], true)) {
             $expectedPayload['app_domain'] = 'api.custom-domain.test';
         }
 
@@ -87,6 +87,12 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
         $provider = $this->newTestPeople(3);
 
+        $domainService = $this->createMock(DomainService::class);
+        $domainService->expects(self::once())
+            ->method('getMainDomain')
+            ->willReturn('api.custom-domain.test');
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
+
         $response = $service->unbindStore($provider, [
             'shop_id' => '5764612470103345070',
         ]);
@@ -97,6 +103,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         self::assertSame('/shop_center/v1/authorize/unbind', $fakeClient->appCalls[0]['uri']);
         self::assertSame([
             'shop_id' => '5764612470103345070',
+            'app_domain' => 'api.custom-domain.test',
         ], $fakeClient->appCalls[0]['payload']);
         self::assertSame([
             'errno' => 0,
@@ -105,6 +112,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
                 'uri' => '/shop_center/v1/authorize/unbind',
                 'payload' => [
                     'shop_id' => '5764612470103345070',
+                    'app_domain' => 'api.custom-domain.test',
                 ],
             ],
         ], $response);

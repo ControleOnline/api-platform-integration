@@ -158,6 +158,116 @@ class Food99ClientTest extends TestCase
         }
     }
 
+    #[DataProvider('providePortalApiWrappers')]
+    public function testPortalApiWrappersUsePortalEndpointAndNormalizeAppDomain(
+        string $clientMethod,
+        string $httpMethod,
+        array $payload,
+        string $expectedUrl,
+        string $transportOption
+    ): void {
+        $previousValues = [
+            'OAUTH_99FOOD_CLIENT_ID' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+            'OAUTH_99FOOD_CLIENT_ID_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+        ];
+        unset($_ENV['OAUTH_99FOOD_CLIENT_ID'], $_ENV['OAUTH_99FOOD_CLIENT_SECRET']);
+
+        $_SERVER['OAUTH_99FOOD_CLIENT_ID'] = 'app-id';
+        $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] = 'app-secret';
+
+        $capturedRequest = null;
+        $httpClient = new RecordingHttpClient(function (string $method, string $url, array $options) use (&$capturedRequest) {
+            $capturedRequest = compact('method', 'url', 'options');
+
+            return RecordedResponse::json([
+                'errno' => 0,
+                'data' => [],
+            ]);
+        });
+
+        $client = new Food99Client($httpClient);
+
+        try {
+            self::assertSame([
+                'errno' => 0,
+                'data' => [],
+            ], $client->{$clientMethod}($payload));
+
+            self::assertIsArray($capturedRequest);
+            self::assertSame($httpMethod, $capturedRequest['method']);
+            self::assertTrue(str_starts_with($capturedRequest['url'], $expectedUrl));
+
+            $expectedPayload = array_diff_key($payload, ['appDomain' => true]);
+            $expectedPayload['app_domain'] = 'portal.controleonline.test';
+            $expectedPayload['app_id'] = 'app-id';
+            $expectedPayload['app_secret'] = 'app-secret';
+
+            self::assertSame($expectedPayload, $capturedRequest['options'][$transportOption]);
+        } finally {
+            $this->restoreEnvironmentValues($previousValues);
+        }
+    }
+
+    public static function providePortalApiWrappers(): iterable
+    {
+        yield 'authorization page' => [
+            'clientMethod' => 'getAuthorizationPage',
+            'httpMethod' => 'POST',
+            'payload' => [
+                'appDomain' => 'portal.controleonline.test',
+                'foo' => 'bar',
+            ],
+            'expectedUrl' => 'https://openplatform-portal-food.99app.com/shop_center/v1/authorize/get_url',
+            'transportOption' => 'json',
+        ];
+
+        yield 'bind store' => [
+            'clientMethod' => 'bindStore',
+            'httpMethod' => 'POST',
+            'payload' => [
+                'appDomain' => 'portal.controleonline.test',
+                'shop_id' => '5764612470103345070',
+            ],
+            'expectedUrl' => 'https://openplatform-portal-food.99app.com/shop_center/v1/authorize/bind',
+            'transportOption' => 'json',
+        ];
+
+        yield 'authorized stores' => [
+            'clientMethod' => 'listAuthorizedStores',
+            'httpMethod' => 'GET',
+            'payload' => [
+                'appDomain' => 'portal.controleonline.test',
+                'page' => 1,
+            ],
+            'expectedUrl' => 'https://openplatform-portal-food.99app.com/shop_center/v1/authorize/list',
+            'transportOption' => 'query',
+        ];
+
+        yield 'bound stores' => [
+            'clientMethod' => 'listBindStores',
+            'httpMethod' => 'GET',
+            'payload' => [
+                'appDomain' => 'portal.controleonline.test',
+                'page' => 1,
+            ],
+            'expectedUrl' => 'https://openplatform-portal-food.99app.com/shop_center/v1/shop/list',
+            'transportOption' => 'query',
+        ];
+
+        yield 'unbind store' => [
+            'clientMethod' => 'unbindStore',
+            'httpMethod' => 'POST',
+            'payload' => [
+                'appDomain' => 'portal.controleonline.test',
+                'shop_id' => '5764612470103345070',
+            ],
+            'expectedUrl' => 'https://openplatform-portal-food.99app.com/shop_center/v1/authorize/unbind',
+            'transportOption' => 'json',
+        ];
+    }
+
     public function testOpenDeliveryPollingDetailsAndAcknowledgementUseBearerAuthAndQueryString(): void
     {
         $previousValues = [

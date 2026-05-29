@@ -59,6 +59,8 @@ class Food99Client
             $payload['app_domain'] = $payload['appDomain'];
         }
 
+        unset($payload['appDomain']);
+
         return $payload;
     }
 
@@ -82,17 +84,29 @@ class Food99Client
 
     public function listAuthorizedStores(array $payload = []): ?array
     {
-        return $this->callAppEndpointWithResponse('GET', '/shop_center/v1/authorize/list', $payload);
+        return $this->callAppEndpointWithResponse(
+            'GET',
+            '/shop_center/v1/authorize/list',
+            $this->preparePortalPayload($payload)
+        );
     }
 
     public function listBindStores(array $payload = []): ?array
     {
-        return $this->callAppEndpointWithResponse('GET', '/shop_center/v1/shop/list', $payload);
+        return $this->callAppEndpointWithResponse(
+            'GET',
+            '/shop_center/v1/shop/list',
+            $this->preparePortalPayload($payload)
+        );
     }
 
     public function unbindStore(array $payload = []): ?array
     {
-        return $this->callAppEndpointWithResponse('POST', '/shop_center/v1/authorize/unbind', $payload);
+        return $this->callAppEndpointWithResponse(
+            'POST',
+            '/shop_center/v1/authorize/unbind',
+            $this->preparePortalPayload($payload)
+        );
     }
 
     public function callStoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
