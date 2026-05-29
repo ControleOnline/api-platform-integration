@@ -45,7 +45,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         return self::APP_CONTEXT;
     }
 
-    private function resolveIfoodInvoicePaymentTypeData(array $payment): array
+    public function resolveIfoodInvoicePaymentTypeData(array $payment): array
     {
         $method = strtoupper($this->normalizeString($payment['method'] ?? null));
         $type = strtoupper($this->normalizeString($payment['type'] ?? null));
@@ -80,7 +80,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         return $paymentTypeData;
     }
 
-    private function resolveIfoodProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
+    public function resolveIfoodProviderPaymentType(People $provider, array $paymentTypeData, ?Wallet $wallet = null): PaymentType
     {
         $candidateNames = array_values(array_unique(array_filter(array_merge(
             [(string) ($paymentTypeData['paymentType'] ?? '')],
@@ -125,7 +125,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         return $paymentType;
     }
 
-    private function resolveIfoodSettlementPaymentType(People $provider, ?Wallet $wallet = null): PaymentType
+    public function resolveIfoodSettlementPaymentType(People $provider, ?Wallet $wallet = null): PaymentType
     {
         return $this->resolveIfoodProviderPaymentType($provider, [
             'paymentType' => 'iFood',
@@ -136,7 +136,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         ], $wallet);
     }
 
-    private function ensureIfoodWalletPaymentType(
+    public function ensureIfoodWalletPaymentType(
         Wallet $wallet,
         PaymentType $paymentType,
         $paymentCode = null
@@ -181,7 +181,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
             || $paymentType === 'ONLINE';
     }
 
-    private function resolveIfoodReceivableWallet(
+    public function resolveIfoodReceivableWallet(
         Order $order,
         PaymentType $paymentType,
         array $paymentTypeData,
@@ -198,7 +198,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         return $this->walletService->discoverWallet($order->getProvider(), $walletName);
     }
 
-    private function applyIfoodInvoiceContract(
+    public function applyIfoodInvoiceContract(
         Invoice $invoice,
         PaymentType $paymentType,
         array $metadata,
@@ -241,7 +241,7 @@ class IfoodFinancialOperationsService extends AbstractMarketplaceService
         $this->entityManager->flush();
     }
 
-    private function createIfoodPayableInvoice(
+    public function createIfoodPayableInvoice(
         Order $order,
         PaymentType $paymentType,
         float $amount,

@@ -38,6 +38,7 @@ use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Contracts\Service\Attribute\Required;
 
 class IfoodStoreOperationsService extends AbstractMarketplaceService
 {
@@ -47,6 +48,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         return self::APP_CONTEXT;
     }
+
+    private ?IfoodFinancialOperationsService $ifoodFinancialOperationsService = null;
 
     private function buildOrderIntegrationLockKey(string $orderId): string
     {
@@ -77,6 +80,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
             return false;
         }
+    }
+
+    #[Required]
+    public function setIfoodFinancialOperationsService(IfoodFinancialOperationsService $ifoodFinancialOperationsService): void
+    {
+        $this->ifoodFinancialOperationsService = $ifoodFinancialOperationsService;
     }
 
     private function releaseOrderIntegrationLock(string $orderId): void
@@ -1951,6 +1960,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function addReceiveInvoices(Order $order, array $payments)
     {
         $paidStatus = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
+        $financialOperationsService = $this->ifoodFinancialOperationsService;
+        if (!$financialOperationsService instanceof IfoodFinancialOperationsService) {
+            throw new \LogicException('IfoodFinancialOperationsService indisponivel.');
+        }
 
         foreach ($payments as $payment) {
             if (!is_array($payment)) {
@@ -1962,19 +1975,19 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 continue;
             }
 
-            $paymentTypeData = $this->resolveIfoodInvoicePaymentTypeData($payment);
+            $paymentTypeData = $financialOperationsService->resolveIfoodInvoicePaymentTypeData($payment);
             $isPrepaid = (bool) ($payment['prepaid'] ?? false);
-            $paymentType = $this->resolveIfoodProviderPaymentType(
+            $paymentType = $financialOperationsService->resolveIfoodProviderPaymentType(
                 $order->getProvider(),
                 $paymentTypeData
             );
-            $receivableWallet = $this->resolveIfoodReceivableWallet(
+            $receivableWallet = $financialOperationsService->resolveIfoodReceivableWallet(
                 $order,
                 $paymentType,
                 $paymentTypeData,
                 $isPrepaid
             );
-            $this->ensureIfoodWalletPaymentType(
+            $financialOperationsService->ensureIfoodWalletPaymentType(
                 $receivableWallet,
                 $paymentType,
                 $paymentTypeData['paymentCode'] ?? null
@@ -1989,7 +2002,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 $receivableWallet
             );
 
-            $this->applyIfoodInvoiceContract(
+            $financialOperationsService->applyIfoodInvoiceContract(
                 $invoice,
                 $paymentType,
                 [
@@ -2738,10 +2751,18 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $ifoodWallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
-        $paymentType = $this->resolveIfoodSettlementPaymentType($order->getProvider(), $providerWallet);
+        $financialOperationsService = $this->ifoodFinancialOperationsService;
+        if (!$financialOperationsService instanceof IfoodFinancialOperationsService) {
+            throw new \LogicException('IfoodFinancialOperationsService indisponivel.');
+        }
+
+        $paymentType = $financialOperationsService->resolveIfoodSettlementPaymentType(
+            $order->getProvider(),
+            $providerWallet
+        );
         $order->setRetrieveContact(self::$foodPeople);
 
-        $this->createIfoodPayableInvoice(
+        $financialOperationsService->createIfoodPayableInvoice(
             $order,
             $paymentType,
             $deliveryFee,
@@ -2767,8 +2788,16 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         $status = $this->statusService->discoveryStatus('closed', 'paid', 'invoice');
         $providerWallet = $this->walletService->discoverWallet($order->getProvider(), self::$app);
         $ifoodWallet = $this->walletService->discoverWallet(self::$foodPeople, self::$app);
-        $paymentType = $this->resolveIfoodSettlementPaymentType($order->getProvider(), $providerWallet);
-        $this->createIfoodPayableInvoice(
+        $financialOperationsService = $this->ifoodFinancialOperationsService;
+        if (!$financialOperationsService instanceof IfoodFinancialOperationsService) {
+            throw new \LogicException('IfoodFinancialOperationsService indisponivel.');
+        }
+
+        $paymentType = $financialOperationsService->resolveIfoodSettlementPaymentType(
+            $order->getProvider(),
+            $providerWallet
+        );
+        $financialOperationsService->createIfoodPayableInvoice(
             $order,
             $paymentType,
             $additionalFees,

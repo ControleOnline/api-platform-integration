@@ -250,7 +250,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             $state['remote_order_state'] = $state['remote_order_state'] ?: $this->resolveRemoteOrderStateByEventCode($latestEventType);
 
             if (is_array($payload['order'] ?? null)) {
-                $snapshot = $this->extractOrderDetailSnapshot($payload['order']);
+                $snapshot = $this->iFoodService?->extractOrderDetailSnapshot($payload['order']) ?? [];
                 $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($snapshot['code'] ?? null);
                 foreach ($snapshot as $fieldName => $fieldValue) {
                     if (($state[$fieldName] ?? '') === '' && $fieldValue !== '') {
@@ -263,7 +263,8 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         $storedOrderDetails = $this->findStoredIfoodOrderDetails($order);
         if ($storedOrderDetails !== []) {
             $state['ifood_code'] = $state['ifood_code'] ?: $this->normalizeString($storedOrderDetails['displayId'] ?? null);
-            foreach ($this->extractOrderDetailSnapshot($storedOrderDetails) as $fieldName => $fieldValue) {
+            $snapshot = $this->iFoodService?->extractOrderDetailSnapshot($storedOrderDetails) ?? [];
+            foreach ($snapshot as $fieldName => $fieldValue) {
                 if (($state[$fieldName] ?? '') === '' && $fieldValue !== '') {
                     $state[$fieldName] = $fieldValue;
                 }
