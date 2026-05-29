@@ -470,7 +470,7 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         return $connection->fetchAllAssociative($sql, $params);
     }
 
-    private function buildMenuProductView(array $row): array
+    private function buildMenuProductView(array $row, array $children = []): array
     {
         $productId = (int) ($row['id'] ?? 0);
         $productName = trim((string) ($row['product_name'] ?? ''));
@@ -511,6 +511,8 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
             'suggested_app_item_id' => $appItemId,
             'eligible' => empty($blockers),
             'blockers' => $blockers,
+            'children' => array_values($children),
+            'has_children' => !empty($children),
         ];
 
         $view['sync'] = $this->buildFood99ProductSyncState($view, $published);
@@ -522,9 +524,19 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
     {
         $this->init();
 
+        $rows = $this->fetchMenuProducts($provider);
+        $childrenByParent = $this->buildMenuProductChildrenByParent(
+            $provider,
+            array_column($rows, 'id')
+        );
+
         $products = array_map(
-            fn(array $row) => $this->buildMenuProductView($row),
-            $this->fetchMenuProducts($provider)
+            function (array $row) use ($childrenByParent): array {
+                $productId = (int) ($row['id'] ?? 0);
+
+                return $this->buildMenuProductView($row, $childrenByParent[$productId] ?? []);
+            },
+            $rows
         );
 
         return [
@@ -593,7 +605,83 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
             )),
             'has_required_modifiers' => !empty($product['has_required_modifiers']),
             'image_url' => trim((string) ($product['image_url'] ?? '')),
+            'children' => $product['children'] ?? [],
         ]);
+    }
+
+    private function buildMenuProductChildrenByParent(People $provider, array $productIds = []): array
+    {
+        $modifierRows = $this->fetchMenuModifierRows($provider, $this->normalizeProductIds($productIds));
+        return $this->groupMenuProductChildrenByParent($modifierRows);
+    }
+
+    private function groupMenuProductChildrenByParent(array $modifierRows): array
+    {
+        if (empty($modifierRows)) {
+            return [];
+        }
+
+        $childrenByParent = [];
+
+        foreach ($modifierRows as $modifierRow) {
+            $parentProductId = (int) ($modifierRow['parent_product_id'] ?? 0);
+            $groupId = (int) ($modifierRow['product_group_id'] ?? 0);
+            $childProductId = (int) ($modifierRow['child_product_id'] ?? 0);
+            $childName = trim((string) ($modifierRow['child_product_name'] ?? ''));
+
+            if ($parentProductId <= 0 || $groupId <= 0 || $childProductId <= 0 || $childName === '') {
+                continue;
+            }
+
+            if (!isset($childrenByParent[$parentProductId][$groupId])) {
+                $isRequired = (int) ($modifierRow['group_required'] ?? 0) === 1;
+                $minimum = max(0, (int) round((float) ($modifierRow['group_minimum'] ?? 0)));
+                $maximum = max(0, (int) round((float) ($modifierRow['group_maximum'] ?? 0)));
+
+                if ($isRequired && $minimum === 0) {
+                    $minimum = 1;
+                }
+
+                $childrenByParent[$parentProductId][$groupId] = [
+                    'id' => $groupId,
+                    'name' => trim((string) ($modifierRow['product_group_name'] ?? 'Grupo')),
+                    'required' => $isRequired,
+                    'minimum' => $minimum,
+                    'maximum' => $maximum,
+                    'order' => (int) ($modifierRow['group_order'] ?? 0),
+                    'items' => [],
+                ];
+            }
+
+            $rawChildPrice = $modifierRow['child_relation_price'] ?? null;
+            $childPrice = ($rawChildPrice === null || $rawChildPrice === '')
+                ? (float) ($modifierRow['child_base_price'] ?? 0)
+                : (float) $rawChildPrice;
+
+            $childrenByParent[$parentProductId][$groupId]['items'][] = [
+                'id' => $childProductId,
+                'name' => $childName,
+                'description' => trim((string) ($modifierRow['child_description'] ?? '')),
+                'price' => max(0, round($childPrice, 2)),
+                'code' => trim((string) ($modifierRow['child_food99_code'] ?? '')) ?: (string) $childProductId,
+                'image_url' => $this->buildPublicFileDownloadUrl($modifierRow['child_cover_file_id'] ?? null),
+            ];
+        }
+
+        $normalized = [];
+        foreach ($childrenByParent as $parentProductId => $groups) {
+            $normalized[$parentProductId] = array_map(
+                static function (array $group): array {
+                    $group['items'] = array_values($group['items'] ?? []);
+                    unset($group['order']);
+
+                    return $group;
+                },
+                array_values($groups)
+            );
+        }
+
+        return $normalized;
     }
 
     private function buildFood99CategorySyncHash(array $category): string
@@ -796,9 +884,15 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
             return;
         }
 
+        $childrenByParent = $this->buildMenuProductChildrenByParent(
+            $provider,
+            array_column($rows, 'id')
+        );
+
         $categoryIds = [];
         foreach ($rows as $row) {
-            $product = $this->buildMenuProductView($row);
+            $productId = (int) ($row['id'] ?? 0);
+            $product = $this->buildMenuProductView($row, $childrenByParent[$productId] ?? []);
             $productId = (int) ($product['id'] ?? 0);
             if ($productId <= 0 || empty($product['eligible'])) {
                 continue;
