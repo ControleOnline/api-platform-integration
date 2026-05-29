@@ -3,6 +3,7 @@
 namespace ControleOnline\Service\Marketplace;
 
 use ControleOnline\Service\AddressService;
+use ControleOnline\Service\Client\IfoodClient;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
@@ -29,12 +30,14 @@ use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
 use ControleOnline\Service\Marketplace\MarketplaceLogisticsQuoteProviderInterface;
 use ControleOnline\Service\Marketplace\MarketplaceOrderSnapshotProviderInterface;
+use ControleOnline\Service\Marketplace\IfoodPeopleOperationsService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class IfoodStoreOperationsService extends AbstractMarketplaceService
 {
@@ -91,6 +94,24 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
     }
 
+    private function resolveIfoodPeopleOperationsService(): ?IfoodPeopleOperationsService
+    {
+        if (!$this->container instanceof ContainerInterface || !$this->container->has(IfoodPeopleOperationsService::class)) {
+            return null;
+        }
+
+        $service = $this->container->get(IfoodPeopleOperationsService::class);
+
+        return $service instanceof IfoodPeopleOperationsService ? $service : null;
+    }
+
+    private function resolveIfoodService(): ?iFoodService
+    {
+        $service = $this->resolveMarketplaceServiceInstance(iFoodService::class);
+
+        return $service instanceof iFoodService ? $service : null;
+    }
+
     private function findOrderByExternalId(string $orderId): ?Order
     {
         if ($orderId === '') {
@@ -118,6 +139,105 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         return null;
+    }
+
+    private function resolveEventCode(array $event): string
+    {
+        $code = $event['fullCode']
+            ?? $event['code']
+            ?? $event['type']
+            ?? $event['eventType']
+            ?? ($event['__webhook']['event_type'] ?? null);
+
+        return strtoupper($this->normalizeString($code));
+    }
+
+    private function extractEventTimestamp(array $payload): string
+    {
+        $raw = $payload['createdAt']
+            ?? ($payload['created_at'] ?? ($payload['__webhook']['event_at'] ?? null));
+
+        if (is_numeric($raw)) {
+            $timestamp = (int) $raw;
+            if ($timestamp > 9999999999) {
+                $timestamp = (int) floor($timestamp / 1000);
+            }
+
+            return date('Y-m-d H:i:s', max(0, $timestamp));
+        }
+
+        $normalized = $this->normalizeString($raw);
+        if ($normalized === '') {
+            return date('Y-m-d H:i:s');
+        }
+
+        try {
+            return (new DateTime($normalized))->format('Y-m-d H:i:s');
+        } catch (\Throwable) {
+            return date('Y-m-d H:i:s');
+        }
+    }
+
+    private function resolveRemoteOrderStateByEventCode(string $eventCode): string
+    {
+        $normalized = strtoupper(str_replace(['.', '-', ' '], '_', $this->normalizeString($eventCode)));
+        if ($normalized === '') {
+            return 'unknown';
+        }
+
+        return match ($normalized) {
+            'PLACED', 'ORDER_CREATED', 'CREATED', 'PENDING', 'ORDER_PENDING' => 'new',
+            'CONFIRMED', 'ORDER_CONFIRMED', 'ACCEPTED', 'ORDER_ACCEPTED' => 'confirmed',
+            'STARTED', 'PREPARING', 'PREPARATION_STARTED', 'START_PREPARATION', 'ORDER_PREPARATION_STARTED', 'ORDER_IN_PREPARATION' => 'preparing',
+            'READY', 'READY_TO_PICKUP', 'ORDER_READY_TO_PICKUP', 'READY_TO_DELIVER', 'RTD' => 'ready',
+            'DISPATCHING', 'DISPATCHED', 'ORDER_DISPATCHED', 'ORDER_PICKED_UP', 'ORDER_IN_TRANSIT', 'DELIVERY_STARTED', 'DELIVERY_COLLECTED', 'DCLT', 'DELIVERY_ARRIVED_AT_DESTINATION', 'DAAD' => 'dispatching',
+            'DELIVERY_DROP_CODE_REQUESTED' => 'delivery_drop_code_requested',
+            'DELIVERY_DROP_CODE_VALIDATING' => 'delivery_drop_code_validating',
+            'CONCLUDED', 'ORDER_CONCLUDED', 'ORDER_FINISHED', 'DELIVERY_CONCLUDED' => 'concluded',
+            'CANCELLED', 'CANCELED', 'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_CANCELLED_BY_CUSTOMER', 'ORDER_CANCELED_BY_CUSTOMER' => 'cancelled',
+            'CANCELLATION_REQUESTED', 'ORDER_CANCELLATION_REQUESTED' => 'cancellation_requested',
+            'CANCELLATION_REQUEST_FAILED', 'ORDER_CANCELLATION_REQUEST_FAILED' => 'cancellation_request_failed',
+            'HANDSHAKE_DISPUTE', 'HSD' => 'handshake_dispute',
+            'HANDSHAKE_SETTLEMENT', 'HSS' => 'handshake_settlement',
+            default => strtolower($normalized),
+        };
+    }
+
+    public function extractOrderRemarkFromPayload(array $orderPayload): string
+    {
+        $delivery = is_array($orderPayload['delivery'] ?? null) ? $orderPayload['delivery'] : [];
+        $additionalInfo = $orderPayload['additionalInfo'] ?? null;
+        $remark = '';
+
+        if (is_array($additionalInfo)) {
+            $remark = $this->normalizeMarketplaceFreeText(
+                $additionalInfo['notes'] ?? $additionalInfo['observation'] ?? null
+            );
+        } else {
+            $remark = $this->normalizeMarketplaceFreeText($additionalInfo);
+        }
+
+        if ($remark === '') {
+            $remark = $this->normalizeMarketplaceFreeText($delivery['observations'] ?? null);
+        }
+
+        if ($remark === '') {
+            $remark = $this->normalizeMarketplaceFreeText($orderPayload['orderComment'] ?? null);
+        }
+
+        return $remark;
+    }
+
+    private function extractItemRemark(array $item): string
+    {
+        return $this->normalizeMarketplaceFreeText(
+            $item['observations']
+                ?? $item['observation']
+                ?? $item['notes']
+                ?? $item['note']
+                ?? $item['comment']
+                ?? null
+        );
     }
 
     private function resolveOrderDetailsFromEvent(string $orderId, array $event, ?Order $order = null): array
@@ -348,7 +468,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         try {
             $response = $this->ifoodClient->request(
                 'GET',
-                self::API_BASE_URL . '/merchant/v1.0/merchants',
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants',
                 [
                     'headers' => [
                         'Authorization' => 'Bearer ' . $token,
@@ -413,7 +533,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         try {
             $response   = $this->ifoodClient->request('GET',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId),
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId),
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
             $content    = (string) $response->getContent(false);
@@ -966,7 +1086,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
         try {
             $response   = $this->ifoodClient->request('GET',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/status',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
@@ -1294,7 +1414,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
         try {
             $response   = $this->ifoodClient->request('POST',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 [
                     'headers' => ['Authorization' => 'Bearer ' . $token, 'Content-Type' => 'application/json'],
                     'json'    => $interruption,
@@ -1353,7 +1473,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             if ($id === '') continue;
             try {
                 $resp = $this->ifoodClient->request('DELETE',
-                    self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
+                    IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
                     ['headers' => ['Authorization' => 'Bearer ' . $token]]);
                 if ($resp->getStatusCode() < 300) {
                     $removed++;
@@ -1395,7 +1515,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
         try {
             $response = $this->ifoodClient->request('DELETE',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
 
@@ -1423,7 +1543,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         try {
             $response   = $this->ifoodClient->request('GET',
-                self::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
+                IfoodClient::API_BASE_URL . '/merchant/v1.0/merchants/' . rawurlencode($merchantId) . '/interruptions',
                 ['headers' => ['Authorization' => 'Bearer ' . $token]]);
             $statusCode = $response->getStatusCode();
             // Aceita qualquer 2xx; 204 = lista vazia valida
@@ -1627,7 +1747,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $json['order'] = $orderDetails;
             $status = $this->statusService->discoveryStatus('open', 'open', 'order');
 
-            $client = $this->discoveryClient($provider, is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []);
+            $peopleOperationsService = $this->resolveIfoodPeopleOperationsService();
+            $client = $peopleOperationsService instanceof IfoodPeopleOperationsService
+                ? $peopleOperationsService->discoveryClient($provider, is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : [])
+                : null;
             if (!$client instanceof People) {
                 self::$logger->error('iFood order ignored because client could not be resolved', [
                     'order_id' => $orderId,
@@ -1688,7 +1811,11 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 'last_event_at' => $this->extractEventTimestamp($json),
                 'remote_order_state' => $this->resolveRemoteOrderStateByEventCode($snapshotKey),
             ];
-            $extendedState = array_merge($extendedState, $this->extractOrderDetailSnapshot($orderDetails));
+            $ifoodService = $this->resolveIfoodService();
+            $extendedState = array_merge(
+                $extendedState,
+                $ifoodService instanceof iFoodService ? $ifoodService->extractOrderDetailSnapshot($orderDetails) : []
+            );
             $this->persistOrderIntegrationState($order, $extendedState);
             $this->entityManager->flush();
 
@@ -1959,10 +2086,13 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
         $provider = $order->getProvider();
         if ($provider instanceof People) {
-            $client = $this->discoveryClient(
-                $provider,
-                is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []
-            );
+            $peopleOperationsService = $this->resolveIfoodPeopleOperationsService();
+            $client = $peopleOperationsService instanceof IfoodPeopleOperationsService
+                ? $peopleOperationsService->discoveryClient(
+                    $provider,
+                    is_array($orderDetails['customer'] ?? null) ? $orderDetails['customer'] : []
+                )
+                : null;
 
             if ($client instanceof People) {
                 $previousClientId = $order->getClient()?->getId();
@@ -2524,7 +2654,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
     // ENTREGA
     // Define endereço de entrega e, se entrega for por terceiros, cria taxa de entrega
-    private function addDelivery(Order &$order, array $orderDetails)
+    private function addDelivery(Order $order, array $orderDetails)
     {
         $delivery = is_array($orderDetails['delivery'] ?? null) ? $orderDetails['delivery'] : [];
         $deliveryAddress = is_array($delivery['deliveryAddress'] ?? null) ? $delivery['deliveryAddress'] : [];
@@ -2717,7 +2847,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         try {
             $encodedOrderId = rawurlencode($orderId);
-            $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
+            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId;
             $token = $this->getAccessToken();
             if (!$token) {
                 self::$logger->warning('iFood order details request skipped because token is unavailable', [
@@ -2781,134 +2911,6 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return null;
         }
     }
-    // DESCOBERTA/CRIAÇÃO DO CLIENTE
-    // Busca cliente existente pelo ID do iFood ou cria novo com dados do pedido
-    public function discoveryClient(People $provider, array $customerData): ?People
-    {
-        $customerName = $this->normalizeString($customerData['name'] ?? null);
-        $codClienteiFood = $this->normalizeString($customerData['id'] ?? null);
-        $document = $this->resolveCustomerDocumentNumber($customerData);
-        $phone = $this->resolveCustomerPhoneForDiscovery($customerData);
-
-        self::$logger->info('iFood client discovery started', [
-            'provider_id' => $provider->getId(),
-            'ifood_customer_id' => $codClienteiFood,
-            'customer_name' => $customerName,
-            'document' => $document,
-            'has_phone_for_discovery' => !empty($phone),
-            'raw_phone_number' => $this->normalizeString($customerData['phone']['number'] ?? null),
-            'raw_phone_localizer' => $this->normalizeString($customerData['phone']['localizer'] ?? null),
-        ]);
-
-        if ($customerName === '' && $document === null && $codClienteiFood === '') {
-            self::$logger->warning('Dados do cliente incompletos', ['customer' => $customerData]);
-            return null;
-        }
-
-        $documentType = $this->resolveCustomerDocumentType($customerData, $document);
-        $clientByCode = $codClienteiFood !== ''
-            ? $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'code', $codClienteiFood, People::class)
-            : null;
-        $clientByDocument = null;
-        $client = null;
-
-        if ($clientByCode instanceof People) {
-            self::$logger->info('iFood client discovery matched by remote code', [
-                'ifood_customer_id' => $codClienteiFood,
-                'people_id' => $clientByCode->getId(),
-            ]);
-        }
-
-        if ($document !== null) {
-            try {
-                $documentEntity = $this->peopleService->getDocument($document, $documentType);
-                $clientByDocument = $documentEntity?->getPeople();
-                if ($clientByDocument instanceof People) {
-                    self::$logger->info('iFood client discovery matched by document', [
-                        'ifood_customer_id' => $codClienteiFood,
-                        'people_id' => $clientByDocument->getId(),
-                        'document' => $document,
-                    ]);
-                }
-            } catch (\Throwable $exception) {
-                self::$logger->warning('iFood client document lookup failed', [
-                    'ifood_customer_id' => $codClienteiFood,
-                    'document' => $document,
-                    'document_type' => $documentType,
-                    'error' => $exception->getMessage(),
-                ]);
-            }
-        }
-
-        if ($clientByCode instanceof People) {
-            $client = $clientByCode;
-        }
-
-        if (!$client instanceof People && $clientByDocument instanceof People) {
-            $client = $clientByDocument;
-        }
-
-        if (!$client instanceof People) {
-            try {
-                $client = $this->peopleService->discoveryPeople(null, null, $phone, $customerName !== '' ? $customerName : null);
-                if ($client instanceof People) {
-                    self::$logger->info('iFood client discovery resolved via standard discoveryPeople', [
-                        'ifood_customer_id' => $codClienteiFood,
-                        'people_id' => $client->getId(),
-                        'document' => $document,
-                        'used_phone' => !empty($phone),
-                    ]);
-                }
-            } catch (\Throwable $exception) {
-                self::$logger->warning('iFood client standard discovery failed', [
-                    'ifood_customer_id' => $codClienteiFood,
-                    'customer_name' => $customerName,
-                    'document' => $document,
-                    'error' => $exception->getMessage(),
-                ]);
-            }
-        }
-
-        if (!$client instanceof People && $customerName !== '') {
-            $client = $this->peopleService->discoveryPeople(null, null, null, $customerName);
-            if ($client instanceof People) {
-                self::$logger->info('iFood client discovery fell back to name-only lookup', [
-                    'ifood_customer_id' => $codClienteiFood,
-                    'people_id' => $client->getId(),
-                    'customer_name' => $customerName,
-                ]);
-            }
-        }
-
-        if (!$client instanceof People) {
-            self::$logger->warning('iFood client could not be resolved after discovery attempts', [
-                'ifood_customer_id' => $codClienteiFood,
-                'customer_name' => $customerName,
-                'document' => $document,
-            ]);
-            return null;
-        }
-
-        if ($clientByCode instanceof People && $document !== null && $clientByCode->getId() !== $client->getId()) {
-            self::$logger->warning('iFood client mismatch detected between code and document mapping', [
-                'ifood_customer_id' => $codClienteiFood,
-                'people_by_code' => $clientByCode->getId(),
-                'people_by_document' => $client->getId(),
-                'document' => $document,
-            ]);
-        }
-
-        return $this->syncIfoodClientData(
-            $client,
-            $provider,
-            $customerName,
-            $phone,
-            $document,
-            $documentType,
-            $codClienteiFood
-        );
-    }
-
     // DESCOBERTA/CRIAÇÃO DO PRODUTO
     // Busca produto existente por múltiplas chaves (iFood ID, código externo, EAN, nome)
     // Se não encontrar, cria novo produto. Se tem pai, associa como grupo/componente

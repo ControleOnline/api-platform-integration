@@ -9,7 +9,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class IfoodClient
 {
-    private const API_BASE_URL = 'https://merchant-api.ifood.com.br';
+    public const API_BASE_URL = 'https://merchant-api.ifood.com.br';
 
     private static array $authTokenCache = [];
 

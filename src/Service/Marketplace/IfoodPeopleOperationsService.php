@@ -22,7 +22,6 @@ use ControleOnline\Entity\User;
 use ControleOnline\Entity\Wallet;
 use ControleOnline\Entity\WalletPaymentType;
 use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
-use ControleOnline\Service\Marketplace\IfoodStoreOperationsService;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
@@ -44,7 +43,133 @@ class IfoodPeopleOperationsService extends AbstractMarketplaceService
         return self::APP_CONTEXT;
     }
 
-    private function resolveCustomerDocumentNumber(array $customerData): ?string
+    public function discoveryClient(People $provider, array $customerData): ?People
+    {
+        $customerName = $this->normalizeString($customerData['name'] ?? null);
+        $codClienteiFood = $this->normalizeString($customerData['id'] ?? null);
+        $document = $this->resolveCustomerDocumentNumber($customerData);
+        $phone = $this->resolveCustomerPhoneForDiscovery($customerData);
+
+        self::$logger->info('iFood client discovery started', [
+            'provider_id' => $provider->getId(),
+            'ifood_customer_id' => $codClienteiFood,
+            'customer_name' => $customerName,
+            'document' => $document,
+            'has_phone_for_discovery' => !empty($phone),
+            'raw_phone_number' => $this->normalizeString($customerData['phone']['number'] ?? null),
+            'raw_phone_localizer' => $this->normalizeString($customerData['phone']['localizer'] ?? null),
+        ]);
+
+        if ($customerName === '' && $document === null && $codClienteiFood === '') {
+            self::$logger->warning('Dados do cliente incompletos', ['customer' => $customerData]);
+            return null;
+        }
+
+        $documentType = $this->resolveCustomerDocumentType($customerData, $document);
+        $clientByCode = $codClienteiFood !== ''
+            ? $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'code', $codClienteiFood, People::class)
+            : null;
+        $clientByDocument = null;
+        $client = null;
+
+        if ($clientByCode instanceof People) {
+            self::$logger->info('iFood client discovery matched by remote code', [
+                'ifood_customer_id' => $codClienteiFood,
+                'people_id' => $clientByCode->getId(),
+            ]);
+        }
+
+        if ($document !== null) {
+            try {
+                $documentEntity = $this->peopleService->getDocument($document, $documentType);
+                $clientByDocument = $documentEntity?->getPeople();
+                if ($clientByDocument instanceof People) {
+                    self::$logger->info('iFood client discovery matched by document', [
+                        'ifood_customer_id' => $codClienteiFood,
+                        'people_id' => $clientByDocument->getId(),
+                        'document' => $document,
+                    ]);
+                }
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client document lookup failed', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'document' => $document,
+                    'document_type' => $documentType,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($clientByCode instanceof People) {
+            $client = $clientByCode;
+        }
+
+        if (!$client instanceof People && $clientByDocument instanceof People) {
+            $client = $clientByDocument;
+        }
+
+        if (!$client instanceof People) {
+            try {
+                $client = $this->peopleService->discoveryPeople(null, null, $phone, $customerName !== '' ? $customerName : null);
+                if ($client instanceof People) {
+                    self::$logger->info('iFood client discovery resolved via standard discoveryPeople', [
+                        'ifood_customer_id' => $codClienteiFood,
+                        'people_id' => $client->getId(),
+                        'document' => $document,
+                        'used_phone' => !empty($phone),
+                    ]);
+                }
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood client standard discovery failed', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'customer_name' => $customerName,
+                    'document' => $document,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if (!$client instanceof People && $customerName !== '') {
+            $client = $this->peopleService->discoveryPeople(null, null, null, $customerName);
+            if ($client instanceof People) {
+                self::$logger->info('iFood client discovery fell back to name-only lookup', [
+                    'ifood_customer_id' => $codClienteiFood,
+                    'people_id' => $client->getId(),
+                    'customer_name' => $customerName,
+                ]);
+            }
+        }
+
+        if (!$client instanceof People) {
+            self::$logger->warning('iFood client could not be resolved after discovery attempts', [
+                'ifood_customer_id' => $codClienteiFood,
+                'customer_name' => $customerName,
+                'document' => $document,
+            ]);
+            return null;
+        }
+
+        if ($clientByCode instanceof People && $document !== null && $clientByCode->getId() !== $client->getId()) {
+            self::$logger->warning('iFood client mismatch detected between code and document mapping', [
+                'ifood_customer_id' => $codClienteiFood,
+                'people_by_code' => $clientByCode->getId(),
+                'people_by_document' => $client->getId(),
+                'document' => $document,
+            ]);
+        }
+
+        return $this->syncIfoodClientData(
+            $client,
+            $provider,
+            $customerName,
+            $phone,
+            $document,
+            $documentType,
+            $codClienteiFood
+        );
+    }
+
+    public function resolveCustomerDocumentNumber(array $customerData): ?string
     {
         $digits = $this->normalizeDigits($this->normalizeString(
             $customerData['documentNumber']
@@ -63,7 +188,7 @@ class IfoodPeopleOperationsService extends AbstractMarketplaceService
         return $digits;
     }
 
-    private function resolveCustomerDocumentType(array $customerData, ?string $documentNumber = null): ?string
+    public function resolveCustomerDocumentType(array $customerData, ?string $documentNumber = null): ?string
     {
         $documentType = strtoupper($this->normalizeString(
             $customerData['documentType']
@@ -109,7 +234,7 @@ class IfoodPeopleOperationsService extends AbstractMarketplaceService
         return null;
     }
 
-    private function resolveTaxDocumentRequested(array $customerData, ?string $documentNumber = null): bool
+    public function resolveTaxDocumentRequested(array $customerData, ?string $documentNumber = null): bool
     {
         $explicitFlag = $this->resolveBooleanFlag(
             $customerData['taxDocumentRequested']

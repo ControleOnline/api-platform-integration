@@ -1117,7 +1117,7 @@ class iFoodService extends AbstractMarketplaceService implements
         return round($feeValue * min(100.0, max(0.0, $merchantPercentage)) / 100, 2);
     }
 
-    private function extractOrderDetailSnapshot(array $orderPayload): array
+    public function extractOrderDetailSnapshot(array $orderPayload): array
     {
         if (!$orderPayload) {
             return [];
@@ -1137,9 +1137,16 @@ class iFoodService extends AbstractMarketplaceService implements
         $postalCode = $this->normalizeString($deliveryAddress['postalCode'] ?? null);
         $reference = $this->normalizeString($deliveryAddress['reference'] ?? null);
         $complement = $this->normalizeString($deliveryAddress['complement'] ?? null);
-        $customerDocument = $this->resolveCustomerDocumentNumber($customer);
-        $customerDocumentType = $this->resolveCustomerDocumentType($customer, $customerDocument);
-        $taxDocumentRequested = $this->resolveTaxDocumentRequested($customer, $customerDocument);
+        $peopleOperationsService = $this->resolveMarketplaceCapabilityService(IfoodPeopleOperationsService::class);
+        $customerDocument = $peopleOperationsService instanceof IfoodPeopleOperationsService
+            ? $peopleOperationsService->resolveCustomerDocumentNumber($customer)
+            : null;
+        $customerDocumentType = $peopleOperationsService instanceof IfoodPeopleOperationsService
+            ? $peopleOperationsService->resolveCustomerDocumentType($customer, $customerDocument)
+            : null;
+        $taxDocumentRequested = $peopleOperationsService instanceof IfoodPeopleOperationsService
+            ? $peopleOperationsService->resolveTaxDocumentRequested($customer, $customerDocument)
+            : false;
 
         $addressDisplay = $this->composeAddressDisplayFromPieces(
             $streetName !== '' ? $streetName : null,

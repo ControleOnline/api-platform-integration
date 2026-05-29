@@ -3,6 +3,7 @@
 namespace ControleOnline\Service\Marketplace;
 
 use ControleOnline\Service\AddressService;
+use ControleOnline\Service\Client\IfoodClient;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
@@ -777,7 +778,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             }
 
             $encodedOrderId = rawurlencode($orderId);
-            $endpoint = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
+            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
 
             try {
                 self::$logger->info('iFood order action request', [
@@ -857,7 +858,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 return null;
             }
 
-            $endpoint = self::API_BASE_URL . '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
+            $endpoint = IfoodClient::API_BASE_URL . '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
 
             try {
                 self::$logger->info('iFood dispute action request', [
@@ -944,7 +945,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
             $response = $this->ifoodClient->request(
                 'POST',
-                self::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
+                IfoodClient::API_BASE_URL . '/shipping/v1.0/orders/' . rawurlencode($orderId) . $actionPath,
                 [
                     'headers' => [
                         'Authorization' => 'Bearer ' . $token,
@@ -1030,7 +1031,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
             $response = $this->ifoodClient->request(
                 strtoupper($method),
-                self::API_BASE_URL . '/shipping/v1.0/merchants/' . rawurlencode($merchantId) . $path,
+                IfoodClient::API_BASE_URL . '/shipping/v1.0/merchants/' . rawurlencode($merchantId) . $path,
                 $options
             );
 
@@ -1228,9 +1229,9 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         $normalizedOrderId = $this->normalizeString($orderId);
         if ($normalizedOrderId !== '') {
             $encodedOrderId = rawurlencode($normalizedOrderId);
-            $endpoints[] = self::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
+            $endpoints[] = IfoodClient::API_BASE_URL . '/order/v1.0/orders/' . $encodedOrderId . '/cancellationReasons';
         }
-        $endpoints[] = self::API_BASE_URL . '/order/v1.0/cancellation/reasons';
+        $endpoints[] = IfoodClient::API_BASE_URL . '/order/v1.0/cancellation/reasons';
 
         try {
             foreach ($endpoints as $endpoint) {
