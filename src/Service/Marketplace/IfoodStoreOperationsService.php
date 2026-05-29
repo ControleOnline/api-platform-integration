@@ -2754,8 +2754,16 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                     return null;
                 }
 
-                $data = $this->decodeIfoodActionResponseBody((string) $rawBody);
-                return is_array($data) ? $data : null;
+                if ($rawBody === '') {
+                    return [];
+                }
+
+                $data = json_decode((string) $rawBody, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($data)) {
+                    return $data;
+                }
+
+                return ['message' => (string) $rawBody];
             } catch (\Throwable $e) {
                 self::$logger->warning('iFood order details request endpoint error', [
                     'order_id' => $orderId,
