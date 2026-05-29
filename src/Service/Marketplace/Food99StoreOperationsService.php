@@ -231,13 +231,87 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
     private function prepareFood99PortalPayload(array $payload): array
     {
-        $payload['app_domain'] = $payload['app_domain']
-            ?? $payload['appDomain']
-            ?? $this->resolvePublicAppDomain();
+        $payload['app_domain'] = $this->resolveFood99PortalAppDomain(
+            $payload['app_domain'] ?? $payload['appDomain'] ?? null
+        );
 
         unset($payload['appDomain']);
 
         return $payload;
+    }
+
+    private function resolveFood99PortalAppDomain(mixed $payloadDomain = null): string
+    {
+        $domainService = $this->resolveDomainService();
+        $requestDomain = null;
+
+        try {
+            $requestDomain = $domainService?->getDomain();
+        } catch (\Throwable) {
+            $requestDomain = null;
+        }
+
+        $candidates = [
+            $this->resolveFood99EnvironmentValue('OAUTH_99FOOD_APP_DOMAIN'),
+            $this->resolveFood99EnvironmentValue('OAUTH_99FOOD_PUBLIC_DOMAIN'),
+            $payloadDomain,
+            $requestDomain,
+            $this->resolveFood99EnvironmentValue('PUBLIC_APP_DOMAIN'),
+            $this->resolveFood99EnvironmentValue('ADMIN_APP_DOMAIN'),
+            $this->resolveFood99EnvironmentValue('APP_DOMAIN'),
+            'admin.controleonline.com',
+        ];
+
+        foreach ($candidates as $candidate) {
+            $domain = $this->normalizeFood99PortalDomain($candidate);
+            if ($domain !== null) {
+                return $domain;
+            }
+        }
+
+        return 'admin.controleonline.com';
+    }
+
+    private function normalizeFood99PortalDomain(mixed $value): ?string
+    {
+        $domain = trim((string) $value);
+        if ($domain === '') {
+            return null;
+        }
+
+        $domain = preg_replace('/[\\s?#].*$/', '', $domain) ?? '';
+        $host = parse_url(
+            preg_match('#^[a-z][a-z0-9+.-]*://#i', $domain) ? $domain : 'https://' . $domain,
+            PHP_URL_HOST
+        );
+
+        if (is_string($host) && $host !== '') {
+            $domain = $host;
+        }
+
+        $domain = strtolower(trim($domain, ". \t\n\r\0\x0B"));
+        if (
+            $domain === ''
+            || $domain === 'localhost'
+            || $domain === '127.0.0.1'
+            || $domain === '0.0.0.0'
+            || $domain === '::1'
+            || !str_contains($domain, '.')
+        ) {
+            return null;
+        }
+
+        return $domain;
+    }
+
+    private function resolveFood99EnvironmentValue(string $name): string
+    {
+        return trim((string) (
+            $_ENV[$name]
+            ?? $_SERVER[$name]
+            ?? getenv($name)
+            ?: ''
+        ));
     }
 
     public function decodeOrderOtherInformationsValue(mixed $value): array
