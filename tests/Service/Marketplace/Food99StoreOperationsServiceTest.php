@@ -48,74 +48,115 @@ final class Food99StoreOperationsServiceTest extends TestCase
         string $expectedMethod,
         string $expectedUri
     ): void {
+        $previousDomainEnv = $this->captureFood99DomainEnvironment();
         $fakeClient = new FakeFood99Client();
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
 
         if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore', 'listAuthorizedStores', 'listBindStores'], true)) {
+            $this->clearFood99DomainEnvironment();
             $domainService = $this->createMock(DomainService::class);
             $domainService->expects(self::once())
-                ->method('getMainDomain')
-                ->willReturn('api.custom-domain.test');
+                ->method('getDomain')
+                ->willReturn('https://shop.custom-domain.test/path');
             $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
         }
 
-        $response = $service->{$serviceMethod}(...$arguments);
+        try {
+            $response = $service->{$serviceMethod}(...$arguments);
 
-        $expectedPayload = $arguments[0] ?? [];
-        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore', 'listAuthorizedStores', 'listBindStores'], true)) {
-            $expectedPayload['app_domain'] = 'api.custom-domain.test';
+            $expectedPayload = $arguments[0] ?? [];
+            if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore', 'listAuthorizedStores', 'listBindStores'], true)) {
+                $expectedPayload['app_domain'] = 'shop.custom-domain.test';
+            }
+
+            self::assertCount(1, $fakeClient->appCalls);
+            self::assertSame([], $fakeClient->storeCalls);
+            self::assertSame($expectedMethod, $fakeClient->appCalls[0]['method']);
+            self::assertSame($expectedUri, $fakeClient->appCalls[0]['uri']);
+            self::assertSame($expectedPayload, $fakeClient->appCalls[0]['payload']);
+            self::assertSame([
+                'errno' => 0,
+                'data' => [
+                    'method' => $expectedMethod,
+                    'uri' => $expectedUri,
+                    'payload' => $expectedPayload,
+                ],
+            ], $response);
+        } finally {
+            $this->restoreFood99DomainEnvironment($previousDomainEnv);
         }
-
-        self::assertCount(1, $fakeClient->appCalls);
-        self::assertSame([], $fakeClient->storeCalls);
-        self::assertSame($expectedMethod, $fakeClient->appCalls[0]['method']);
-        self::assertSame($expectedUri, $fakeClient->appCalls[0]['uri']);
-        self::assertSame($expectedPayload, $fakeClient->appCalls[0]['payload']);
-        self::assertSame([
-            'errno' => 0,
-            'data' => [
-                'method' => $expectedMethod,
-                'uri' => $expectedUri,
-                'payload' => $expectedPayload,
-            ],
-        ], $response);
     }
 
     public function testUnbindStoreDelegatesToPortalUnbindEndpoint(): void
     {
+        $previousDomainEnv = $this->captureFood99DomainEnvironment();
+        $this->clearFood99DomainEnvironment();
         $fakeClient = new FakeFood99Client();
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
         $provider = $this->newTestPeople(3);
 
         $domainService = $this->createMock(DomainService::class);
         $domainService->expects(self::once())
-            ->method('getMainDomain')
-            ->willReturn('api.custom-domain.test');
+            ->method('getDomain')
+            ->willReturn('shop.custom-domain.test');
         $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
 
-        $response = $service->unbindStore($provider, [
-            'shop_id' => '5764612470103345070',
-        ]);
+        try {
+            $response = $service->unbindStore($provider, [
+                'shop_id' => '5764612470103345070',
+            ]);
 
-        self::assertCount(1, $fakeClient->appCalls);
-        self::assertSame([], $fakeClient->storeCalls);
-        self::assertSame('POST', $fakeClient->appCalls[0]['method']);
-        self::assertSame('/shop_center/v1/authorize/unbind', $fakeClient->appCalls[0]['uri']);
-        self::assertSame([
-            'shop_id' => '5764612470103345070',
-            'app_domain' => 'api.custom-domain.test',
-        ], $fakeClient->appCalls[0]['payload']);
-        self::assertSame([
-            'errno' => 0,
-            'data' => [
-                'method' => 'POST',
-                'uri' => '/shop_center/v1/authorize/unbind',
-                'payload' => [
-                    'shop_id' => '5764612470103345070',
-                    'app_domain' => 'api.custom-domain.test',
+            self::assertCount(1, $fakeClient->appCalls);
+            self::assertSame([], $fakeClient->storeCalls);
+            self::assertSame('POST', $fakeClient->appCalls[0]['method']);
+            self::assertSame('/shop_center/v1/authorize/unbind', $fakeClient->appCalls[0]['uri']);
+            self::assertSame([
+                'shop_id' => '5764612470103345070',
+                'app_domain' => 'shop.custom-domain.test',
+            ], $fakeClient->appCalls[0]['payload']);
+            self::assertSame([
+                'errno' => 0,
+                'data' => [
+                    'method' => 'POST',
+                    'uri' => '/shop_center/v1/authorize/unbind',
+                    'payload' => [
+                        'shop_id' => '5764612470103345070',
+                        'app_domain' => 'shop.custom-domain.test',
+                    ],
                 ],
-            ],
-        ], $response);
+            ], $response);
+        } finally {
+            $this->restoreFood99DomainEnvironment($previousDomainEnv);
+        }
+    }
+
+    public function testPortalDomainIgnoresLocalhostAndFallsBackToConfiguredPublicDomain(): void
+    {
+        $previousDomainEnv = $this->captureFood99DomainEnvironment();
+        $this->clearFood99DomainEnvironment();
+        $_ENV['ADMIN_APP_DOMAIN'] = 'https://admin.controleonline.com/app';
+
+        $fakeClient = new FakeFood99Client();
+        $service = $this->newServiceWithFakeFood99Client($fakeClient);
+        $domainService = $this->createMock(DomainService::class);
+        $domainService->expects(self::once())
+            ->method('getDomain')
+            ->willReturn('localhost:8081');
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
+
+        try {
+            $service->bindStore([
+                'shop_id' => '5764612470103345070',
+                'app_domain' => '127.0.0.1:8081',
+            ]);
+
+            self::assertSame([
+                'shop_id' => '5764612470103345070',
+                'app_domain' => 'admin.controleonline.com',
+            ], $fakeClient->appCalls[0]['payload']);
+        } finally {
+            $this->restoreFood99DomainEnvironment($previousDomainEnv);
+        }
     }
 
     public static function providePortalEndpointDelegations(): iterable
@@ -180,6 +221,64 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $property = new \ReflectionProperty($className, $propertyName);
         $property->setAccessible(true);
         $property->setValue($object, $value);
+    }
+
+    private function captureFood99DomainEnvironment(): array
+    {
+        $keys = [
+            'OAUTH_99FOOD_APP_DOMAIN',
+            'OAUTH_99FOOD_PUBLIC_DOMAIN',
+            'PUBLIC_APP_DOMAIN',
+            'ADMIN_APP_DOMAIN',
+            'APP_DOMAIN',
+        ];
+        $values = [];
+
+        foreach ($keys as $key) {
+            $values[$key] = array_key_exists($key, $_ENV) ? $_ENV[$key] : null;
+            $values[$key . '_SERVER'] = array_key_exists($key, $_SERVER) ? $_SERVER[$key] : null;
+            $getenvValue = getenv($key);
+            $values[$key . '_GETENV'] = $getenvValue === false ? null : $getenvValue;
+        }
+
+        return $values;
+    }
+
+    private function clearFood99DomainEnvironment(): void
+    {
+        foreach (['OAUTH_99FOOD_APP_DOMAIN', 'OAUTH_99FOOD_PUBLIC_DOMAIN', 'PUBLIC_APP_DOMAIN', 'ADMIN_APP_DOMAIN', 'APP_DOMAIN'] as $key) {
+            unset($_ENV[$key], $_SERVER[$key]);
+            putenv($key);
+        }
+    }
+
+    private function restoreFood99DomainEnvironment(array $values): void
+    {
+        foreach ($values as $key => $value) {
+            if (str_ends_with($key, '_SERVER')) {
+                $actualKey = substr($key, 0, -7);
+                if ($value === null) {
+                    unset($_SERVER[$actualKey]);
+                    continue;
+                }
+
+                $_SERVER[$actualKey] = $value;
+                continue;
+            }
+
+            if (str_ends_with($key, '_GETENV')) {
+                $actualKey = substr($key, 0, -7);
+                putenv($value === null ? $actualKey : $actualKey . '=' . $value);
+                continue;
+            }
+
+            if ($value === null) {
+                unset($_ENV[$key]);
+                continue;
+            }
+
+            $_ENV[$key] = $value;
+        }
     }
 
     private function newTestPeople(int $id): People
