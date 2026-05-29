@@ -53,6 +53,48 @@ class Food99Client
         return $this->requestPortalWithResponse($method, $uri, $payload);
     }
 
+    private function preparePortalPayload(array $payload): array
+    {
+        if (!array_key_exists('app_domain', $payload) && array_key_exists('appDomain', $payload)) {
+            $payload['app_domain'] = $payload['appDomain'];
+        }
+
+        return $payload;
+    }
+
+    public function getAuthorizationPage(array $payload): ?array
+    {
+        return $this->callAppEndpointWithResponse(
+            'POST',
+            '/shop_center/v1/authorize/get_url',
+            $this->preparePortalPayload($payload)
+        );
+    }
+
+    public function bindStore(array $payload): ?array
+    {
+        return $this->callAppEndpointWithResponse(
+            'POST',
+            '/shop_center/v1/authorize/bind',
+            $this->preparePortalPayload($payload)
+        );
+    }
+
+    public function listAuthorizedStores(array $payload = []): ?array
+    {
+        return $this->callAppEndpointWithResponse('GET', '/shop_center/v1/authorize/list', $payload);
+    }
+
+    public function listBindStores(array $payload = []): ?array
+    {
+        return $this->callAppEndpointWithResponse('GET', '/shop_center/v1/shop/list', $payload);
+    }
+
+    public function unbindStore(array $payload = []): ?array
+    {
+        return $this->callAppEndpointWithResponse('POST', '/shop_center/v1/authorize/unbind', $payload);
+    }
+
     public function callStoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $accessToken = $this->resolveAccessToken($provider);
@@ -99,12 +141,170 @@ class Food99Client
         ]);
     }
 
+    public function setStoreOrderConfirmationMethod(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/shop/setconfirmmethod', $payload, $provider);
+    }
+
+    public function getStoreOrderConfirmationMethod(People $provider): ?array
+    {
+        $postResponse = $this->callStoreEndpointWithResponse('POST', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($postResponse['errno'] ?? null)) {
+            return $postResponse;
+        }
+
+        $getResponse = $this->callStoreEndpointWithResponse('GET', '/v1/shop/shop/getconfirmmethod', [], $provider);
+        if ($this->isSuccessfulErrno($getResponse['errno'] ?? null)) {
+            return $getResponse;
+        }
+
+        return $postResponse ?: $getResponse;
+    }
+
+    public function getStoreDetails(People $provider): ?array
+    {
+        return $this->callStoreEndpointWithResponse('GET', '/v1/shop/shop/detail', [], $provider);
+    }
+
+    public function updateStoreInformation(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/shop/update', $payload, $provider);
+    }
+
+    public function getStoreCategories(People $provider): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/shop/validCategories', [], $provider);
+    }
+
+    public function setStoreStatus(People $provider, int $bizStatus, ?int $autoSwitch = null): ?array
+    {
+        $payload = [
+            'biz_status' => $bizStatus,
+        ];
+
+        if ($autoSwitch !== null) {
+            $payload['auto_switch'] = $autoSwitch;
+        }
+
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
+    }
+
+    public function setStoreCancellationRefund(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/apply/set', $payload, $provider);
+    }
+
+    public function getStoreMenuDetails(People $provider): ?array
+    {
+        return $this->callStoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider);
+    }
+
+    public function updateMenuItem(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v3/item/item/updateItem', $payload, $provider);
+    }
+
+    public function updateMenuItemStatus(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v3/item/item/updateItemStatus', $payload, $provider);
+    }
+
+    public function updateModifierGroup(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v3/item/item/updateModifierGroup', $payload, $provider);
+    }
+
+    public function uploadImage(People $provider, array $payload): ?array
+    {
+        return $this->callStoreMultipartEndpointWithResponse('POST', '/v3/image/image/uploadImage', $payload, $provider);
+    }
+
+    public function getImageUploadInfoPageList(People $provider, array $payload = []): ?array
+    {
+        return $this->callStoreEndpointWithResponse('GET', '/v3/image/image/getImageUploadInfoPageList', $payload, $provider);
+    }
+
+    public function getOrderDetails(People $provider, string $orderId): ?array
+    {
+        return $this->callStoreEndpointWithResponse('GET', '/v1/order/order/detail', [
+            'order_id' => $orderId,
+        ], $provider);
+    }
+
+    public function confirmRemoteOrder(string $orderId, ?People $provider = null): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/order/order/confirm', [
+            'order_id' => $orderId,
+        ], $provider);
+    }
+
+    public function handleCancellationRequest(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/order/apply/cancel', $payload, $provider);
+    }
+
+    public function handleRefundRequest(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/order/apply/refund', $payload, $provider);
+    }
+
+    public function verifyOrder(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/order/order/verify', $payload, $provider);
+    }
+
+    public function confirmCashPayment(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/order/order/payConfirm', $payload, $provider);
+    }
+
+    public function listDeliveryAreas(People $provider): ?array
+    {
+        return $this->callStoreEndpointWithResponse('GET', '/v1/shop/deliveryArea/list', [], $provider);
+    }
+
+    public function addDeliveryArea(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/add', $payload, $provider);
+    }
+
+    public function updateDeliveryArea(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/update', $payload, $provider);
+    }
+
+    public function deleteDeliveryArea(People $provider, array $payload): ?array
+    {
+        return $this->callStoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/delete', $payload, $provider);
+    }
+
+    public function getFinancialApiAuthtoken(array $payload): ?array
+    {
+        return $this->requestBorderWithResponse('POST', '/v3/auth/authtoken/signIn', $payload);
+    }
+
+    public function getBillData(array $payload): ?array
+    {
+        return $this->requestBorderWithResponse('POST', '/v3/finance/finance/getShopBillDetail', $payload);
+    }
+
+    public function getSettlementsData(array $payload): ?array
+    {
+        return $this->requestBorderWithResponse('POST', '/v3/finance/finance/getShopBillWeek', $payload);
+    }
+
     public function callOrderEndpointWithResponse(string $uri, array $payload, ?People $provider = null): ?array
+    {
+        return $this->callOpenApiEndpointWithResponse('POST', $uri, $payload, $provider);
+    }
+
+    public function callOpenApiEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $accessToken = $this->resolveAccessToken($provider);
 
         if (!$accessToken) {
             $this->logger()?->warning('Food99 action skipped because access token is unavailable', [
+                'method' => strtoupper($method),
                 'uri' => $uri,
                 'payload' => $this->sanitizePayloadForLog($payload),
                 'provider_id' => $provider?->getId(),
@@ -116,7 +316,7 @@ class Food99Client
 
         $payload['auth_token'] = $accessToken;
 
-        return $this->requestOpenApiWithResponse('POST', $uri, $payload, [
+        return $this->requestOpenApiWithResponse($method, $uri, $payload, [
             'provider_id' => $provider?->getId(),
         ]);
     }

@@ -4,6 +4,7 @@ namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\Food99Client;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Contracts\HttpClient\ChunkInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -254,6 +255,62 @@ class Food99ClientTest extends TestCase
         } finally {
             $this->restoreEnvironmentValues($previousValues);
         }
+    }
+
+    #[DataProvider('provideBorderApiWrappers')]
+    public function testBorderApiWrappersUseBorderEndpoint(
+        string $clientMethod,
+        array $payload,
+        string $expectedUrl
+    ): void {
+        $capturedRequest = null;
+        $httpClient = new RecordingHttpClient(function (string $method, string $url, array $options) use (&$capturedRequest) {
+            $capturedRequest = compact('method', 'url', 'options');
+
+            return RecordedResponse::json([
+                'errno' => 0,
+                'data' => [],
+            ]);
+        });
+
+        $client = new Food99Client($httpClient);
+
+        self::assertSame([
+            'errno' => 0,
+            'data' => [],
+        ], $client->{$clientMethod}($payload));
+
+        self::assertIsArray($capturedRequest);
+        self::assertSame('POST', $capturedRequest['method']);
+        self::assertSame($expectedUrl, $capturedRequest['url']);
+        self::assertSame($payload, $capturedRequest['options']['json']);
+    }
+
+    public static function provideBorderApiWrappers(): iterable
+    {
+        yield 'financial auth token' => [
+            'clientMethod' => 'getFinancialApiAuthtoken',
+            'payload' => [
+                'app_id' => 'app-id',
+            ],
+            'expectedUrl' => 'https://b.99app.com/v3/auth/authtoken/signIn',
+        ];
+
+        yield 'financial bill detail' => [
+            'clientMethod' => 'getBillData',
+            'payload' => [
+                'bill_id' => 'bill-1',
+            ],
+            'expectedUrl' => 'https://b.99app.com/v3/finance/finance/getShopBillDetail',
+        ];
+
+        yield 'financial weekly settlements' => [
+            'clientMethod' => 'getSettlementsData',
+            'payload' => [
+                'week' => '2026-05-28',
+            ],
+            'expectedUrl' => 'https://b.99app.com/v3/finance/finance/getShopBillWeek',
+        ];
     }
 
     private function restoreEnvironmentValues(array $previousValues): void

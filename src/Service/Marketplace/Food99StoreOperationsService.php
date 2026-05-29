@@ -17,7 +17,6 @@ use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
 use ControleOnline\Event\Food99DelegationEvent;
-use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\AbstractMarketplaceService;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
@@ -230,34 +229,13 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
         return is_object($entity) ? $entity : null;
     }
 
-    private function call99AppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    private function prepareFood99PortalPayload(array $payload): array
     {
-        $client = $this->resolveFood99Client();
-        if (!$client instanceof Food99Client) {
-            return null;
-        }
+        $payload['app_domain'] = $payload['app_domain']
+            ?? $payload['appDomain']
+            ?? $this->resolvePublicAppDomain();
 
-        return $client->callAppEndpointWithResponse($method, $uri, $payload);
-    }
-
-    private function call99StoreEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
-    {
-        $client = $this->resolveFood99Client();
-        if (!$client instanceof Food99Client) {
-            return null;
-        }
-
-        return $client->callStoreEndpointWithResponse($method, $uri, $payload, $provider);
-    }
-
-    private function call99StoreMultipartEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
-    {
-        $client = $this->resolveFood99Client();
-        if (!$client instanceof Food99Client) {
-            return null;
-        }
-
-        return $client->callStoreMultipartEndpointWithResponse($method, $uri, $payload, $provider);
+        return $payload;
     }
 
     public function decodeOrderOtherInformationsValue(mixed $value): array
@@ -1592,63 +1570,53 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $payload['app_domain'] = $payload['app_domain']
-            ?? $payload['appDomain']
-            ?? $this->resolvePublicAppDomain();
+        $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/get_url', $payload);
+        return $this->resolveFood99Client()?->getAuthorizationPage($payload);
     }
 
     public function bindStore(array $payload): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/bind', $payload);
+        $payload = $this->prepareFood99PortalPayload($payload);
+
+        return $this->resolveFood99Client()?->bindStore($payload);
     }
 
     public function listAuthorizedStores(array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('GET', '/shop_center/v1/authorize/list', $payload);
+        return $this->resolveFood99Client()?->listAuthorizedStores($payload);
     }
 
     public function listBindStores(array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('GET', '/shop_center/v1/shop/list', $payload);
+        return $this->resolveFood99Client()?->listBindStores($payload);
     }
 
     public function unbindStore(People $provider, array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/unbind', $payload);
+        return $this->resolveFood99Client()?->unbindStore($payload);
     }
 
     public function setStoreOrderConfirmationMethod(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setconfirmmethod', $payload, $provider);
+        return $this->resolveFood99Client()?->setStoreOrderConfirmationMethod($provider, $payload);
     }
 
     public function getStoreOrderConfirmationMethod(People $provider): ?array
     {
         $this->init();
 
-        $postResponse = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/getconfirmmethod', [], $provider);
-        if ($this->isSuccessfulErrno($postResponse['errno'] ?? null)) {
-            return $postResponse;
-        }
-
-        $getResponse = $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/getconfirmmethod', [], $provider);
-        if ($this->isSuccessfulErrno($getResponse['errno'] ?? null)) {
-            return $getResponse;
-        }
-
-        return $postResponse ?: $getResponse;
+        return $this->resolveFood99Client()?->getStoreOrderConfirmationMethod($provider);
     }
 
     public function getStoreDetails(People $provider): ?array
@@ -1657,7 +1625,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
         return $this->syncStoreStateFromResponse(
             $provider,
-            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/shop/detail', [], $provider)
+            $this->resolveFood99Client()?->getStoreDetails($provider)
         );
     }
 
@@ -1665,29 +1633,21 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/update', $payload, $provider);
+        return $this->resolveFood99Client()?->updateStoreInformation($provider, $payload);
     }
 
     public function getStoreCategories(People $provider): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/validCategories', [], $provider);
+        return $this->resolveFood99Client()?->getStoreCategories($provider);
     }
 
     public function setStoreStatus(People $provider, int $bizStatus, ?int $autoSwitch = null): ?array
     {
         $this->init();
 
-        $payload = [
-            'biz_status' => $bizStatus,
-        ];
-
-        if ($autoSwitch !== null) {
-            $payload['auto_switch'] = $autoSwitch;
-        }
-
-        $response = $this->call99StoreEndpointWithResponse('POST', '/v1/shop/shop/setStatus', $payload, $provider);
+        $response = $this->resolveFood99Client()?->setStoreStatus($provider, $bizStatus, $autoSwitch);
         if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderIntegrationState($provider, [
                 'biz_status' => $bizStatus,
@@ -1708,7 +1668,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/apply/set', $payload, $provider);
+        return $this->resolveFood99Client()?->setStoreCancellationRefund($provider, $payload);
     }
 
     public function markProviderConnected(People $provider, ?string $shopId = null): void
@@ -1751,7 +1711,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
         return $this->syncMenuStateFromResponse(
             $provider,
-            $this->call99StoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider)
+            $this->resolveFood99Client()?->getStoreMenuDetails($provider)
         );
     }
 
@@ -1759,81 +1719,77 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateItem', $payload, $provider);
+        return $this->resolveFood99Client()?->updateMenuItem($provider, $payload);
     }
 
     public function updateMenuItemStatus(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateItemStatus', $payload, $provider);
+        return $this->resolveFood99Client()?->updateMenuItemStatus($provider, $payload);
     }
 
     public function updateModifierGroup(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v3/item/item/updateModifierGroup', $payload, $provider);
+        return $this->resolveFood99Client()?->updateModifierGroup($provider, $payload);
     }
 
     public function uploadImage(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreMultipartEndpointWithResponse('POST', '/v3/image/image/uploadImage', $payload, $provider);
+        return $this->resolveFood99Client()?->uploadImage($provider, $payload);
     }
 
     public function getImageUploadInfoPageList(People $provider, array $payload = []): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('GET', '/v3/image/image/getImageUploadInfoPageList', $payload, $provider);
+        return $this->resolveFood99Client()?->getImageUploadInfoPageList($provider, $payload);
     }
 
     public function getOrderDetails(People $provider, string $orderId): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('GET', '/v1/order/order/detail', [
-            'order_id' => $orderId,
-        ], $provider);
+        return $this->resolveFood99Client()?->getOrderDetails($provider, $orderId);
     }
 
     public function confirmRemoteOrder(string $orderId, ?People $provider = null): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/confirm', [
-            'order_id' => $orderId,
-        ], $provider);
+        return $this->resolveFood99Client()?->confirmRemoteOrder($orderId, $provider);
     }
 
     public function handleCancellationRequest(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/apply/cancel', $payload, $provider);
+        return $this->resolveFood99Client()?->handleCancellationRequest($provider, $payload);
     }
 
     public function handleRefundRequest(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/apply/refund', $payload, $provider);
+        return $this->resolveFood99Client()?->handleRefundRequest($provider, $payload);
     }
 
     public function verifyOrder(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/verify', $payload, $provider);
+        return $this->resolveFood99Client()?->verifyOrder($provider, $payload);
     }
 
     public function confirmCashPayment(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/order/order/payConfirm', $payload, $provider);
+        return $this->resolveFood99Client()?->confirmCashPayment($provider, $payload);
     }
 
     public function listDeliveryAreas(People $provider): ?array
@@ -1842,7 +1798,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
         return $this->syncDeliveryAreaStateFromResponse(
             $provider,
-            $this->call99StoreEndpointWithResponse('GET', '/v1/shop/deliveryArea/list', [], $provider)
+            $this->resolveFood99Client()?->listDeliveryAreas($provider)
         );
     }
 
@@ -1850,43 +1806,42 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/add', $payload, $provider);
+        return $this->resolveFood99Client()?->addDeliveryArea($provider, $payload);
     }
 
     public function updateDeliveryArea(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/update', $payload, $provider);
+        return $this->resolveFood99Client()?->updateDeliveryArea($provider, $payload);
     }
 
     public function deleteDeliveryArea(People $provider, array $payload): ?array
     {
         $this->init();
 
-        return $this->call99StoreEndpointWithResponse('POST', '/v1/shop/deliveryArea/delete', $payload, $provider);
+        return $this->resolveFood99Client()?->deleteDeliveryArea($provider, $payload);
     }
 
     public function getFinancialApiAuthtoken(array $payload): ?array
     {
         $this->init();
 
-        return $this->request99WithResponse('POST', '/v3/auth/authtoken/signIn', $payload);
+        return $this->resolveFood99Client()?->getFinancialApiAuthtoken($payload);
     }
 
     public function getBillData(array $payload): ?array
     {
         $this->init();
 
-        return $this->request99WithResponse('POST', '/v3/finance/finance/getShopBillDetail', $payload);
+        return $this->resolveFood99Client()?->getBillData($payload);
     }
 
     public function getSettlementsData(array $payload): ?array
     {
         $this->init();
 
-        return $this->request99WithResponse('POST', '/v3/finance/finance/getShopBillWeek', $payload);
+        return $this->resolveFood99Client()?->getSettlementsData($payload);
     }
 
 }
-

@@ -51,7 +51,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $fakeClient = new FakeFood99Client();
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
 
-        if ($serviceMethod === 'getAuthorizationPage') {
+        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore'], true)) {
             $domainService = $this->createMock(DomainService::class);
             $domainService->expects(self::once())
                 ->method('getMainDomain')
@@ -62,7 +62,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $response = $service->{$serviceMethod}(...$arguments);
 
         $expectedPayload = $arguments[0] ?? [];
-        if ($serviceMethod === 'getAuthorizationPage') {
+        if (in_array($serviceMethod, ['getAuthorizationPage', 'bindStore'], true)) {
             $expectedPayload['app_domain'] = 'api.custom-domain.test';
         }
 
@@ -197,6 +197,16 @@ final class FakeFood99Client extends Food99Client
     public array $appCalls = [];
 
     /**
+     * @var array<int, array{method:string, uri:string, payload:array}>
+     */
+    public array $borderCalls = [];
+
+    /**
+     * @var array<int, array{method:string, uri:string, payload:array}>
+     */
+    public array $borderMultipartCalls = [];
+
+    /**
      * @var array<int, array{method:string, uri:string, payload:array, provider_id:int|null}>
      */
     public array $storeCalls = [];
@@ -259,6 +269,42 @@ final class FakeFood99Client extends Food99Client
                 'uri' => $uri,
                 'payload' => $payload,
                 'provider_id' => $provider?->getId(),
+            ],
+        ];
+    }
+
+    public function requestBorderWithResponse(string $method, string $uri, array $payload = [], array $logContext = []): ?array
+    {
+        $this->borderCalls[] = [
+            'method' => $method,
+            'uri' => $uri,
+            'payload' => $payload,
+        ];
+
+        return [
+            'errno' => 0,
+            'data' => [
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $payload,
+            ],
+        ];
+    }
+
+    public function requestBorderMultipartWithResponse(string $method, string $uri, array $payload = [], array $logContext = []): ?array
+    {
+        $this->borderMultipartCalls[] = [
+            'method' => $method,
+            'uri' => $uri,
+            'payload' => $payload,
+        ];
+
+        return [
+            'errno' => 0,
+            'data' => [
+                'method' => $method,
+                'uri' => $uri,
+                'payload' => $payload,
             ],
         ];
     }
