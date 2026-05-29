@@ -650,20 +650,15 @@ class DefaultFoodService
         self::$logger->$type($log);
     }
 
-    protected function resolvePublicAppDomain(): string
+    protected function resolvePublicAppDomain(?string $mainDomain = null): string
     {
-        $domain = $_ENV['PUBLIC_APP_DOMAIN']
-            ?? $_ENV['APP_DOMAIN']
-            ?? $_ENV['ADMIN_APP_DOMAIN']
-            ?? $_SERVER['PUBLIC_APP_DOMAIN']
-            ?? $_SERVER['APP_DOMAIN']
-            ?? $_SERVER['ADMIN_APP_DOMAIN']
-            ?? getenv('PUBLIC_APP_DOMAIN')
-            ?? getenv('APP_DOMAIN')
-            ?? getenv('ADMIN_APP_DOMAIN')
-            ?: 'admin.controleonline.com';
+        $domain = trim((string) ($mainDomain ?? ''));
 
-        $domain = trim((string) $domain);
+        if ($domain === '') {
+            $domainService = $this->resolveDomainService();
+            $domain = trim((string) ($domainService?->getMainDomain() ?? ''));
+        }
+
         if ($domain === '') {
             return 'admin.controleonline.com';
         }
@@ -705,7 +700,7 @@ class DefaultFoodService
             '%s/files/%s/download?app-domain=%s',
             rtrim($mainDomain, '/'),
             $normalizedFileId,
-            rawurlencode($this->resolvePublicAppDomain())
+            rawurlencode($this->resolvePublicAppDomain($mainDomain))
         );
     }
 }
