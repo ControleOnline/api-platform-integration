@@ -347,6 +347,25 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return is_array($decoded) ? $decoded : [];
     }
 
+    private function persistOrderIntegrationState(Order $order, array $fields): void
+    {
+        $normalizedFields = [];
+        foreach ($fields as $fieldName => $value) {
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '') {
+                continue;
+            }
+
+            $normalizedFields[$normalizedFieldName] = $value;
+        }
+
+        if ($normalizedFields === []) {
+            return;
+        }
+
+        $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
+    }
+
     private function persistProviderIntegrationState(People $provider, array $fields): void
     {
         $legacyFields = [];
