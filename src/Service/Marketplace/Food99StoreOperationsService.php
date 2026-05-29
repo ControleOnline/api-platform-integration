@@ -1592,6 +1592,10 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
+        $payload['app_domain'] = $payload['app_domain']
+            ?? $payload['appDomain']
+            ?? $this->resolvePublicAppDomain();
+
         return $this->call99AppEndpointWithResponse('POST', '/shop_center/v1/authorize/get_url', $payload);
     }
 

@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service\Marketplace;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\DefaultFoodService;
+use ControleOnline\Service\DomainService;
 use ControleOnline\Service\Marketplace\Food99StoreOperationsService;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -50,19 +51,32 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $fakeClient = new FakeFood99Client();
         $service = $this->newServiceWithFakeFood99Client($fakeClient);
 
+        if ($serviceMethod === 'getAuthorizationPage') {
+            $domainService = $this->createMock(DomainService::class);
+            $domainService->expects(self::once())
+                ->method('getMainDomain')
+                ->willReturn('api.custom-domain.test');
+            $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
+        }
+
         $response = $service->{$serviceMethod}(...$arguments);
+
+        $expectedPayload = $arguments[0] ?? [];
+        if ($serviceMethod === 'getAuthorizationPage') {
+            $expectedPayload['app_domain'] = 'api.custom-domain.test';
+        }
 
         self::assertCount(1, $fakeClient->appCalls);
         self::assertSame([], $fakeClient->storeCalls);
         self::assertSame($expectedMethod, $fakeClient->appCalls[0]['method']);
         self::assertSame($expectedUri, $fakeClient->appCalls[0]['uri']);
-        self::assertSame($arguments[0] ?? [], $fakeClient->appCalls[0]['payload']);
+        self::assertSame($expectedPayload, $fakeClient->appCalls[0]['payload']);
         self::assertSame([
             'errno' => 0,
             'data' => [
                 'method' => $expectedMethod,
                 'uri' => $expectedUri,
-                'payload' => $arguments[0] ?? [],
+                'payload' => $expectedPayload,
             ],
         ], $response);
     }
