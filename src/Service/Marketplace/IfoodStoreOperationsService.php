@@ -45,6 +45,142 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return self::APP_CONTEXT;
     }
 
+    private function buildOrderIntegrationLockKey(string $orderId): string
+    {
+        return 'ifood:order:' . substr(sha1($orderId), 0, 40);
+    }
+
+    private function acquireOrderIntegrationLock(string $orderId): bool
+    {
+        try {
+            $acquired = (int) $this->entityManager->getConnection()->fetchOne(
+                'SELECT GET_LOCK(:lockKey, 5)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+
+            if ($acquired !== 1) {
+                self::$logger?->warning('iFood could not acquire order integration lock in time', [
+                    'order_id' => $orderId,
+                    'lock_key' => $this->buildOrderIntegrationLockKey($orderId),
+                ]);
+            }
+
+            return $acquired === 1;
+        } catch (\Throwable $e) {
+            self::$logger?->warning('iFood could not acquire order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function releaseOrderIntegrationLock(string $orderId): void
+    {
+        try {
+            $this->entityManager->getConnection()->executeQuery(
+                'SELECT RELEASE_LOCK(:lockKey)',
+                ['lockKey' => $this->buildOrderIntegrationLockKey($orderId)]
+            );
+        } catch (\Throwable $e) {
+            self::$logger?->warning('iFood could not release order integration lock', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function findOrderByExternalId(string $orderId): ?Order
+    {
+        if ($orderId === '') {
+            return null;
+        }
+
+        $order = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $orderId,
+            Order::class
+        );
+        if ($order instanceof Order) {
+            return $order;
+        }
+
+        $order = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'id',
+            $orderId,
+            Order::class
+        );
+        if ($order instanceof Order) {
+            return $order;
+        }
+
+        return null;
+    }
+
+    private function resolveOrderDetailsFromEvent(string $orderId, array $event, ?Order $order = null): array
+    {
+        $eventOrderDetails = is_array($event['order'] ?? null) ? $event['order'] : [];
+        $storedOrderDetails = [];
+        $otherInformations = [];
+
+        if ($order instanceof Order) {
+            $otherInformations = $this->getDecodedOrderOtherInformations($order);
+            $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
+            if (is_array($context['order'] ?? null) && $context['order'] !== []) {
+                $storedOrderDetails = $context['order'];
+            }
+        }
+
+        if ($eventOrderDetails !== []) {
+            $orderDetails = $storedOrderDetails !== []
+                ? array_replace_recursive($storedOrderDetails, $eventOrderDetails)
+                : $eventOrderDetails;
+        } elseif ($storedOrderDetails !== []) {
+            $orderDetails = $storedOrderDetails;
+        } else {
+            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+            $orderDetails = is_array($fetchedOrderDetails) ? $fetchedOrderDetails : [];
+        }
+
+        if ($order instanceof Order && $orderDetails !== []) {
+            $this->persistResolvedIfoodOrderDetails($order, $event, $orderDetails, $otherInformations);
+        }
+
+        return is_array($orderDetails) ? $orderDetails : [];
+    }
+
+    private function persistResolvedIfoodOrderDetails(Order $order, array $event, array $orderDetails, array $otherInformations = []): void
+    {
+        if ($otherInformations === []) {
+            $otherInformations = $this->getDecodedOrderOtherInformations($order);
+        }
+
+        $context = $this->decodeOrderOtherInformationsValue($otherInformations[self::APP_CONTEXT] ?? null);
+        if ($context === []) {
+            $context = [];
+        }
+
+        $eventKey = $this->resolveEventCode($event);
+        if ($eventKey === '') {
+            $eventKey = 'PLACED';
+        }
+
+        if (!is_array($context[$eventKey] ?? null)) {
+            $context[$eventKey] = [];
+        }
+
+        $context[$eventKey]['order'] = $orderDetails;
+        $context[$eventKey]['order_details_cached_at'] = date('Y-m-d H:i:s');
+        $context['latest_event_type'] = $eventKey;
+
+        $otherInformations[self::APP_CONTEXT] = $context;
+        $order->setOtherInformations($otherInformations);
+        $this->entityManager->persist($order);
+    }
+
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
     {
         return $this->extraDataService->getExtraDataValue(
@@ -1003,7 +1139,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
+        $provider = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $merchantId,
+            People::class
+        );
         if (!$provider instanceof People && ctype_digit($merchantId)) {
             $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
         }
@@ -1443,7 +1584,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return null;
         }
 
-        $provider = $this->findEntityByExtraData('People', 'code', $merchantId, People::class);
+        $provider = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $merchantId,
+            People::class
+        );
 
         if (!$provider instanceof People) {
             self::$logger->warning('iFood order ignored because provider mapping was not found', [
@@ -2652,7 +2798,9 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $documentType = $this->resolveCustomerDocumentType($customerData, $document);
-        $clientByCode = $codClienteiFood !== '' ? $this->findEntityByExtraData('People', 'code', $codClienteiFood, People::class) : null;
+        $clientByCode = $codClienteiFood !== ''
+            ? $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'code', $codClienteiFood, People::class)
+            : null;
         $clientByDocument = null;
         $client = null;
 
@@ -2759,7 +2907,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function discoveryProduct(Order $order, array $item, ?Product $parentProduct = null, string $productType = 'product'): Product
     {
         $codProductiFood = $item['id'];
-        $product = $this->findEntityByExtraData('Product', 'code', $codProductiFood, Product::class);
+        $product = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $codProductiFood,
+            Product::class
+        );
 
         if (!$product && !empty($item['externalCode']))
             $product = $this->entityManager->getRepository(Product::class)->findOneBy([

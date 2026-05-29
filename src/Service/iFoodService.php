@@ -455,12 +455,22 @@ class iFoodService extends AbstractMarketplaceService implements
             return null;
         }
 
-        $order = $this->findEntityByExtraData('Order', 'code', $orderId, Order::class);
+        $order = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $orderId,
+            Order::class
+        );
         if ($order instanceof Order) {
             return $order;
         }
 
-        $order = $this->findEntityByExtraData('Order', 'id', $orderId, Order::class);
+        $order = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'id',
+            $orderId,
+            Order::class
+        );
         if ($order instanceof Order) {
             return $order;
         }
