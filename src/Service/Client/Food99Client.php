@@ -240,7 +240,7 @@ class Food99Client
 
     public function getOrderDetails(People $provider, string $orderId): ?array
     {
-        return $this->callStoreEndpointWithResponse('GET', '/v1/order/order/detail', [
+        return $this->callOpenApiEndpointWithResponse('GET', '/v1/order/order/detail', [
             'order_id' => $orderId,
         ], $provider);
     }

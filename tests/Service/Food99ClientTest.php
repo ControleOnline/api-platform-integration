@@ -396,6 +396,76 @@ class Food99ClientTest extends TestCase
         self::assertSame($payload, $capturedRequest['options']['json']);
     }
 
+    public function testGetOrderDetailsUsesOpenApiEndpointAndAuthenticatedQuery(): void
+    {
+        $previousValues = [
+            'OAUTH_99FOOD_CLIENT_ID' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+            'OAUTH_99FOOD_CLIENT_ID_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+        ];
+
+        $_ENV['OAUTH_99FOOD_CLIENT_ID'] = 'server-app-id';
+        $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] = 'server-app-secret';
+        $_SERVER['OAUTH_99FOOD_CLIENT_ID'] = 'server-app-id';
+        $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] = 'server-app-secret';
+
+        $capturedRequest = null;
+        $httpClient = new RecordingHttpClient(function (string $method, string $url, array $options) use (&$capturedRequest) {
+            if (str_contains($url, '/v1/auth/authtoken/get')) {
+                return RecordedResponse::json([
+                    'errno' => 0,
+                    'data' => [
+                        'auth_token' => 'token-123',
+                        'token_expiration_time' => time() + 3600,
+                    ],
+                ]);
+            }
+
+            $capturedRequest = compact('method', 'url', 'options');
+
+            return RecordedResponse::json([
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'data' => [
+                    'order_id' => 5764672390386747126,
+                    'price' => [
+                        'order_price' => 18370,
+                    ],
+                ],
+            ]);
+        });
+
+        $client = new Food99Client($httpClient);
+        $provider = $this->newTestPeople(3);
+
+        try {
+            self::assertSame([
+                'errno' => 0,
+                'errmsg' => 'ok',
+                'data' => [
+                    'order_id' => 5764672390386747126,
+                    'price' => [
+                        'order_price' => 18370,
+                    ],
+                ],
+            ], $client->getOrderDetails($provider, '5764672390386747126'));
+
+            self::assertIsArray($capturedRequest);
+            self::assertSame('GET', $capturedRequest['method']);
+            self::assertSame(
+                'https://openapi.99food.com/v1/order/order/detail?order_id=5764672390386747126&auth_token=token-123',
+                $capturedRequest['url']
+            );
+            self::assertSame([
+                'order_id' => '5764672390386747126',
+                'auth_token' => 'token-123',
+            ], $capturedRequest['options']['query']);
+        } finally {
+            $this->restoreEnvironmentValues($previousValues);
+        }
+    }
+
     public static function provideBorderApiWrappers(): iterable
     {
         yield 'financial auth token' => [

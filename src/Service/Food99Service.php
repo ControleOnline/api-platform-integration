@@ -1165,17 +1165,14 @@ class Food99Service extends AbstractMarketplaceService implements
         $isSuccess = $this->isSuccessfulErrno($safeResponse['errno'] ?? null);
 
         if ($isSuccess) {
-            $remoteData = is_array($safeResponse['data'] ?? null) ? $safeResponse['data'] : [];
-            if (!isset($remoteData['order_id'])) {
-                $remoteData['order_id'] = $remoteOrderId;
-            }
-
-            $syncPayload = [
-                'type' => 'orderDetailSync',
-                'event_time' => date('Y-m-d H:i:s'),
-                'data' => $remoteData,
-            ];
-
+            $syncPayload = $this->buildOrderDetailSyncPayload(
+                $order->getProvider(),
+                $safeResponse,
+                [
+                    'event_id' => sprintf('reconcile:%s', (string) $remoteOrderId),
+                    'created_at' => date('Y-m-d H:i:s'),
+                ]
+            );
             $this->handleGenericOrderEvent($syncPayload, 'orderDetailSync', false);
         } else {
             $this->entityManager->flush();

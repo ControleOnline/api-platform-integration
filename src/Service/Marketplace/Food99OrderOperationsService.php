@@ -2121,6 +2121,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
                     return $order;
                 }
                 $this->throwIfConfirmationShouldRetry($confirmResult, $orderId, $order);
+                $this->reconcileOrderAfterEntry($order, $autoConfirm);
             }
 
             if ($autoPrint) {
@@ -2504,6 +2505,15 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         };
     }
 
+    public function buildOrderDetailSyncPayload(People $provider, array $orderDetails, array $event = []): array
+    {
+        $event['mapped_event_type'] = 'orderDetailSync';
+        $event['original_event_type'] = $event['original_event_type'] ?? 'orderDetailSync';
+        $event['created_at'] = $event['created_at'] ?? date('Y-m-d H:i:s');
+
+        return $this->buildOpenDeliveryWebhookPayload($provider, $orderDetails, $event);
+    }
+
     private function buildOpenDeliveryWebhookPayload(People $provider, array $orderDetails, array $event): array
     {
         $data = is_array($orderDetails['data'] ?? null) ? $orderDetails['data'] : $orderDetails;
@@ -2512,16 +2522,15 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $customer = $this->findFirstArrayByKeysRecursive($data, ['customer', 'buyer', 'receiver', 'recipient', 'consumer']) ?? [];
         $delivery = $this->findFirstArrayByKeysRecursive($data, ['delivery', 'logistics', 'shipping']) ?? [];
 
+        $priceSource = $this->findFirstArrayByKeysRecursive($data, ['price', 'summary']) ?? [];
+        $otherFees = is_array($priceSource['others_fees'] ?? null) ? $priceSource['others_fees'] : [];
+        $promotions = $this->findFirstValueByKeysRecursive($data, ['promotions', 'promotion', 'promo_list']);
+        $promotions = is_array($promotions) ? $promotions : [];
+
         $items = $this->findFirstValueByKeysRecursive($data, ['items', 'orderItems', 'order_items', 'products']);
         $items = is_array($items) ? $items : [];
-        $otherFees = $this->findFirstValueByKeysRecursive($data, ['otherFees', 'other_fees', 'fees']);
-        $otherFees = is_array($otherFees) ? $otherFees : [];
-        $discounts = $this->findFirstValueByKeysRecursive($data, ['discounts', 'discountList', 'promotion', 'promotions', 'discount']);
-        $discounts = is_array($discounts) ? $discounts : [];
         $payments = $this->findFirstValueByKeysRecursive($data, ['payments', 'payment', 'pay']);
         $payments = is_array($payments) ? $payments : [];
-        $total = $this->findFirstValueByKeysRecursive($data, ['total', 'totals', 'price', 'summary']);
-        $total = is_array($total) ? $total : [];
         $extraInfo = $this->findFirstArrayByKeysRecursive($data, ['extraInfo', 'extra_info', 'extra']) ?? [];
 
         $orderId = $this->normalizeOpenDeliveryString($this->findFirstValueByKeysRecursive($orderDetails, ['id', 'orderId', 'order_id']) ?? $event['order_id']);
@@ -2596,21 +2605,83 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
 
         $mappedItems = $this->mapOpenDeliveryItems($items);
         $itemsTotalCents = $this->calculateOpenDeliveryItemsTotal($mappedItems);
-        $deliveryFeeCents = $this->extractOpenDeliveryMoneyValue($otherFees);
-        $discountTotalCents = $this->extractOpenDeliveryMoneyValue($discounts);
         $tipTotalCents = $this->extractOpenDeliveryMoneyValue($this->findFirstValueByKeysRecursive($data, ['tips', 'tip', 'gratitude']) ?? []);
-        $customerTotalCents = $this->extractOpenDeliveryMoneyValue($total);
 
-        if ($customerTotalCents <= 0) {
-            $customerTotalCents = max(0, $itemsTotalCents + $deliveryFeeCents + $tipTotalCents - $discountTotalCents);
+        $serviceFeeCents = $this->extractOpenDeliveryMoneyValue($otherFees['service_price'] ?? 0);
+        $smallOrderFeeCents = $this->extractOpenDeliveryMoneyValue($otherFees['small_order_price'] ?? $otherFees['small_order_fee'] ?? 0);
+        $mealTopUpFeeCents = $this->extractOpenDeliveryMoneyValue($otherFees['meal_top_up_price'] ?? $otherFees['meal_top_up_fee'] ?? 0);
+        $deliveryFeeCents = $this->extractOpenDeliveryMoneyValue(
+            $priceSource['store_charged_delivery_price'] ?? $priceSource['delivery_fee'] ?? 0
+        );
+
+        $itemsDiscountCents = $this->extractOpenDeliveryMoneyValue($priceSource['items_discount'] ?? 0);
+        $deliveryDiscountCents = $this->extractOpenDeliveryMoneyValue($priceSource['delivery_discount'] ?? 0);
+        $promoDiscountTotalCents = 0;
+        foreach ($promotions as $promotion) {
+            if (!is_array($promotion)) {
+                continue;
+            }
+
+            $promoDiscountTotalCents += $this->extractOpenDeliveryMoneyValue(
+                $promotion['promo_discount']
+                    ?? $promotion['shop_subside_price']
+                    ?? $promotion['discount']
+                    ?? 0
+            );
         }
 
-        $orderPriceCents = $customerTotalCents > 0 ? $customerTotalCents : $itemsTotalCents;
-        $serviceFeeCents = 0;
-        $smallOrderFeeCents = 0;
-        $mealTopUpFeeCents = 0;
-        $subtotalBeforeDiscountsCents = max(0, $itemsTotalCents + $deliveryFeeCents + $serviceFeeCents + $smallOrderFeeCents + $mealTopUpFeeCents + $tipTotalCents);
-        $storeReceivableTotalCents = $customerTotalCents > 0 ? $customerTotalCents : $subtotalBeforeDiscountsCents;
+        $discountTotalCents = $promoDiscountTotalCents > 0
+            ? $promoDiscountTotalCents
+            : ($itemsDiscountCents + $deliveryDiscountCents);
+
+        $orderPriceCents = $this->extractOpenDeliveryMoneyValue(
+            $priceSource['order_price']
+                ?? $priceSource['customer_need_paying_money']
+                ?? $priceSource['real_pay_price']
+                ?? $priceSource['real_price']
+                ?? $priceSource['shop_paid_money']
+                ?? 0
+        );
+        if ($orderPriceCents <= 0) {
+            $orderPriceCents = $itemsTotalCents;
+        }
+
+        $subtotalBeforeDiscountsCents = max(
+            0,
+            $itemsTotalCents + $deliveryFeeCents + $serviceFeeCents + $smallOrderFeeCents + $mealTopUpFeeCents + $tipTotalCents
+        );
+
+        $customerTotalCents = $this->extractOpenDeliveryMoneyValue(
+            $priceSource['customer_need_paying_money']
+                ?? $priceSource['real_pay_price']
+                ?? $priceSource['real_price']
+                ?? $priceSource['shop_paid_money']
+                ?? 0
+        );
+        if ($customerTotalCents <= 0) {
+            $customerTotalCents = max(0, $subtotalBeforeDiscountsCents - $discountTotalCents);
+        }
+
+        $chargeBaseAmountCents = max(0, $orderPriceCents - $discountTotalCents);
+
+        $storeReceivableTotalCents = $this->extractOpenDeliveryMoneyValue(
+            $priceSource['real_price']
+                ?? $priceSource['shop_paid_money']
+                ?? 0
+        );
+        if ($storeReceivableTotalCents <= 0) {
+            $storeReceivableTotalCents = $chargeBaseAmountCents;
+        }
+
+        $realPayTotalCents = $this->extractOpenDeliveryMoneyValue(
+            $priceSource['real_pay_price']
+                ?? $priceSource['customer_need_paying_money']
+                ?? 0
+        );
+        if ($realPayTotalCents <= 0) {
+            $realPayTotalCents = $customerTotalCents;
+        }
+
         $weeklySettlementAmountCents = $storeReceivableTotalCents;
         $shopPaidMoneyCents = $storeReceivableTotalCents;
 
@@ -2683,26 +2754,26 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             'tip_total' => $tipTotalCents,
             'subtotal_before_discounts' => $subtotalBeforeDiscountsCents,
             'discount_total' => $discountTotalCents,
-            'store_discount_total' => $discountTotalCents,
-            'platform_discount_total' => 0,
-            'store_non_delivery_discount_total' => $discountTotalCents,
+            'store_discount_total' => $itemsDiscountCents,
+            'platform_discount_total' => $deliveryDiscountCents,
+            'store_non_delivery_discount_total' => $itemsDiscountCents,
             'platform_non_delivery_discount_total' => 0,
             'store_delivery_discount_total' => 0,
-            'platform_delivery_discount_total' => 0,
-            'charge_base_amount' => $customerTotalCents,
+            'platform_delivery_discount_total' => $deliveryDiscountCents,
+            'charge_base_amount' => $chargeBaseAmountCents,
             'commission_distribution_amount' => 0,
             'payment_processing_amount' => 0,
-            'logistics_cost_amount' => $deliveryFeeCents,
-            'platform_charges_amount' => $deliveryFeeCents,
+            'logistics_cost_amount' => 0,
+            'platform_charges_amount' => $serviceFeeCents + $deliveryFeeCents,
             'weekly_settlement_amount' => $weeklySettlementAmountCents,
             'promotions_total' => $discountTotalCents,
-            'items_discount_total' => $discountTotalCents,
-            'delivery_discount_total' => 0,
+            'items_discount_total' => $itemsDiscountCents,
+            'delivery_discount_total' => $deliveryDiscountCents,
             'coupon_discount_total' => 0,
             'customer_total' => $customerTotalCents,
             'customer_need_paying_money' => $customerTotalCents,
             'store_receivable_total' => $storeReceivableTotalCents,
-            'real_pay_total' => $customerTotalCents,
+            'real_pay_total' => $realPayTotalCents,
             'refund_total' => 0,
             'store_charged_delivery_price' => $deliveryFeeCents,
             'shop_paid_money' => $shopPaidMoneyCents,
@@ -3315,6 +3386,20 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $orderId,
             trim((string) ($confirmResult['errmsg'] ?? 'unknown error'))
         ));
+    }
+
+    private function reconcileOrderAfterEntry(Order $order, bool $shouldReconcile): void
+    {
+        if (!$shouldReconcile) {
+            return;
+        }
+
+        $service = $this->food99Service;
+        if (!$service instanceof Food99Service) {
+            return;
+        }
+
+        $service->reconcileOrder($order);
     }
 
     private function isUnavailableOrderActionResponse(array $response): bool
