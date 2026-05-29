@@ -1399,6 +1399,13 @@ class IntegrationController extends AbstractController
         }
 
         $fromTime = trim((string) ($payload['from_time'] ?? $payload['fromTime'] ?? $request->query->get('from_time', '')));
+        $untilTime = trim((string) (
+            $payload['to_time']
+                ?? $payload['until_time']
+                ?? $payload['toTime']
+                ?? $payload['untilTime']
+                ?? $request->query->get('to_time', $request->query->get('until_time', ''))
+        ));
         $eventTypesInput = $payload['event_types'] ?? $payload['eventTypes'] ?? [];
         if (is_string($eventTypesInput)) {
             $eventTypes = array_values(array_filter(array_map('trim', explode(',', $eventTypesInput))));
@@ -1411,11 +1418,18 @@ class IntegrationController extends AbstractController
             $eventTypes = [];
         }
 
-        $syncResult = $this->food99Service->syncOrdersFromPolling(
-            $provider,
-            $fromTime !== '' ? $fromTime : null,
-            $eventTypes
-        );
+        $syncResult = $untilTime !== ''
+            ? $this->food99Service->syncOrdersFromPolling(
+                $provider,
+                $fromTime !== '' ? $fromTime : null,
+                $eventTypes,
+                $untilTime
+            )
+            : $this->food99Service->syncOrdersFromPolling(
+                $provider,
+                $fromTime !== '' ? $fromTime : null,
+                $eventTypes
+            );
 
         return new JsonResponse($syncResult);
     }
