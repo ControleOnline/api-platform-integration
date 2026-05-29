@@ -3,6 +3,7 @@
 namespace ControleOnline\Integration\Tests\Service\Marketplace;
 
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\People;
 use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\Marketplace\Food99OrderOperationsService;
 use ControleOnline\Entity\Status;
@@ -682,6 +683,141 @@ final class Food99OrderOperationsServiceTest extends TestCase
             'mapOpenDeliveryEventType',
             'CANCELLATION_REQUEST_DENIED'
         ));
+    }
+
+    public function testBuildOrderDetailSyncPayloadMaterializesFood99FinancialSnapshot(): void
+    {
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $provider = $this->createConfiguredMock(People::class, [
+            'getId' => 3,
+        ]);
+
+        $payload = [
+            'data' => [
+                'order_id' => 5764672390386747126,
+                'order_index' => 570006,
+                'pay_type' => 1,
+                'pay_method' => 1,
+                'pay_channel' => 150,
+                'delivery_type' => 1,
+                'price' => [
+                    'order_price' => 18370,
+                    'others_fees' => [
+                        'service_price' => 510,
+                    ],
+                    'refund_price' => 0,
+                    'store_charged_delivery_price' => 599,
+                    'in_sale_refund_to_c_fee' => 0,
+                    'items_discount' => 8184,
+                    'delivery_discount' => 599,
+                ],
+                'promotions' => [
+                    [
+                        'promo_type' => 2,
+                        'promo_discount' => 5184,
+                        'shop_subside_price' => 5184,
+                    ],
+                    [
+                        'promo_type' => 3,
+                        'promo_discount' => 599,
+                        'shop_subside_price' => 599,
+                    ],
+                    [
+                        'promo_type' => 11,
+                        'promo_discount' => 3000,
+                        'shop_subside_price' => 0,
+                    ],
+                ],
+                'order_items' => [
+                    [
+                        'app_item_id' => '1343',
+                        'app_external_id' => '',
+                        'name' => 'Combo Alpha Gyros',
+                        'total_price' => 8390,
+                        'sku_price' => 7300,
+                        'amount' => 1,
+                        'submit_refund_amount' => 0,
+                        'remark' => '',
+                        'sub_item_list' => [
+                            [
+                                'app_item_id' => '1373',
+                                'app_external_id' => '',
+                                'name' => 'Batata frita do Combo - Grande (400g)',
+                                'total_price' => 1090,
+                                'sku_price' => 1090,
+                                'amount' => 1,
+                                'submit_refund_amount' => 0,
+                                'sub_item_list' => [],
+                            ],
+                        ],
+                    ],
+                    [
+                        'app_item_id' => '1923',
+                        'app_external_id' => '',
+                        'name' => 'Alpha Gyros (Fraldinha)',
+                        'total_price' => 9980,
+                        'sku_price' => 4990,
+                        'amount' => 2,
+                        'submit_refund_amount' => 0,
+                        'remark' => '',
+                        'sub_item_list' => [],
+                    ],
+                ],
+            ],
+        ];
+
+        $snapshot = $service->buildOrderDetailSyncPayload($provider, $payload);
+
+        self::assertSame('orderDetailSync', $snapshot['type']);
+        self::assertSame(18370, $snapshot['financial']['items_total']);
+        self::assertSame(599, $snapshot['financial']['delivery_fee']);
+        self::assertSame(510, $snapshot['financial']['service_fee']);
+        self::assertSame(8783, $snapshot['financial']['discount_total']);
+        self::assertSame(8184, $snapshot['financial']['store_discount_total']);
+        self::assertSame(599, $snapshot['financial']['platform_discount_total']);
+        self::assertSame(10696, $snapshot['financial']['customer_total']);
+        self::assertSame(9587, $snapshot['financial']['weekly_settlement_amount']);
+        self::assertSame(9587, $snapshot['financial']['store_receivable_total']);
+        self::assertSame(10696, $snapshot['financial']['real_pay_total']);
+        self::assertSame(10696, $snapshot['payment']['amount_paid']);
+        self::assertSame('1', $snapshot['payment']['pay_type']);
+        self::assertSame('1', $snapshot['payment']['pay_method']);
+        self::assertSame('150', $snapshot['payment']['pay_channel']);
+        self::assertSame('1', $snapshot['data']['delivery_type']);
+        self::assertSame('5764672390386747126', (string) $snapshot['identifiers']['remote_order_id']);
+    }
+
+    public function testReconcileOrderAfterEntryDelegatesOnlyWhenEnabled(): void
+    {
+        $food99Service = new class extends \ControleOnline\Service\Food99Service {
+            public array $calls = [];
+
+            public function __construct()
+            {
+            }
+
+            public function reconcileOrder(\ControleOnline\Entity\Order $order): array
+            {
+                $this->calls[] = $order;
+
+                return [
+                    'errno' => 0,
+                    'errmsg' => 'ok',
+                ];
+            }
+        };
+
+        $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99Service', $food99Service);
+
+        $order = new \ControleOnline\Entity\Order();
+        $this->setEntityIdOnOrder($order, 71699);
+
+        $this->invokePrivateMethod($service, 'reconcileOrderAfterEntry', $order, true);
+        $this->invokePrivateMethod($service, 'reconcileOrderAfterEntry', $order, false);
+
+        self::assertCount(1, $food99Service->calls);
+        self::assertSame($order, $food99Service->calls[0]);
     }
 
     private function invokePrivateMethod(object $object, string $methodName, mixed ...$arguments): mixed
