@@ -24,6 +24,9 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
+use DateTimeImmutable;
+use DateTimeInterface;
+use DateTimeZone;
 use Exception;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -548,6 +551,54 @@ class DefaultFoodService
 
         $this->entityManager->persist($order);
         return $order;
+    }
+
+    protected function normalizeMarketplaceDateTime(mixed $value): DateTimeImmutable
+    {
+        $timezoneName = trim((string) (date_default_timezone_get() ?: 'UTC'));
+        if ($timezoneName === '') {
+            $timezoneName = 'UTC';
+        }
+
+        try {
+            $timezone = new DateTimeZone($timezoneName);
+        } catch (\Throwable) {
+            $timezone = new DateTimeZone('UTC');
+        }
+
+        if ($value instanceof DateTimeInterface) {
+            return DateTimeImmutable::createFromInterface($value)->setTimezone($timezone);
+        }
+
+        if (is_numeric($value)) {
+            $timestamp = (int) $value;
+            if ($timestamp > 9999999999) {
+                $timestamp = (int) floor($timestamp / 1000);
+            }
+
+            if ($timestamp > 0) {
+                return (new DateTimeImmutable(sprintf('@%d', $timestamp)))->setTimezone($timezone);
+            }
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized !== '') {
+            try {
+                return (new DateTimeImmutable($normalized))->setTimezone($timezone);
+            } catch (\Throwable) {
+                // Fall through to "now".
+            }
+        }
+
+        return new DateTimeImmutable('now', $timezone);
+    }
+
+    protected function applyMarketplaceOrderDate(Order $order, mixed $value): void
+    {
+        $orderDate = $this->normalizeMarketplaceDateTime($value);
+
+        $order->setOrderDate($orderDate);
+        $order->setAlterDate($orderDate);
     }
 
     protected function normalizeMarketplaceFreeText(mixed $value): string

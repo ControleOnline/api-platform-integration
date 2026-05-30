@@ -11,6 +11,40 @@ use PHPUnit\Framework\TestCase;
 
 final class Food99OrderOperationsServiceTest extends TestCase
 {
+    public function testExtractOrderEventTimestampConvertsRemoteUtcToAppTimezone(): void
+    {
+        $previousTimezone = date_default_timezone_get();
+        date_default_timezone_set('America/Sao_Paulo');
+
+        try {
+            $eventService = new class extends \ControleOnline\Service\Marketplace\Food99PeopleOperationsService {
+                public function __construct()
+                {
+                }
+
+                public function searchPayloadValueByKeys(mixed $payload, array $keys): ?string
+                {
+                    return is_array($payload) ? ($payload['createdAt'] ?? null) : null;
+                }
+            };
+
+            $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();
+            $this->setObjectProperty(Food99OrderOperationsService::class, $service, 'food99PeopleOperationsService', $eventService);
+
+            $result = $this->invokePrivateMethod(
+                $service,
+                'extractOrderEventTimestamp',
+                [
+                    'createdAt' => '2026-05-29T23:37:20.421Z',
+                ]
+            );
+
+            self::assertSame('2026-05-29 20:37:20', $result);
+        } finally {
+            date_default_timezone_set($previousTimezone);
+        }
+    }
+
     public function testBuildLogContextUsesIntegrationAndWebhookPayloadData(): void
     {
         $service = (new \ReflectionClass(Food99OrderOperationsService::class))->newInstanceWithoutConstructor();

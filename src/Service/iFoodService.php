@@ -333,7 +333,17 @@ class iFoodService extends AbstractMarketplaceService implements
         ]));
 
         if ($orderAlreadyExisted) {
-            $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
+            try {
+                $orderDetails = $this->refreshOrderCoreDataFromEvent($order, $event);
+            } catch (\Throwable $exception) {
+                self::$logger->warning('iFood existing order core refresh failed, continuing with entry enrichment', [
+                    'order_id' => $orderId,
+                    'local_order_id' => $order->getId(),
+                    'event_code' => $eventCode,
+                    'error' => $exception->getMessage(),
+                ]);
+                $orderDetails = [];
+            }
             $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
         }
 
@@ -825,25 +835,7 @@ class iFoodService extends AbstractMarketplaceService implements
         $raw = $payload['createdAt']
             ?? ($payload['created_at'] ?? ($payload['__webhook']['event_at'] ?? null));
 
-        if (is_numeric($raw)) {
-            $timestamp = (int) $raw;
-            if ($timestamp > 9999999999) {
-                $timestamp = (int) floor($timestamp / 1000);
-            }
-
-            return date('Y-m-d H:i:s', max(0, $timestamp));
-        }
-
-        $normalized = $this->normalizeString($raw);
-        if ($normalized === '') {
-            return date('Y-m-d H:i:s');
-        }
-
-        try {
-            return (new DateTime($normalized))->format('Y-m-d H:i:s');
-        } catch (\Throwable) {
-            return date('Y-m-d H:i:s');
-        }
+        return $this->normalizeMarketplaceDateTime($raw)->format('Y-m-d H:i:s');
     }
 
     private function resolveRemoteOrderStateByEventCode(string $eventCode): string

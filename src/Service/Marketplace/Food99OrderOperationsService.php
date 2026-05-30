@@ -858,22 +858,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         ])
             : null;
 
-        if ($timestamp === null || $timestamp === '') {
-            return date('Y-m-d H:i:s');
-        }
-
-        if (ctype_digit($timestamp)) {
-            $unix = (int) $timestamp;
-            if ($unix > 1000000000000) {
-                $unix = (int) floor($unix / 1000);
-            }
-
-            if ($unix > 0) {
-                return date('Y-m-d H:i:s', $unix);
-            }
-        }
-
-        return $timestamp;
+        return $this->normalizeMarketplaceDateTime($timestamp)->format('Y-m-d H:i:s');
     }
 
     private function extractOrderDeliveryStatus(array $json): ?string
@@ -2032,6 +2017,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
             $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
+            $this->applyMarketplaceOrderDate($order, $this->extractOrderEventTimestamp($json));
             $this->syncOrderComments($order, $this->extractOrderRemark($json));
             $this->entityManager->persist($order);
             $this->entityManager->flush();

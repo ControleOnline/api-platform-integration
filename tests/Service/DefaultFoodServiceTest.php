@@ -6,11 +6,13 @@ use ControleOnline\Entity\Device;
 use ControleOnline\Entity\DeviceConfig;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\DefaultFoodService;
+use DateTimeImmutable;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\TestCase;
@@ -166,6 +168,27 @@ class DefaultFoodServiceTest extends TestCase
         );
     }
 
+    public function testApplyMarketplaceOrderDateUsesAppTimezoneAndSetsBothDates(): void
+    {
+        $previousTimezone = date_default_timezone_get();
+        date_default_timezone_set('America/Sao_Paulo');
+
+        try {
+            $service = (new \ReflectionClass(DefaultFoodServiceProbe::class))->newInstanceWithoutConstructor();
+            $order = new Order();
+
+            $service->applyMarketplaceOrderDateValue($order, '2026-05-29T23:37:20.421Z');
+
+            self::assertInstanceOf(DateTimeImmutable::class, $order->getOrderDate());
+            self::assertInstanceOf(DateTimeImmutable::class, $order->getAlterDate());
+            self::assertSame('2026-05-29 20:37:20', $order->getOrderDate()->format('Y-m-d H:i:s'));
+            self::assertSame('2026-05-29 20:37:20', $order->getAlterDate()->format('Y-m-d H:i:s'));
+            self::assertSame('America/Sao_Paulo', $order->getOrderDate()->getTimezone()->getName());
+        } finally {
+            date_default_timezone_set($previousTimezone);
+        }
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
@@ -189,5 +212,10 @@ final class DefaultFoodServiceProbe extends DefaultFoodService
     public function buildPublicFileDownloadUrlValue(mixed $fileId): ?string
     {
         return $this->buildPublicFileDownloadUrl($fileId);
+    }
+
+    public function applyMarketplaceOrderDateValue(Order $order, mixed $value): void
+    {
+        $this->applyMarketplaceOrderDate($order, $value);
     }
 }

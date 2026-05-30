@@ -22,6 +22,7 @@ use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\SharedLockInterface;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 
 class IntegrationServiceTest extends TestCase
@@ -213,7 +214,7 @@ class IntegrationServiceTest extends TestCase
         self::assertSame($company, $persistedIntegrations[0]->getPeople());
     }
 
-    public function testExecuteIntegrationResetsClosedEntityManagerBeforePersistingRetryFailure(): void
+    public function testExecuteIntegrationRetriesIfoodWebhookFailuresBeforeMarkingError(): void
     {
         $integration = new Integration();
         $integration->setQueueName('iFood');
@@ -282,20 +283,16 @@ class IntegrationServiceTest extends TestCase
         $processingStatus->method('getStatus')->willReturn('pending');
         $processingStatus->method('getRealStatus')->willReturn('processing');
 
-        $status = $this->createStub(Status::class);
-        $status->method('getStatus')->willReturn('pending');
-        $status->method('getRealStatus')->willReturn('error');
-
         $statusService = $this->createMock(StatusService::class);
         $statusService->expects(self::exactly(2))
             ->method('discoveryStatus')
-            ->willReturnCallback(static function (string $statusName, string $realStatus, string $context) use ($processingStatus, $status): Status {
+            ->willReturnCallback(static function (string $statusName, string $realStatus, string $context) use ($processingStatus, $openStatus): Status {
                 if ($statusName === 'pending' && $realStatus === 'processing' && $context === 'integration') {
                     return $processingStatus;
                 }
 
-                if ($statusName === 'pending' && $realStatus === 'error' && $context === 'integration') {
-                    return $status;
+                if ($statusName === 'open' && $realStatus === 'open' && $context === 'integration') {
+                    return $openStatus;
                 }
 
                 throw new \RuntimeException('Unexpected status discovery call.');
@@ -326,7 +323,16 @@ class IntegrationServiceTest extends TestCase
             ->willReturn($containerService);
 
         $bus = $this->createMock(MessageBusInterface::class);
-        $bus->expects(self::never())->method('dispatch');
+        $dispatchedMessage = null;
+        $dispatchedStamps = [];
+        $bus->expects(self::once())
+            ->method('dispatch')
+            ->willReturnCallback(static function (object $message, array $stamps = []) use (&$dispatchedMessage, &$dispatchedStamps): Envelope {
+                $dispatchedMessage = $message;
+                $dispatchedStamps = $stamps;
+
+                return new Envelope($message, $stamps);
+            });
 
         $logger = $this->createMock(LoggerInterface::class);
         $logger->expects(self::once())
@@ -340,12 +346,12 @@ class IntegrationServiceTest extends TestCase
                         && $context['retry'] === 1
                         && $context['class'] === \RuntimeException::class
                         && $context['message'] === 'downstream failure'
-                        && $context['body'] === '{"orderId":"6557f98b-1926-41bc-99a6-7f2d49d1fe3d"}';
+                        && $context['bodyPreview'] === '{"orderId":"6557f98b-1926-41bc-99a6-7f2d49d1fe3d"}';
                 })
             );
 
         $loggerService = $this->createMock(LoggerService::class);
-        $loggerService->expects(self::once())
+        $loggerService->expects(self::exactly(2))
             ->method('getLogger')
             ->with('integration')
             ->willReturn($logger);
@@ -366,8 +372,15 @@ class IntegrationServiceTest extends TestCase
         $service->executeIntegration($integration);
 
         self::assertSame(1, $reloadedIntegration->getRetry());
-        self::assertSame('pending', $reloadedIntegration->getStatus()->getStatus());
-        self::assertSame('error', $reloadedIntegration->getStatus()->getRealStatus());
+        self::assertSame('open', $reloadedIntegration->getStatus()->getStatus());
+        self::assertSame('open', $reloadedIntegration->getStatus()->getRealStatus());
+        self::assertInstanceOf(\ControleOnline\Message\SendIntegrationMessage::class, $dispatchedMessage);
+        self::assertSame(77, $dispatchedMessage->integrationId);
+        self::assertNotEmpty($dispatchedStamps);
+        self::assertTrue(
+            $dispatchedStamps[0] instanceof DelayStamp
+                && $dispatchedStamps[0]->getDelay() === 60000
+        );
     }
 
     public function testIfoodMarketplaceFinancialGenerationTriggersOnlyForConclusionEvents(): void
