@@ -81,9 +81,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         );
     }
 
-    private function getAccessToken(): ?string
+    private function isAuthAvailable(): bool
     {
-        return $this->ifoodClient->getAccessToken();
+        return $this->ifoodClient->isAuthAvailable();
     }
 
     /* Catalog v2                                                          */
@@ -1141,8 +1141,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private function fetchIfoodDefaultCatalogId(string $merchantId): ?string
     {
-        $token = $this->getAccessToken();
-        if (!$token) return null;
+        if (!$this->isAuthAvailable()) return null;
         try {
             $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs');
             if ($response->getStatusCode() !== 200) return null;
@@ -1158,8 +1157,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private function fetchIfoodCatalogItemsV2(string $merchantId): array
     {
-        $token = $this->getAccessToken();
-        if (!$token) return [];
+        if (!$this->isAuthAvailable()) return [];
         try {
             $catalogId = $this->fetchIfoodDefaultCatalogId($merchantId);
             if ($catalogId === null) return [];
@@ -1189,9 +1187,8 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private function fetchIfoodCatalogItemFlatV2(string $merchantId, string $itemId): ?array
     {
-        $token = $this->getAccessToken();
         $normalizedItemId = $this->normalizeString($itemId);
-        if (!$token || $normalizedItemId === '') return null;
+        if (!$this->isAuthAvailable() || $normalizedItemId === '') return null;
 
         try {
             $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/items/' . rawurlencode($normalizedItemId) . '/flat');
@@ -1415,8 +1412,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     private function fetchIfoodCatalogCategoriesV2(string $merchantId, string $catalogId): array
     {
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return [];
         }
 
@@ -1496,8 +1492,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         int $localCategoryId = 0,
         string $storedIfoodId = ''
     ): ?string {
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return null;
         }
 
@@ -2327,8 +2322,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
             return self::$catalogImagePathCache[$cacheKey] ?: null;
         }
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             self::$catalogImagePathCache[$cacheKey] = '';
             return null;
         }
@@ -2385,8 +2379,7 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     public function upsertIfoodCatalogItemV2(string $merchantId, array $product, ?array $existing, string $categoryId, ?array $existingItemFlat = null, ?array $catalogProductsById = null): array
     {
-        $token = $this->getAccessToken();
-        if (!$token) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];
+        if (!$this->isAuthAvailable()) return ['ok' => false, 'http_status' => null, 'ifood_body' => null, 'error' => 'Token indisponivel'];
 
         $ec                = (string) $product['id'];
         $existingItemId    = $this->normalizeString($existing['item_id']    ?? null);

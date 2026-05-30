@@ -73,7 +73,7 @@ class IfoodClient
         return $this->httpClient->request($method, $url, $options);
     }
 
-    public function getAccessToken(): ?string
+    private function getAccessToken(): ?string
     {
         $cachedToken = self::$authTokenCache['token'] ?? null;
         $cachedExpiresAt = self::$authTokenCache['expires_at'] ?? 0;

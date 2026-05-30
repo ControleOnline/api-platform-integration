@@ -478,8 +478,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     private function listMerchantsRaw(): array
     {
         $this->init();
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return [
                 'errno' => 10001,
                 'errmsg' => 'Token iFood indisponivel',
@@ -546,7 +545,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
      * Retorna detalhe completo da loja incluindo o campo "status" (AVAILABLE, UNAVAILABLE, etc.)
      * que o endpoint de listagem nao inclui.
      */
-    private function getMerchantDetailRaw(string $merchantId, string $token): array
+    private function getMerchantDetailRaw(string $merchantId): array
     {
         try {
             $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId));
@@ -575,12 +574,11 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $detail = $this->getMerchantDetailRaw($merchantId, $token);
+        $detail = $this->getMerchantDetailRaw($merchantId);
         if ((int) ($detail['errno'] ?? 1) !== 0 || !is_array($detail['data'] ?? null)) {
             return [
                 'errno' => (int) ($detail['errno'] ?? 1),
@@ -605,7 +603,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
 
-        return $this->getAccessToken() !== null;
+        return $this->ifoodClient->isAuthAvailable();
     }
 
     public function countEligibleProducts(People $provider): int
@@ -1095,8 +1093,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
         try {
@@ -1415,8 +1412,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
@@ -1466,8 +1462,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
@@ -1516,8 +1511,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($interruptionId === '') {
             return ['errno' => 10003, 'errmsg' => 'Pausa iFood invalida.', 'data' => null];
         }
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
@@ -1621,12 +1615,13 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
              */
             $detailStatus = strtoupper($this->normalizeString($matchedStore['status'] ?? null));
             if ($detailStatus === '' && $merchantId !== '') {
-                $token  = $this->getAccessToken();
-                $detail = $token ? $this->getMerchantDetailRaw($merchantId, $token) : ['errno' => 1, 'data' => null];
-                if ((int) ($detail['errno'] ?? 1) === 0 && is_array($detail['data'])) {
-                    $detailStatus = strtoupper($this->normalizeString(
-                        $detail['data']['status'] ?? $detail['data']['merchantStatus'] ?? null
-                    ));
+                if ($this->isAuthAvailable()) {
+                    $detail = $this->getMerchantDetailRaw($merchantId);
+                    if ((int) ($detail['errno'] ?? 1) === 0 && is_array($detail['data'])) {
+                        $detailStatus = strtoupper($this->normalizeString(
+                            $detail['data']['status'] ?? $detail['data']['merchantStatus'] ?? null
+                        ));
+                    }
                 }
             }
 
@@ -2859,13 +2854,6 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
     }
 
-    // TOKEN OAUTH
-    // Autentica na API do iFood e retorna token de acesso
-    private function getAccessToken(): ?string
-    {
-        return $this->ifoodClient->getAccessToken();
-    }
-
     // FETCH DETALHES DO PEDIDO
     // Chama API do iFood para buscar informa��es completas do pedido (cliente, produtos, entrega, pagamentos)
     public function fetchOrderDetails(string $orderId): ?array
@@ -2873,8 +2861,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         try {
             $encodedOrderId = rawurlencode($orderId);
             $endpoint = '/order/v1.0/orders/' . $encodedOrderId;
-            $token = $this->getAccessToken();
-            if (!$token) {
+            if (!$this->isAuthAvailable()) {
                 self::$logger->warning('iFood order details request skipped because token is unavailable', [
                     'order_id' => $orderId,
                     'endpoint' => $endpoint,

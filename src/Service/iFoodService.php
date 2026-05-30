@@ -82,9 +82,9 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function getAccessToken(): ?string
+    private function isAuthAvailable(): bool
     {
-        return $this->ifoodClient->getAccessToken();
+        return $this->ifoodClient->isAuthAvailable();
     }
 
     public static function getSubscribedEvents(): array
@@ -1681,8 +1681,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1744,8 +1743,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1788,8 +1786,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1848,8 +1845,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1911,8 +1907,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1972,8 +1967,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        $token = $this->getAccessToken();
-        if (!$token) {
+        if (!$this->isAuthAvailable()) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
