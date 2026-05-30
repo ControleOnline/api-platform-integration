@@ -173,6 +173,10 @@ class DefaultFoodService
                 continue;
             }
 
+            if (!property_exists($service, $property->getName())) {
+                continue;
+            }
+
             $property->setAccessible(true);
             if (method_exists($property, 'isInitialized') && !$property->isInitialized($this)) {
                 continue;

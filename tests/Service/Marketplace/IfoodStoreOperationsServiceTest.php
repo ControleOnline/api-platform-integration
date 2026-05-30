@@ -3,9 +3,12 @@
 namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\Order;
+use ControleOnline\Service\DefaultFoodService;
+use ControleOnline\Service\Marketplace\IfoodOrderOperationsService;
 use ControleOnline\Service\Marketplace\IfoodStoreOperationsService;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 class IfoodStoreOperationsServiceTest extends TestCase
 {
@@ -65,5 +68,72 @@ class IfoodStoreOperationsServiceTest extends TestCase
         self::assertSame('PLACED', $decoded['iFood']['last_event_type']);
         self::assertSame('123', $decoded['iFood']['merchant_id']);
         self::assertArrayNotHasKey('', $decoded['iFood']);
+    }
+
+    public function testPerformReadyActionDelegatesToIfoodOrderOperationsService(): void
+    {
+        $order = $this->createStub(Order::class);
+        $orderOperationsService = $this->createMock(IfoodOrderOperationsService::class);
+        $orderOperationsService
+            ->expects(self::once())
+            ->method('performReadyAction')
+            ->with($order)
+            ->willReturn([
+                'errno' => 0,
+                'errmsg' => 'ok',
+            ]);
+
+        $service = (new \ReflectionClass(IfoodStoreOperationsService::class))->newInstanceWithoutConstructor();
+        $container = $this->createMock(ContainerInterface::class);
+        $container
+            ->method('has')
+            ->willReturnMap([
+                [IfoodOrderOperationsService::class, true],
+                [\ControleOnline\Service\iFoodService::class, false],
+            ]);
+        $container
+            ->method('get')
+            ->with(IfoodOrderOperationsService::class)
+            ->willReturn($orderOperationsService);
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        self::assertSame([
+            'errno' => 0,
+            'errmsg' => 'ok',
+        ], $service->performReadyAction($order));
+    }
+
+    public function testChangeStatusDelegatesToIfoodOrderOperationsService(): void
+    {
+        $order = $this->createStub(Order::class);
+        $orderOperationsService = $this->createMock(IfoodOrderOperationsService::class);
+        $orderOperationsService
+            ->expects(self::once())
+            ->method('changeStatus')
+            ->with($order)
+            ->willReturn(null);
+
+        $service = (new \ReflectionClass(IfoodStoreOperationsService::class))->newInstanceWithoutConstructor();
+        $container = $this->createMock(ContainerInterface::class);
+        $container
+            ->method('has')
+            ->willReturnMap([
+                [IfoodOrderOperationsService::class, true],
+                [\ControleOnline\Service\iFoodService::class, false],
+            ]);
+        $container
+            ->method('get')
+            ->with(IfoodOrderOperationsService::class)
+            ->willReturn($orderOperationsService);
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'container', $container);
+
+        self::assertNull($service->changeStatus($order));
+    }
+
+    private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
+    {
+        $property = new \ReflectionProperty($className, $propertyName);
+        $property->setAccessible(true);
+        $property->setValue($object, $value);
     }
 }
