@@ -40,6 +40,16 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Contracts\Service\Attribute\Required;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class owns iFood store/admin state, quote/delivery operations, and store-side order ingestion.
+ * - OCP: extend store behaviors here, but keep HTTP/auth transport in IfoodClient.
+ * - ISP/DIP: the class consumes the store capability contract, ExtraDataService, and IfoodClient without direct HTTP coupling.
+ * - Invariants:
+ *   - Store ids, operational state, and order snapshots are materialized, not inferred by reflection.
+ *   - Do not reintroduce service-owned endpoint URLs, token helpers, or raw Authorization header logic.
+ *   - Keep extra_data limited to ids/codes/state fields that have no better canonical home.
+ */
 class IfoodStoreOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_IFOOD;

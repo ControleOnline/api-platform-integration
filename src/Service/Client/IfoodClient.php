@@ -7,6 +7,16 @@ use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class only owns iFood HTTP transport, auth URLs, token caching, and request logging.
+ * - OCP: add or adjust iFood endpoints here; do not duplicate endpoint logic in services.
+ * - DIP: capability services depend on this client, not on HttpClient or OAUTH_* env vars.
+ * - Invariants:
+ *   - Owns the base URL, auth URL, token cache, and Authorization header assembly.
+ *   - No business rules, entity persistence, or snapshot materialization here.
+ *   - No service may call HttpClient directly for iFood.
+ */
 class IfoodClient
 {
     private const API_BASE_URL = 'https://merchant-api.ifood.com.br';

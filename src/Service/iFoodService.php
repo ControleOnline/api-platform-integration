@@ -40,6 +40,16 @@ use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class is only the iFood orchestrator and composition root for the capability services.
+ * - OCP: extend iFood behavior by adding or adjusting capability services, not by concentrating logic here.
+ * - DIP: higher-level code should depend on this orchestrator, while the orchestrator delegates to the capability services.
+ * - Invariants:
+ *   - No endpoint, auth, or provider-specific transport logic belongs here.
+ *   - Keep business rules in the capability classes and the domain model, not in nested AGENTS files.
+ *   - Do not re-concentrate catalog, store, order, people, or financial behavior into this class.
+ */
 class iFoodService extends AbstractMarketplaceService implements
     MarketplaceIntegrationHandlerInterface,
     MarketplaceIntegrationStateProviderInterface,

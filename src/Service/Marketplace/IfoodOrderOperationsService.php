@@ -39,6 +39,16 @@ use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class orchestrates iFood order actions, action persistence, and local order state updates.
+ * - OCP: add new order actions as new methods here; do not move HTTP or auth concerns into the service.
+ * - ISP/DIP: the class depends on capability services, ExtraDataService, and IfoodClient abstractions only.
+ * - Invariants:
+ *   - Remote ids come from ExtraDataService and materialized order state, not reflection helpers.
+ *   - Action outcomes must be persisted back into order otherInformations via the shared state contract.
+ *   - Do not add endpoint/base-url/token ownership here.
+ */
 class IfoodOrderOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_IFOOD;

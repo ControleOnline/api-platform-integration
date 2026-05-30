@@ -24,13 +24,22 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
 use DateTime;
-use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
 use Exception;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class is the shared food-integration orchestration layer and normalizer across providers.
+ * - OCP: add provider-specific behavior in concrete capability services, not by growing endpoint or auth logic here.
+ * - DIP: callers and shared flows depend on this service as a coordinator, while transport stays in provider clients.
+ * - Invariants:
+ *   - No vendor endpoint, token, or Authorization ownership belongs here.
+ *   - Keep provider-specific business rules in capability services or the domain model.
+ *   - Preserve canonical payload/materialization helpers instead of reintroducing ad hoc fallbacks.
+ */
 
 class DefaultFoodService
 {
@@ -557,7 +566,9 @@ class DefaultFoodService
         return $order;
     }
 
-    protected function normalizeMarketplaceDateTime(mixed $value): DateTimeImmutable
+    // Order::orderDate and Order::alterDate use Doctrine `datetime`, so this helper
+    // must return mutable DateTime instances instead of DateTimeImmutable.
+    protected function normalizeMarketplaceDateTime(mixed $value): DateTime
     {
         $timezoneName = trim((string) (date_default_timezone_get() ?: 'UTC'));
         if ($timezoneName === '') {
@@ -571,7 +582,7 @@ class DefaultFoodService
         }
 
         if ($value instanceof DateTimeInterface) {
-            return DateTimeImmutable::createFromInterface($value)->setTimezone($timezone);
+            return DateTime::createFromInterface($value)->setTimezone($timezone);
         }
 
         if (is_numeric($value)) {
@@ -581,20 +592,20 @@ class DefaultFoodService
             }
 
             if ($timestamp > 0) {
-                return (new DateTimeImmutable(sprintf('@%d', $timestamp)))->setTimezone($timezone);
+                return (new DateTime(sprintf('@%d', $timestamp)))->setTimezone($timezone);
             }
         }
 
         $normalized = trim((string) $value);
         if ($normalized !== '') {
             try {
-                return (new DateTimeImmutable($normalized))->setTimezone($timezone);
+                return (new DateTime($normalized))->setTimezone($timezone);
             } catch (\Throwable) {
                 // Fall through to "now".
             }
         }
 
-        return new DateTimeImmutable('now', $timezone);
+        return new DateTime('now', $timezone);
     }
 
     protected function applyMarketplaceOrderDate(Order $order, mixed $value): void
@@ -602,7 +613,7 @@ class DefaultFoodService
         $orderDate = $this->normalizeMarketplaceDateTime($value);
 
         $order->setOrderDate($orderDate);
-        $order->setAlterDate($orderDate);
+        $order->setAlterDate(clone $orderDate);
     }
 
     protected function normalizeMarketplaceFreeText(mixed $value): string
