@@ -613,7 +613,7 @@ class DefaultFoodService
         $orderDate = $this->normalizeMarketplaceDateTime($value);
 
         $order->setOrderDate($orderDate);
-        $order->setAlterDate($orderDate);
+        $order->setAlterDate(clone $orderDate);
     }
 
     protected function normalizeMarketplaceFreeText(mixed $value): string
