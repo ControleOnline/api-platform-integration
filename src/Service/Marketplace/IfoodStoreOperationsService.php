@@ -114,6 +114,21 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return $service instanceof IfoodPeopleOperationsService ? $service : null;
     }
 
+    private function resolveIfoodOrderOperationsService(): ?IfoodOrderOperationsService
+    {
+        $service = $this->resolveMarketplaceServiceInstance(IfoodOrderOperationsService::class);
+        if (!$service instanceof IfoodOrderOperationsService) {
+            return null;
+        }
+
+        $iFoodService = $this->resolveMarketplaceServiceInstance(iFoodService::class);
+        if ($iFoodService instanceof iFoodService && method_exists($service, 'setIfoodService')) {
+            $service->setIfoodService($iFoodService);
+        }
+
+        return $service;
+    }
+
     private function resolveIfoodService(): ?iFoodService
     {
         $service = $this->resolveMarketplaceServiceInstance(iFoodService::class);
@@ -3252,6 +3267,28 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'errno' => 10002,
             'errmsg' => $message,
         ];
+    }
+
+    public function performReadyAction(Order $order): array
+    {
+        $service = $this->resolveIfoodOrderOperationsService();
+        $result = $service instanceof IfoodOrderOperationsService
+            ? $service->performReadyAction($order)
+            : null;
+
+        return is_array($result)
+            ? $result
+            : ['errno' => 1, 'errmsg' => 'A acao ready do iFood nao esta disponivel.'];
+    }
+
+    public function changeStatus(Order $order)
+    {
+        $service = $this->resolveIfoodOrderOperationsService();
+        if ($service instanceof IfoodOrderOperationsService) {
+            return $service->changeStatus($order);
+        }
+
+        return null;
     }
 
 }
