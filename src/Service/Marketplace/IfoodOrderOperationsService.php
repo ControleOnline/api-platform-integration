@@ -203,6 +203,161 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         return null;
     }
 
+    private function persistOrderIntegrationState(Order $order, array $fields): void
+    {
+        $normalizedFields = [];
+        foreach ($fields as $fieldName => $value) {
+            $normalizedFieldName = trim((string) $fieldName);
+            if ($normalizedFieldName === '') {
+                continue;
+            }
+
+            $normalizedFields[$normalizedFieldName] = $value;
+        }
+
+        if ($normalizedFields === []) {
+            return;
+        }
+
+        $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
+    }
+
+    private function resolveOperationalStatusRank(string $realStatus, string $statusName): ?int
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+
+        return match ($normalizedRealStatus . ':' . $normalizedStatusName) {
+            'open:open' => 10,
+            'open:preparing' => 20,
+            'pending:ready' => 30,
+            'pending:way' => 40,
+            'closed:closed' => 50,
+            'canceled:canceled', 'cancelled:cancelled', 'canceled:cancelled', 'cancelled:canceled' => 60,
+            default => null,
+        };
+    }
+
+    private function applyLocalStatus(Order $order, string $realStatus, string $statusName): void
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+
+        $currentRealStatus = strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? '')));
+        $currentStatusName = strtolower(trim((string) ($order->getStatus()?->getStatus() ?? '')));
+
+        if ($currentRealStatus === $normalizedRealStatus && $currentStatusName === $normalizedStatusName) {
+            return;
+        }
+
+        $currentRank = $this->resolveOperationalStatusRank($currentRealStatus, $currentStatusName);
+        $newRank = $this->resolveOperationalStatusRank($normalizedRealStatus, $normalizedStatusName);
+        if ($currentRank !== null && $newRank !== null && $newRank < $currentRank) {
+            return;
+        }
+
+        $status = $this->statusService->discoveryStatus($normalizedRealStatus, $normalizedStatusName, 'order');
+        $order->setStatus($status);
+        $this->entityManager->persist($order);
+    }
+
+    private function normalizeActionResponse(?array $rawResponse): array
+    {
+        if (!$rawResponse) {
+            return [
+                'errno' => 1,
+                'errmsg' => 'Nao foi possivel executar a acao no iFood.',
+            ];
+        }
+
+        $statusCode = (int) ($rawResponse['status'] ?? 0);
+        $body = is_array($rawResponse['body'] ?? null) ? $rawResponse['body'] : [];
+        $isSuccess = $statusCode >= 200 && $statusCode < 300;
+
+        $message = $this->normalizeString(
+            $body['message']
+                ?? $body['details']
+                ?? $body['description']
+                ?? ($body['error']['message'] ?? null)
+        );
+
+        if ($message === '') {
+            $message = $isSuccess ? 'ok' : 'HTTP ' . ($statusCode > 0 ? $statusCode : 500);
+        }
+
+        return [
+            'errno' => $isSuccess ? 0 : ($statusCode > 0 ? $statusCode : 1),
+            'errmsg' => $message,
+            'status' => $statusCode,
+            'data' => $body,
+        ];
+    }
+
+    private function persistOrderActionResult(
+        Order $order,
+        string $action,
+        ?array $rawResponse,
+        ?string $remoteStateOnSuccess = null,
+        ?array $localStatusOnSuccess = null
+    ): array {
+        $result = $this->normalizeActionResponse($rawResponse);
+        $isSuccess = (string) ($result['errno'] ?? '') === '0';
+
+        $payload = [
+            'last_action' => $action,
+            'last_action_at' => date('Y-m-d H:i:s'),
+            'last_action_errno' => isset($result['errno']) ? (string) $result['errno'] : '',
+            'last_action_message' => $this->normalizeString($result['errmsg'] ?? null),
+        ];
+
+        if ($isSuccess && $remoteStateOnSuccess !== null && $remoteStateOnSuccess !== '') {
+            $payload['remote_order_state'] = $remoteStateOnSuccess;
+        }
+
+        try {
+            if ($isSuccess && is_array($localStatusOnSuccess)) {
+                $this->applyLocalStatus(
+                    $order,
+                    (string) ($localStatusOnSuccess['realStatus'] ?? ''),
+                    (string) ($localStatusOnSuccess['status'] ?? '')
+                );
+            }
+
+            $this->persistOrderIntegrationState($order, $payload);
+            if (!$this->entityManager->getConnection()->isTransactionActive()) {
+                $this->entityManager->flush();
+            }
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood order action state persist failed', [
+                'order_id' => $order->getId(),
+                'action' => $action,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'errno' => 1,
+                'errmsg' => 'Falha ao persistir estado da acao no iFood.',
+                'status' => (int) ($result['status'] ?? 500),
+                'data' => is_array($result['data'] ?? null) ? $result['data'] : [],
+            ];
+        }
+
+        return $result;
+    }
+
+    private function buildUnavailableOrderActionResponse(string $message): array
+    {
+        return [
+            'errno' => 10002,
+            'errmsg' => $message,
+        ];
+    }
+
+    private function isAuthAvailable(): bool
+    {
+        return $this->ifoodClient->isAuthAvailable();
+    }
+
     public function getStoredOrderIntegrationState(Order $order): array
     {
         $this->init();
@@ -838,15 +993,6 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
     private function callIfoodOrderAction(string $orderId, string $actionPath, array $payload = []): ?array
     {
         try {
-            $token = $this->getAccessToken();
-            if (!$token) {
-                self::$logger->warning('iFood order action skipped because token is unavailable', [
-                    'order_id' => $orderId,
-                    'action' => $actionPath,
-                ]);
-                return null;
-            }
-
             $encodedOrderId = rawurlencode($orderId);
             $endpoint = '/order/v1.0/orders/' . $encodedOrderId . $actionPath;
 
@@ -911,15 +1057,6 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
     private function callIfoodDisputeAction(string $disputeId, string $actionPath, array $payload = []): ?array
     {
         try {
-            $token = $this->getAccessToken();
-            if (!$token) {
-                self::$logger->warning('iFood dispute action skipped because token is unavailable', [
-                    'dispute_id' => $disputeId,
-                    'action' => $actionPath,
-                ]);
-                return null;
-            }
-
             $endpoint = '/order/v1.0/disputes/' . rawurlencode($disputeId) . $actionPath;
 
             try {
@@ -982,15 +1119,6 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
     private function callIfoodShippingAction(string $orderId, string $actionPath, array $payload = []): ?array
     {
         try {
-            $token = $this->getAccessToken();
-            if (!$token) {
-                self::$logger->warning('iFood shipping action skipped because token is unavailable', [
-                    'order_id' => $orderId,
-                    'action' => $actionPath,
-                ]);
-                return null;
-            }
-
             self::$logger->info('iFood shipping action request', [
                 'order_id' => $orderId,
                 'action' => $actionPath,
@@ -1041,20 +1169,8 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         array $payload = []
     ): ?array {
         try {
-            $token = $this->getAccessToken();
-            if (!$token) {
-                self::$logger->warning('iFood shipping merchant action skipped because token is unavailable', [
-                    'merchant_id' => $merchantId,
-                    'method' => $method,
-                    'path' => $path,
-                ]);
-
-                return null;
-            }
-
             $options = [
                 'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
                     'Accept' => 'application/json',
                     'Content-Type' => 'application/json',
                 ],
@@ -1266,11 +1382,6 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
     private function fetchIfoodCancellationReasons(?string $orderId = null): array
     {
-        $token = $this->getAccessToken();
-        if (!$token) {
-            return [];
-        }
-
         $endpoints = [];
         $normalizedOrderId = $this->normalizeString($orderId);
         if ($normalizedOrderId !== '') {
