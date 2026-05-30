@@ -37,6 +37,16 @@ use DateTime;
 use ControleOnline\Event\EntityChangedEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class owns iFood catalog/menu synchronization, payload preparation, and catalog materialization.
+ * - OCP: add catalog capabilities here without moving HTTP/auth rules out of IfoodClient.
+ * - ISP/DIP: the class consumes the catalog capability contract and IfoodClient, not HttpClient directly.
+ * - Invariants:
+ *   - Catalog state is materialized through the domain model and JSON, not reconstructed from legacy helpers.
+ *   - Keep extra_data limited to ids/codes/state flags that have no canonical destination yet.
+ *   - Do not duplicate endpoint or token ownership here.
+ */
 class IfoodCatalogOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_IFOOD;

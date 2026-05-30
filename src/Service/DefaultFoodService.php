@@ -31,6 +31,16 @@ use Exception;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class is the shared food-integration orchestration layer and normalizer across providers.
+ * - OCP: add provider-specific behavior in concrete capability services, not by growing endpoint or auth logic here.
+ * - DIP: callers and shared flows depend on this service as a coordinator, while transport stays in provider clients.
+ * - Invariants:
+ *   - No vendor endpoint, token, or Authorization ownership belongs here.
+ *   - Keep provider-specific business rules in capability services or the domain model.
+ *   - Preserve canonical payload/materialization helpers instead of reintroducing ad hoc fallbacks.
+ */
 
 class DefaultFoodService
 {
