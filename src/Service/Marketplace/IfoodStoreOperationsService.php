@@ -166,25 +166,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         $raw = $payload['createdAt']
             ?? ($payload['created_at'] ?? ($payload['__webhook']['event_at'] ?? null));
 
-        if (is_numeric($raw)) {
-            $timestamp = (int) $raw;
-            if ($timestamp > 9999999999) {
-                $timestamp = (int) floor($timestamp / 1000);
-            }
-
-            return date('Y-m-d H:i:s', max(0, $timestamp));
-        }
-
-        $normalized = $this->normalizeString($raw);
-        if ($normalized === '') {
-            return date('Y-m-d H:i:s');
-        }
-
-        try {
-            return (new DateTime($normalized))->format('Y-m-d H:i:s');
-        } catch (\Throwable) {
-            return date('Y-m-d H:i:s');
-        }
+        return $this->normalizeMarketplaceDateTime($raw)->format('Y-m-d H:i:s');
     }
 
     private function resolveRemoteOrderStateByEventCode(string $eventCode): string
@@ -1773,6 +1755,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 $snapshotKey => $json,
                 'latest_event_type' => $snapshotKey,
             ]);
+            $this->applyMarketplaceOrderDate($order, $this->extractEventTimestamp($json));
             $this->syncOrderComments($order, $this->extractOrderRemarkFromPayload($orderDetails));
 
             // Vincula o identificador remoto logo apos o shell order existir para evitar

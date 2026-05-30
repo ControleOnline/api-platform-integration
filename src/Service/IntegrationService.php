@@ -257,10 +257,7 @@ class IntegrationService
         $managedIntegration->incrementRetry();
         $this->logIntegrationFailure($managedIntegration, $exception);
 
-        if (
-            !$this->isIfoodOrderWebhook($managedIntegration)
-            && $managedIntegration->getRetry() <= self::MAX_RETRIES
-        ) {
+        if ($managedIntegration->getRetry() <= self::MAX_RETRIES) {
             $managedIntegration->setStatus($this->statusService->discoveryStatus('open', 'open', 'integration'));
             $manager = $this->getManager();
             $manager->persist($managedIntegration);
@@ -354,20 +351,6 @@ class IntegrationService
 
         $decoded = json_decode($json, true);
         return is_array($decoded) ? $decoded : [];
-    }
-
-    private function isIfoodOrderWebhook(Integration $integration): bool
-    {
-        if (strcasecmp((string) $integration->getQueueName(), 'iFood') !== 0) {
-            return false;
-        }
-
-        $payload = json_decode((string) $integration->getBody(), true);
-        if (!is_array($payload)) {
-            return false;
-        }
-
-        return trim((string) ($payload['orderId'] ?? '')) !== '';
     }
 
     private function shouldGenerateMarketplaceFinancial(Integration $integration, mixed $result): bool

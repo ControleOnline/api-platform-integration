@@ -9,6 +9,26 @@ use PHPUnit\Framework\TestCase;
 
 class IfoodStoreOperationsServiceTest extends TestCase
 {
+    public function testExtractEventTimestampConvertsRemoteUtcToAppTimezone(): void
+    {
+        $previousTimezone = date_default_timezone_get();
+        date_default_timezone_set('America/Sao_Paulo');
+
+        try {
+            $service = (new \ReflectionClass(IfoodStoreOperationsService::class))->newInstanceWithoutConstructor();
+            $method = (new \ReflectionObject($service))->getMethod('extractEventTimestamp');
+            $method->setAccessible(true);
+
+            $result = $method->invoke($service, [
+                'createdAt' => '2026-05-29T23:37:20.421Z',
+            ]);
+
+            self::assertSame('2026-05-29 20:37:20', $result);
+        } finally {
+            date_default_timezone_set($previousTimezone);
+        }
+    }
+
     public function testPersistOrderIntegrationStateMergesIfoodBlockIntoOrderOtherInformations(): void
     {
         $entityManager = $this->createMock(EntityManagerInterface::class);
