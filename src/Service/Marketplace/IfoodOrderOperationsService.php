@@ -8,6 +8,7 @@ use ControleOnline\Entity\Address;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Invoice;
+use ControleOnline\Entity\ExtraFields;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\OrderProductQueue;
@@ -132,6 +133,74 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         $resolved = $service?->isMerchantDeliveryContext($deliveredBy, $deliveryMode);
 
         return (bool) $resolved;
+    }
+
+    private function resolveRemoteOrderId(Order $order): ?string
+    {
+        $orderId = '';
+        try {
+            $candidates = [];
+            foreach ($this->extraDataService->getExtraDataFromEntity($order) as $extraData) {
+                if (!$extraData instanceof ExtraData) {
+                    continue;
+                }
+
+                $extraFields = $extraData->getExtraFields();
+                if (!$extraFields instanceof ExtraFields) {
+                    continue;
+                }
+
+                if (trim((string) $extraFields->getContext()) !== (string) self::APP_CONTEXT) {
+                    continue;
+                }
+
+                $fieldName = strtolower(trim((string) $extraFields->getName()));
+                if (!in_array($fieldName, ['id', 'code'], true)) {
+                    continue;
+                }
+
+                $value = trim((string) $extraData->getValue());
+                if ($value === '') {
+                    continue;
+                }
+
+                $candidates[] = [
+                    'priority' => $fieldName === 'id' ? 0 : 1,
+                    'id' => (int) $extraData->getId(),
+                    'value' => $value,
+                ];
+            }
+
+            if ($candidates !== []) {
+                usort($candidates, static function (array $left, array $right): int {
+                    return [$left['priority'], -$left['id']] <=> [$right['priority'], -$right['id']];
+                });
+
+                $orderId = trim((string) ($candidates[0]['value'] ?? ''));
+            }
+        } catch (\Throwable $e) {
+            self::$logger?->warning('iFood order remote id lookup via extraDataService failed, using fallback state', [
+                'local_order_id' => $order->getId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        if ($orderId !== '') {
+            return $orderId;
+        }
+
+        $storedState = $this->getStoredOrderIntegrationState($order);
+        $orderId = $this->normalizeString($storedState['ifood_id'] ?? null);
+        if ($orderId !== '') {
+            return $orderId;
+        }
+
+        $orderCode = $this->normalizeString($storedState['ifood_code'] ?? null);
+        if ($orderCode !== '') {
+            return $orderCode;
+        }
+
+        return null;
     }
 
     public function getStoredOrderIntegrationState(Order $order): array
