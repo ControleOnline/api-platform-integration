@@ -38,11 +38,54 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * - Invariants:
  *   - No vendor endpoint, token, or Authorization ownership belongs here.
  *   - Keep provider-specific business rules in capability services or the domain model.
+ *   - Canonical local order lifecycle is shared by Food99 and iFood: pickup, delivery, and closed transitions must reuse the same local status contract.
+ *   - This class owns the shared marketplace lifecycle map and rank helpers; provider services must consume these helpers instead of redefining local status literals.
  *   - Preserve canonical payload/materialization helpers instead of reintroducing ad hoc fallbacks.
  */
 
 class DefaultFoodService
 {
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_OPEN = [
+        'realStatus' => 'open',
+        'status' => 'open',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_PREPARING = [
+        'realStatus' => 'open',
+        'status' => 'preparing',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_READY = [
+        'realStatus' => 'pending',
+        'status' => 'ready',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_WAY = [
+        'realStatus' => 'pending',
+        'status' => 'way',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_CLOSED = [
+        'realStatus' => 'closed',
+        'status' => 'closed',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_CANCELED = [
+        'realStatus' => 'canceled',
+        'status' => 'canceled',
+    ];
+
+    protected const SHARED_MARKETPLACE_LIFECYCLE_STATUS_RANKS = [
+        'open:open' => 10,
+        'open:preparing' => 20,
+        'pending:ready' => 30,
+        'pending:way' => 40,
+        'closed:closed' => 50,
+        'canceled:canceled' => 60,
+        'cancelled:cancelled' => 60,
+        'canceled:cancelled' => 60,
+        'cancelled:canceled' => 60,
+    ];
 
     protected static $foodPeople;
     protected static $logger;
@@ -134,6 +177,27 @@ class DefaultFoodService
         $this->domainService = $service;
 
         return $this->domainService;
+    }
+
+    protected function resolveMarketplaceLifecycleStatus(string $statusName): ?array
+    {
+        return match (strtolower(trim($statusName))) {
+            'open' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_OPEN,
+            'preparing' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_PREPARING,
+            'ready' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_READY,
+            'way' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_WAY,
+            'closed' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_CLOSED,
+            'canceled', 'cancelled' => self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_CANCELED,
+            default => null,
+        };
+    }
+
+    protected function resolveMarketplaceLifecycleStatusRank(string $realStatus, string $statusName): ?int
+    {
+        $normalizedRealStatus = strtolower(trim($realStatus));
+        $normalizedStatusName = strtolower(trim($statusName));
+
+        return self::SHARED_MARKETPLACE_LIFECYCLE_STATUS_RANKS[$normalizedRealStatus . ':' . $normalizedStatusName] ?? null;
     }
 
     protected function resolveFood99Client(): ?Food99Client

@@ -49,6 +49,7 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *   - No endpoint, auth, or provider-specific transport logic belongs here.
  *   - Keep business rules in the capability classes and the domain model, not in nested AGENTS files.
  *   - Do not re-concentrate catalog, store, order, people, or financial behavior into this class.
+ *   - Webhook and polling events must collapse into the shared marketplace lifecycle contract, so iFood uses the same local order states as Food99 for preparing, way, closed, and canceled transitions.
  */
 class iFoodService extends AbstractMarketplaceService implements
     MarketplaceIntegrationHandlerInterface,
@@ -1511,28 +1512,27 @@ class iFoodService extends AbstractMarketplaceService implements
 
     private function applyLocalCanceledStatus(Order $order): void
     {
-        $this->applyLocalStatus($order, 'canceled', 'canceled');
+        $status = $this->resolveMarketplaceLifecycleStatus('canceled');
+        if (!is_array($status)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'canceled'), (string) ($status['status'] ?? 'canceled'));
     }
 
     private function applyLocalClosedStatus(Order $order): void
     {
-        $this->applyLocalStatus($order, 'closed', 'closed');
+        $status = $this->resolveMarketplaceLifecycleStatus('closed');
+        if (!is_array($status)) {
+            return;
+        }
+
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'closed'), (string) ($status['status'] ?? 'closed'));
     }
 
     private function resolveOperationalStatusRank(string $realStatus, string $statusName): ?int
     {
-        $normalizedRealStatus = strtolower(trim($realStatus));
-        $normalizedStatusName = strtolower(trim($statusName));
-
-        return match ($normalizedRealStatus . ':' . $normalizedStatusName) {
-            'open:open' => 10,
-            'open:preparing' => 20,
-            'pending:ready' => 30,
-            'pending:way' => 40,
-            'closed:closed' => 50,
-            'canceled:canceled', 'cancelled:cancelled', 'canceled:cancelled', 'cancelled:canceled' => 60,
-            default => null,
-        };
+        return $this->resolveMarketplaceLifecycleStatusRank($realStatus, $statusName);
     }
 
     private function applyLocalStatus(Order $order, string $realStatus, string $statusName): void
@@ -1563,12 +1563,12 @@ class iFoodService extends AbstractMarketplaceService implements
         $normalizedRemoteState = strtolower(trim((string) $remoteState));
 
         return match ($normalizedRemoteState) {
-            'new' => ['realStatus' => 'open', 'status' => 'open'],
-            'confirmed', 'preparing' => ['realStatus' => 'open', 'status' => 'preparing'],
-            'ready' => ['realStatus' => 'pending', 'status' => 'ready'],
-            'dispatching' => ['realStatus' => 'pending', 'status' => 'way'],
-            'concluded' => ['realStatus' => 'closed', 'status' => 'closed'],
-            'cancelled', 'canceled' => ['realStatus' => 'canceled', 'status' => 'canceled'],
+            'new' => $this->resolveMarketplaceLifecycleStatus('open'),
+            'confirmed', 'preparing' => $this->resolveMarketplaceLifecycleStatus('preparing'),
+            'ready' => $this->resolveMarketplaceLifecycleStatus('ready'),
+            'dispatching' => $this->resolveMarketplaceLifecycleStatus('way'),
+            'concluded' => $this->resolveMarketplaceLifecycleStatus('closed'),
+            'cancelled', 'canceled' => $this->resolveMarketplaceLifecycleStatus('canceled'),
             default => null,
         };
     }
