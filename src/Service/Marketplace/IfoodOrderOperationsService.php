@@ -47,6 +47,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  * - Invariants:
  *   - Remote ids come from ExtraDataService and materialized order state, not reflection helpers.
  *   - Action outcomes must be persisted back into order otherInformations via the shared state contract.
+ *   - The local order lifecycle must stay aligned with Food99: use the shared status contract for confirm/preparing, rider pickup/way, and delivered/closed transitions.
+ *   - iFood must not invent its own local lifecycle aliases; every action must route through the shared marketplace lifecycle helpers from DefaultFoodService.
  *   - Do not add endpoint/base-url/token ownership here.
  */
 class IfoodOrderOperationsService extends AbstractMarketplaceService
@@ -234,18 +236,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
     private function resolveOperationalStatusRank(string $realStatus, string $statusName): ?int
     {
-        $normalizedRealStatus = strtolower(trim($realStatus));
-        $normalizedStatusName = strtolower(trim($statusName));
-
-        return match ($normalizedRealStatus . ':' . $normalizedStatusName) {
-            'open:open' => 10,
-            'open:preparing' => 20,
-            'pending:ready' => 30,
-            'pending:way' => 40,
-            'closed:closed' => 50,
-            'canceled:canceled', 'cancelled:cancelled', 'canceled:cancelled', 'cancelled:canceled' => 60,
-            default => null,
-        };
+        return $this->resolveMarketplaceLifecycleStatusRank($realStatus, $statusName);
     }
 
     private function applyLocalStatus(Order $order, string $realStatus, string $statusName): void
@@ -878,12 +869,13 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         ], true);
 
         if ($shouldAutoConfirmBeforeDispatch) {
+            // Shared lifecycle contract: confirm keeps the local order in open/preparing, matching Food99.
             $confirmResult = $this->persistOrderActionResult(
                 $order,
                 'confirm',
                 $this->confirmOrder($orderId),
                 'confirmed',
-                ['realStatus' => 'open', 'status' => 'preparing']
+                $this->resolveMarketplaceLifecycleStatus('preparing')
             );
 
             if ((string) ($confirmResult['errno'] ?? '') !== '0') {
@@ -900,9 +892,10 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
         $isMerchantDelivery = $dispatchFlow === 'merchant';
         $isPickupFlow = $dispatchFlow === 'pickup';
         $stateOnSuccess = $isMerchantDelivery ? 'dispatching' : 'ready';
+        // Shared lifecycle contract: once the courier picks up the order, the local state must remain pending/way, just like Food99.
         $localStatusOnSuccess = $isMerchantDelivery
-            ? ['realStatus' => 'pending', 'status' => 'way']
-            : ['realStatus' => 'pending', 'status' => 'ready'];
+            ? $this->resolveMarketplaceLifecycleStatus('way')
+            : $this->resolveMarketplaceLifecycleStatus('ready');
         $actionResponse = ($isPickupFlow || !$isMerchantDelivery)
             ? $this->readyOrder($orderId)
             : $this->dispatchOrderByDeliveryMode($order, $orderId);
@@ -943,12 +936,13 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 );
             }
 
+            // Shared lifecycle contract: delivered/concluded must finish in the same closed/closed local state used by Food99.
             return $this->persistOrderActionResult(
                 $order,
                 'delivered',
                 $this->verifyDeliveryCode($orderId, $normalizedDeliveryCode),
                 'concluded',
-                ['realStatus' => 'closed', 'status' => 'closed']
+                $this->resolveMarketplaceLifecycleStatus('closed')
             );
         }
 
@@ -956,7 +950,8 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             $order,
             'delivered',
             $this->dispatchOrderByDeliveryMode($order, $orderId),
-            'dispatching'
+            'dispatching',
+            $this->resolveMarketplaceLifecycleStatus('way')
         );
     }
 
@@ -973,7 +968,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             'start_preparation',
             $this->callIfoodOrderAction($orderId, '/startPreparation'),
             'preparing',
-            ['realStatus' => 'open', 'status' => 'preparing']
+            $this->resolveMarketplaceLifecycleStatus('preparing')
         );
     }
 
@@ -1459,7 +1454,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
             'confirm',
             $this->confirmOrder($orderId),
             'confirmed',
-            ['realStatus' => 'open', 'status' => 'preparing']
+            $this->resolveMarketplaceLifecycleStatus('preparing')
         );
     }
 

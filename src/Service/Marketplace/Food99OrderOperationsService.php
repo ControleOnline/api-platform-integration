@@ -33,6 +33,17 @@ use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 use Symfony\Contracts\Service\Attribute\Required;
 
+/*
+ * SOLID / boundary contract:
+ * - SRP: this class orchestrates Food99 order actions, delivery sync, and local order state updates.
+ * - OCP: extend Food99 behavior through capability services and shared lifecycle helpers, not by re-declaring local status flows here.
+ * - ISP/DIP: the class depends on capability services, ExtraDataService, and Food99Service abstractions only.
+ * - Invariants:
+ *   - Food99 is the reference consumer of the shared marketplace lifecycle helpers.
+ *   - Delivery sync and action persistence must converge to the canonical local statuses open, preparing, ready, way, and closed.
+ *   - Do not invent Food99-only status aliases or bypass the shared lifecycle contract.
+ */
+
 class Food99OrderOperationsService extends AbstractMarketplaceService
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
@@ -673,22 +684,52 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             || $normalizedRemoteState === 'closed'
             || $this->isDeliveredRemoteState($normalizedDeliveryStatus)
         ) {
-            return $this->statusService->discoveryStatus('closed', 'closed', 'order');
+            $status = $this->resolveMarketplaceLifecycleStatus('closed');
+
+            return $this->statusService->discoveryStatus(
+                (string) ($status['realStatus'] ?? 'closed'),
+                (string) ($status['status'] ?? 'closed'),
+                'order'
+            );
         }
 
         if ($normalizedRemoteState === 'ready') {
-            return $this->statusService->discoveryStatus('pending', 'ready', 'order');
+            $status = $this->resolveMarketplaceLifecycleStatus('ready');
+
+            return $this->statusService->discoveryStatus(
+                (string) ($status['realStatus'] ?? 'pending'),
+                (string) ($status['status'] ?? 'ready'),
+                'order'
+            );
         }
 
         if (in_array($normalizedRemoteState, ['picked_up', 'delivering', 'arriving'], true)) {
-            return $this->statusService->discoveryStatus('pending', 'way', 'order');
+            $status = $this->resolveMarketplaceLifecycleStatus('way');
+
+            return $this->statusService->discoveryStatus(
+                (string) ($status['realStatus'] ?? 'pending'),
+                (string) ($status['status'] ?? 'way'),
+                'order'
+            );
         }
 
         if (in_array($normalizedRemoteState, ['accepted', 'preparing'], true)) {
-            return $this->statusService->discoveryStatus('open', 'preparing', 'order');
+            $status = $this->resolveMarketplaceLifecycleStatus('preparing');
+
+            return $this->statusService->discoveryStatus(
+                (string) ($status['realStatus'] ?? 'open'),
+                (string) ($status['status'] ?? 'preparing'),
+                'order'
+            );
         }
 
-        return $this->statusService->discoveryStatus('open', 'open', 'order');
+        $status = $this->resolveMarketplaceLifecycleStatus('open');
+
+        return $this->statusService->discoveryStatus(
+            (string) ($status['realStatus'] ?? 'open'),
+            (string) ($status['status'] ?? 'open'),
+            'order'
+        );
     }
 
     public function syncFood99DeliveryOrder(
@@ -1270,7 +1311,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $this->applyLocalStatus($order, 'open', 'open');
+        $status = $this->resolveMarketplaceLifecycleStatus('open');
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'open'), (string) ($status['status'] ?? 'open'));
     }
 
     private function applyLocalPreparingStatus(Order $order): void
@@ -1279,7 +1321,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $this->applyLocalStatus($order, 'open', 'preparing');
+        $status = $this->resolveMarketplaceLifecycleStatus('preparing');
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'open'), (string) ($status['status'] ?? 'preparing'));
     }
 
     private function applyLocalReadyStatus(Order $order): void
@@ -1288,7 +1331,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $this->applyLocalStatus($order, 'pending', 'ready');
+        $status = $this->resolveMarketplaceLifecycleStatus('ready');
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'pending'), (string) ($status['status'] ?? 'ready'));
     }
 
     private function applyLocalWayStatus(Order $order): void
@@ -1297,7 +1341,8 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $this->applyLocalStatus($order, 'pending', 'way');
+        $status = $this->resolveMarketplaceLifecycleStatus('way');
+        $this->applyLocalStatus($order, (string) ($status['realStatus'] ?? 'pending'), (string) ($status['status'] ?? 'way'));
     }
 
     public function applyLocalLifecycleStatusFromRemoteState(Order $order, ?string $remoteState): void
@@ -1329,7 +1374,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $status = $this->statusService->discoveryStatus('canceled', 'canceled', 'order');
+        $sharedStatus = $this->resolveMarketplaceLifecycleStatus('canceled');
+        $status = $this->statusService->discoveryStatus(
+            (string) ($sharedStatus['realStatus'] ?? 'canceled'),
+            (string) ($sharedStatus['status'] ?? 'canceled'),
+            'order'
+        );
         if (!$status) {
             return;
         }
@@ -1345,7 +1395,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             return;
         }
 
-        $status = $this->statusService->discoveryStatus('closed', 'closed', 'order');
+        $sharedStatus = $this->resolveMarketplaceLifecycleStatus('closed');
+        $status = $this->statusService->discoveryStatus(
+            (string) ($sharedStatus['realStatus'] ?? 'closed'),
+            (string) ($sharedStatus['status'] ?? 'closed'),
+            'order'
+        );
         if (!$status) {
             return;
         }
