@@ -50,6 +50,9 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *   - Keep business rules in the capability classes and the domain model, not in nested AGENTS files.
  *   - Do not re-concentrate catalog, store, order, people, or financial behavior into this class.
  *   - Webhook and polling events must collapse into the shared marketplace lifecycle contract, so iFood uses the same local order states as Food99 for preparing, way, closed, and canceled transitions.
+}
+
+*   - Canceled order transitions must emit the canonical order.canceled manager push after persistence.
  */
 class iFoodService extends AbstractMarketplaceService implements
     MarketplaceIntegrationHandlerInterface,
@@ -358,13 +361,17 @@ class iFoodService extends AbstractMarketplaceService implements
             $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
         }
 
-        $this->applyOperationalStatusForRemoteState(
+        $shouldBroadcastCancellation = $this->applyOperationalStatusForRemoteState(
             $order,
             $this->resolveRemoteOrderStateByEventCode($eventCode)
         );
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
+
+        if ($shouldBroadcastCancellation) {
+            $this->broadcastOrderCancellationManagerPush($order);
+        }
 
         return $order;
     }
@@ -1573,18 +1580,23 @@ class iFoodService extends AbstractMarketplaceService implements
         };
     }
 
-    private function applyOperationalStatusForRemoteState(Order $order, ?string $remoteState): void
+    private function applyOperationalStatusForRemoteState(Order $order, ?string $remoteState): bool
     {
         $statusMapping = $this->resolveOperationalStatusFromRemoteState($remoteState);
         if (!is_array($statusMapping)) {
-            return;
+            return false;
         }
 
+        $wasCanceled = $this->isOrderInCanceledState($order);
         $this->applyLocalStatus(
             $order,
             (string) ($statusMapping['realStatus'] ?? ''),
             (string) ($statusMapping['status'] ?? '')
         );
+
+        return in_array(strtolower(trim((string) $remoteState)), ['cancelled', 'canceled'], true)
+            && !$wasCanceled
+            && $this->isOrderInCanceledState($order);
     }
 
     private function upsertIfoodExtraDataValue(

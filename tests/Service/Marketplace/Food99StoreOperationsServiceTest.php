@@ -159,6 +159,29 @@ final class Food99StoreOperationsServiceTest extends TestCase
         }
     }
 
+    public function testSetStoreStatusBroadcastsClosedNotificationOnFirstKnownClosedState(): void
+    {
+        $service = (new \ReflectionClass(Food99StoreOperationsServiceProbe::class))->newInstanceWithoutConstructor();
+        $provider = new People();
+        $this->setEntityId($provider, 3);
+        $provider->setName('Mercado Central');
+
+        $service->storedIntegrationState = [
+            'biz_status' => 1,
+            'sub_biz_status' => 1,
+        ];
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'food99Client', new FakeFood99Client());
+
+        $response = $service->setStoreStatus($provider, 2, null);
+
+        self::assertSame(0, $response['errno']);
+        self::assertCount(1, $service->capturedEvents);
+        self::assertSame('store.closed', $service->capturedEvents[0][1][0]['event']);
+        self::assertSame('Mercado Central foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
+        self::assertSame('Fechada', $service->capturedEvents[0][1][0]['notificationStatusLabel']);
+    }
+
     public static function providePortalEndpointDelegations(): iterable
     {
         yield 'authorization page' => [
@@ -221,6 +244,23 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $property = new \ReflectionProperty($className, $propertyName);
         $property->setAccessible(true);
         $property->setValue($object, $value);
+    }
+
+    private function setEntityId(object $object, int $id): void
+    {
+        $reflection = new \ReflectionObject($object);
+        while ($reflection) {
+            if ($reflection->hasProperty('id')) {
+                $property = $reflection->getProperty('id');
+                $property->setAccessible(true);
+                $property->setValue($object, $id);
+                return;
+            }
+
+            $reflection = $reflection->getParentClass();
+        }
+
+        throw new \RuntimeException('Unable to set entity id in test.');
     }
 
     private function captureFood99DomainEnvironment(): array
@@ -413,6 +453,38 @@ final class FakeFood99Client extends Food99Client
                 'uri' => $uri,
                 'payload' => $payload,
             ],
+        ];
+    }
+}
+
+final class Food99StoreOperationsServiceProbe extends Food99StoreOperationsService
+{
+    public array $capturedEvents = [];
+    public array $storedIntegrationState = [];
+
+    public function getStoredIntegrationState(People $provider): array
+    {
+        return $this->storedIntegrationState;
+    }
+
+    public function persistProviderIntegrationState(People $provider, array $fields): void
+    {
+        $this->storedIntegrationState = array_replace($this->storedIntegrationState, $fields);
+    }
+
+    protected function broadcastCompanyWebsocketEvents(People $company, array $events): void
+    {
+        $this->capturedEvents[] = [$company, $events];
+    }
+
+    protected function sendStoreClosingNotifications(
+        People $company,
+        string $app,
+        ?\DateTime $referenceDate = null
+    ): array {
+        return [
+            'daily_sales_amount' => 123.45,
+            'weekly_settlement_amount' => 678.90,
         ];
     }
 }

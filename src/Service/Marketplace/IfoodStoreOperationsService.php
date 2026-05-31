@@ -49,6 +49,7 @@ use Symfony\Contracts\Service\Attribute\Required;
  *   - Store ids, operational state, and order snapshots are materialized, not inferred by reflection.
  *   - Do not reintroduce service-owned endpoint URLs, token helpers, or raw Authorization header logic.
  *   - Keep extra_data limited to ids/codes/state fields that have no better canonical home.
+ *   - Manual open/close actions and syncIntegrationState must emit the same store.opened/store.closed manager notification as the webhook path.
  */
 class IfoodStoreOperationsService extends AbstractMarketplaceService
 {
@@ -1268,51 +1269,19 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return null;
     }
 
-    private function syncStoreStatusWebhook(array $event, ?Integration $integration = null): void
-    {
-        $merchantId = $this->resolveWebhookMerchantId($event);
-        if ($merchantId === '') {
-            self::$logger->warning('iFood store status webhook ignored because merchantId is missing', [
-                'integration_id' => $integration?->getId(),
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
-        $provider = $this->extraDataService->getEntityByExtraData(
-            self::APP_CONTEXT,
-            'code',
-            $merchantId,
-            People::class
-        );
-        if (!$provider instanceof People && ctype_digit($merchantId)) {
-            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
-        }
-
-        if (!$provider instanceof People) {
-            self::$logger->warning('iFood store status webhook ignored because provider was not found', [
-                'integration_id' => $integration?->getId(),
-                'merchant_id' => $merchantId,
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
-        $merchantStatus = $this->resolveWebhookMerchantStatus($event);
-        if ($merchantStatus === null) {
-            self::$logger->warning('iFood store status webhook ignored because status could not be resolved', [
-                'integration_id' => $integration?->getId(),
-                'merchant_id' => $merchantId,
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
+    private function emitStoreStatusChange(
+        People $provider,
+        string $merchantId,
+        string $merchantStatus,
+        bool $currentOnline,
+        bool $forceNotify = false
+    ): void {
         $previousState = $this->getStoredIntegrationState($provider);
         $previousOnline = (bool) ($previousState['online'] ?? false);
-        $currentOnline = in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true);
+        $hasPreviousStatus = $this->normalizeString($previousState['merchant_status'] ?? null) !== '';
 
         $this->persistProviderIntegrationState($provider, [
+            'merchant_id' => $merchantId,
             'merchant_status' => $merchantStatus,
             'remote_connected' => '1',
             'online' => $currentOnline ? '1' : '0',
@@ -1321,7 +1290,9 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'last_error_message' => '',
         ]);
 
-        if ($previousOnline === $currentOnline) {
+        $this->entityManager->flush();
+
+        if (!$forceNotify && $hasPreviousStatus && $previousOnline === $currentOnline) {
             return;
         }
 
@@ -1372,6 +1343,51 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $this->broadcastCompanyWebsocketEvents($provider, $events);
+    }
+
+    private function syncStoreStatusWebhook(array $event, ?Integration $integration = null): void
+    {
+        $merchantId = $this->resolveWebhookMerchantId($event);
+        if ($merchantId === '') {
+            self::$logger->warning('iFood store status webhook ignored because merchantId is missing', [
+                'integration_id' => $integration?->getId(),
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $provider = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $merchantId,
+            People::class
+        );
+        if (!$provider instanceof People && ctype_digit($merchantId)) {
+            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
+        }
+
+        if (!$provider instanceof People) {
+            self::$logger->warning('iFood store status webhook ignored because provider was not found', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $merchantStatus = $this->resolveWebhookMerchantStatus($event);
+        if ($merchantStatus === null) {
+            self::$logger->warning('iFood store status webhook ignored because status could not be resolved', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $currentOnline = in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true);
+
+        $this->emitStoreStatusChange($provider, $merchantId, $merchantStatus, $currentOnline);
     }
 
     /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).
@@ -1450,6 +1466,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 ];
             }
 
+            $this->emitStoreStatusChange($provider, $merchantId, 'UNAVAILABLE', false, true);
+
             return [
                 'errno'  => 0,
                 'errmsg' => 'ok',
@@ -1478,6 +1496,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
         $interruptions = $this->listInterruptionsRaw($merchantId);
         if (empty($interruptions)) {
+            $this->emitStoreStatusChange($provider, $merchantId, 'AVAILABLE', true, true);
+
             return ['errno' => 0, 'errmsg' => 'ok', 'data' => ['removed' => 0, 'online' => true]];
         }
 
@@ -1501,6 +1521,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($removed === 0 && $lastError !== null) {
             return ['errno' => 1, 'errmsg' => $lastError, 'data' => null];
         }
+
+        $this->emitStoreStatusChange($provider, $merchantId, 'AVAILABLE', true, true);
 
         return [
             'errno'  => 0,
@@ -1588,6 +1610,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
         $state = $this->getStoredIntegrationState($provider);
+        $previousOnline = (bool) ($state['online'] ?? false);
+        $hasPreviousStatus = $this->normalizeString($state['merchant_status'] ?? null) !== '';
         $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
         $storesResponse = $this->listMerchantsRaw();
         $merchants = is_array($storesResponse['data']['merchants'] ?? null) ? $storesResponse['data']['merchants'] : [];
@@ -1610,6 +1634,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $matchedStore = null;
+        $detailStatus = null;
         if ($merchantId !== '') {
             foreach ($merchants as $store) {
                 if ($this->normalizeString($store['merchant_id'] ?? null) === $merchantId) {
@@ -1660,6 +1685,24 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $this->entityManager->flush();
+
+        $currentOnline = is_string($detailStatus)
+            ? in_array($detailStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true)
+            : false;
+        if (
+            $merchantId !== ''
+            && $detailStatus !== null
+            && $detailStatus !== ''
+            && (!$hasPreviousStatus || $previousOnline !== $currentOnline)
+        ) {
+            $this->emitStoreStatusChange(
+                $provider,
+                $merchantId,
+                $detailStatus,
+                $currentOnline,
+                true
+            );
+        }
 
         return [
             'errno' => 0,

@@ -10,6 +10,11 @@ use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
+/*
+ * Manager push contract:
+ * - Handles manager-facing push notifications for order.created, order.canceled, store.opened, store.closed, and cash lifecycle events.
+ * - Order cancellation payloads must carry the canonical order.canceled event so every provider reaches the same push renderer.
+ */
 class ManagerOrderPushService
 {
     private const MANAGER_DEVICE_TYPE = 'MANAGER';
@@ -19,6 +24,8 @@ class ManagerOrderPushService
         'cash.closed' => true,
         'store.opened' => true,
         'store.closed' => true,
+        'order.canceled' => true,
+        'order.cancelled' => true,
     ];
 
     public function __construct(
@@ -211,6 +218,10 @@ class ManagerOrderPushService
 
         if ($title === '') {
             $title = match ($eventName) {
+                'order.canceled', 'order.cancelled' => sprintf(
+                    'Pedido #%s cancelado',
+                    trim((string) ($event['orderId'] ?? $event['order'] ?? '')) ?: '0'
+                ),
                 'store.opened' => sprintf('%s foi aberta', $companyLabel ?: 'Loja'),
                 'store.closed' => sprintf('%s foi fechada', $companyLabel ?: 'Loja'),
                 'cash.open' => sprintf('Caixa aberto%s', $companyLabel ? ' - ' . $companyLabel : ''),
@@ -225,6 +236,7 @@ class ManagerOrderPushService
 
         if (empty($bodyParts)) {
             $bodyParts[] = match ($eventName) {
+                'order.canceled', 'order.cancelled' => 'O pedido foi cancelado. Toque para ver os detalhes.',
                 'store.opened' => 'A loja voltou a ficar online.',
                 'store.closed' => 'A loja foi fechada.',
                 'cash.open' => 'O caixa foi aberto.',
