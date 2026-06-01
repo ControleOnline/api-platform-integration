@@ -360,6 +360,86 @@ class iFoodServiceTest extends TestCase
         );
     }
 
+    public function testPersistIfoodOrderIntegrationStateMaterializesCanonicalIdentifiersInExtraData(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())
+            ->method('persist')
+            ->with(self::isInstanceOf(Order::class));
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        $calls = [];
+        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
+        $extraDataService->expects(self::exactly(2))
+            ->method('upsertExtraDataValue')
+            ->willReturnCallback(function (
+                string $context,
+                string $entityName,
+                int $entityId,
+                string $fieldName,
+                mixed $value,
+                string $fieldType = 'text',
+                ?string $source = null
+            ) use (&$calls): void {
+                $calls[] = [
+                    'context' => $context,
+                    'entityName' => $entityName,
+                    'entityId' => $entityId,
+                    'fieldName' => $fieldName,
+                    'value' => $value,
+                    'fieldType' => $fieldType,
+                    'source' => $source,
+                ];
+            });
+        $this->setObjectProperty($service, 'extraDataService', $extraDataService);
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(71759);
+        $order->expects(self::once())
+            ->method('getOtherInformations')
+            ->with(true)
+            ->willReturn((object) []);
+        $order->expects(self::once())
+            ->method('setOtherInformations')
+            ->with(self::callback(static function (array $otherInformations): bool {
+                return ($otherInformations['iFood']['id'] ?? null) === '71759'
+                    && ($otherInformations['iFood']['code'] ?? null) === '3984'
+                    && ($otherInformations['iFood']['merchant_id'] ?? null) === '1234'
+                    && ($otherInformations['iFood']['customer_name'] ?? null) === 'DANILO VALESI';
+            }))
+            ->willReturnSelf();
+
+        $service->persistOrderIntegrationState($order, [
+            'id' => '71759',
+            'code' => '3984',
+            'merchant_id' => '1234',
+            'customer_name' => 'DANILO VALESI',
+        ]);
+
+        self::assertSame([
+            [
+                'context' => 'iFood',
+                'entityName' => 'Order',
+                'entityId' => 71759,
+                'fieldName' => 'id',
+                'value' => '71759',
+                'fieldType' => 'text',
+                'source' => 'iFood',
+            ],
+            [
+                'context' => 'iFood',
+                'entityName' => 'Order',
+                'entityId' => 71759,
+                'fieldName' => 'code',
+                'value' => '3984',
+                'fieldType' => 'text',
+                'source' => 'iFood',
+            ],
+        ], $calls);
+    }
+
     public function testIfoodBenefitSnapshotSeparatesSponsorAndDeliveryTarget(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();

@@ -50,6 +50,7 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *   - Keep business rules in the capability classes and the domain model, not in nested AGENTS files.
  *   - Do not re-concentrate catalog, store, order, people, or financial behavior into this class.
  *   - Webhook and polling events must collapse into the shared marketplace lifecycle contract, so iFood uses the same local order states as Food99 for preparing, way, closed, and canceled transitions.
+ *   - Incoming iFood orders must materialize canonical numeric identifiers from `otherInformations.iFood` into `extra_data` for `id` and `code`; `merchant_id` already lives in `order.provider`.
  */
 class iFoodService extends AbstractMarketplaceService implements
     MarketplaceIntegrationHandlerInterface,
@@ -1617,6 +1618,12 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
+    /*
+     * Business rule:
+     * - Persist iFood order identifiers only from the canonical iFood state block already merged into otherInformations.
+     * - Materialize only numeric identifiers into extra_data: id and code.
+     * - Do not derive identifiers from alternate payloads, legacy aliases, or fallback sources.
+     */
     public function persistOrderIntegrationState(Order $order, array $fields): void
     {
         $normalizedFields = [];
@@ -1634,6 +1641,32 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
+        $this->persistIfoodOrderIdentifiers($order, $normalizedFields);
+    }
+
+    private function persistIfoodOrderIdentifiers(Order $order, array $fields): void
+    {
+        $orderId = (int) $order->getId();
+        if ($orderId <= 0) {
+            return;
+        }
+
+        foreach (['id', 'code'] as $fieldName) {
+            $value = $this->normalizeString($fields[$fieldName] ?? null);
+            if ($value === '' || preg_match('/^[0-9]+$/', $value) !== 1) {
+                continue;
+            }
+
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Order',
+                $orderId,
+                $fieldName,
+                $value,
+                'text',
+                self::APP_CONTEXT
+            );
+        }
     }
 
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
