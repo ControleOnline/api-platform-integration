@@ -95,9 +95,9 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function isAuthAvailable(): bool
+    private function isAuthAvailable(?People $provider = null): bool
     {
-        return $this->ifoodClient->isAuthAvailable();
+        return $this->ifoodClient->isAuthAvailable($provider);
     }
 
     public static function getSubscribedEvents(): array
@@ -1734,7 +1734,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1763,7 +1763,7 @@ class iFoodService extends AbstractMarketplaceService implements
                         'originalValue' => $roundedPrice,
                     ],
                 ],
-            ]);
+            ], $provider);
 
             $status = $response->getStatusCode();
             if ($status >= 200 && $status < 300) {
@@ -1796,7 +1796,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1807,7 +1807,7 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/opening-hours');
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/opening-hours', [], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1839,7 +1839,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1867,7 +1867,7 @@ class iFoodService extends AbstractMarketplaceService implements
         try {
             $response = $this->ifoodClient->requestMerchantEndpoint('PUT', '/merchants/' . rawurlencode($merchantId) . '/opening-hours', [
                 'json' => $payload,
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1898,7 +1898,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1927,7 +1927,7 @@ class iFoodService extends AbstractMarketplaceService implements
                         'originalValue' => $roundedPrice,
                     ],
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1960,7 +1960,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1987,7 +1987,7 @@ class iFoodService extends AbstractMarketplaceService implements
                     'itemId' => $normalizedItemId,
                     'status' => $normalizedStatus,
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -2020,7 +2020,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -2047,7 +2047,7 @@ class iFoodService extends AbstractMarketplaceService implements
                     'optionId' => $normalizedOptionId,
                     'status'   => $normalizedStatus,
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {

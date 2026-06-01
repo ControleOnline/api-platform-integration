@@ -1665,40 +1665,40 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
         return sprintf('%d min', $minutes);
     }
 
-    public function getAuthorizationPage(array $payload): ?array
+    public function getAuthorizationPage(array $payload, ?People $provider = null): ?array
     {
         $this->init();
 
         $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->resolveFood99Client()?->getAuthorizationPage($payload);
+        return $this->resolveFood99Client()?->getAuthorizationPage($payload, $provider);
     }
 
-    public function bindStore(array $payload): ?array
+    public function bindStore(array $payload, ?People $provider = null): ?array
     {
         $this->init();
 
         $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->resolveFood99Client()?->bindStore($payload);
+        return $this->resolveFood99Client()?->bindStore($payload, $provider);
     }
 
-    public function listAuthorizedStores(array $payload = []): ?array
+    public function listAuthorizedStores(array $payload = [], ?People $provider = null): ?array
     {
         $this->init();
 
         $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->resolveFood99Client()?->listAuthorizedStores($payload);
+        return $this->resolveFood99Client()?->listAuthorizedStores($payload, $provider);
     }
 
-    public function listBindStores(array $payload = []): ?array
+    public function listBindStores(array $payload = [], ?People $provider = null): ?array
     {
         $this->init();
 
         $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->resolveFood99Client()?->listBindStores($payload);
+        return $this->resolveFood99Client()?->listBindStores($payload, $provider);
     }
 
     public function unbindStore(People $provider, array $payload = []): ?array
@@ -1707,7 +1707,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
         $payload = $this->prepareFood99PortalPayload($payload);
 
-        return $this->resolveFood99Client()?->unbindStore($payload);
+        return $this->resolveFood99Client()?->unbindStore($payload, $provider);
     }
 
     public function setStoreOrderConfirmationMethod(People $provider, array $payload): ?array

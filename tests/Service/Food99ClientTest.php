@@ -4,6 +4,7 @@ namespace ControleOnline\Integration\Tests\Service;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\Food99Client;
+use ControleOnline\Service\ConfigService;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Contracts\HttpClient\ChunkInterface;
@@ -58,6 +59,72 @@ class Food99ClientTest extends TestCase
             self::assertSame('token-123', $client->getAccessToken($provider));
             self::assertSame('token-123', $client->getAccessToken($provider));
             self::assertCount(1, $httpClient->requests);
+        } finally {
+            $this->restoreEnvironmentValues($previousValues);
+        }
+    }
+
+    public function testGetAccessTokenPrefersConfigServiceOverEnvironment(): void
+    {
+        $previousValues = [
+            'OAUTH_99FOOD_CLIENT_ID' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_ENV) ? $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+            'OAUTH_99FOOD_CLIENT_ID_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_ID', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_ID'] : null,
+            'OAUTH_99FOOD_CLIENT_SECRET_SERVER' => array_key_exists('OAUTH_99FOOD_CLIENT_SECRET', $_SERVER) ? $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] : null,
+        ];
+
+        $_ENV['OAUTH_99FOOD_CLIENT_ID'] = 'env-app-id';
+        $_ENV['OAUTH_99FOOD_CLIENT_SECRET'] = 'env-app-secret';
+        $_SERVER['OAUTH_99FOOD_CLIENT_ID'] = 'env-app-id';
+        $_SERVER['OAUTH_99FOOD_CLIENT_SECRET'] = 'env-app-secret';
+
+        $provider = $this->newTestPeople(4);
+        $configService = $this->createMock(ConfigService::class);
+        $callCount = 0;
+        $configService
+            ->method('getConfig')
+            ->willReturnCallback(function (People $passedProvider, string $key) use (&$callCount, $provider): string {
+                self::assertSame($provider, $passedProvider);
+
+                if ($callCount === 0) {
+                    self::assertSame('OAUTH_99FOOD_CLIENT_ID', $key);
+                    $callCount++;
+
+                    return 'db-app-id';
+                }
+
+                if ($callCount === 1) {
+                    self::assertSame('OAUTH_99FOOD_CLIENT_SECRET', $key);
+                    $callCount++;
+
+                    return 'db-app-secret';
+                }
+
+                self::fail('Unexpected ConfigService::getConfig call.');
+            });
+
+        $httpClient = new RecordingHttpClient(function (string $method, string $url, array $options) {
+            self::assertSame('GET', $method);
+            self::assertSame('https://openapi.99food.com/v1/auth/authtoken/get?app_id=db-app-id&app_secret=db-app-secret&app_shop_id=4', $url);
+            self::assertSame([
+                'app_id' => 'db-app-id',
+                'app_secret' => 'db-app-secret',
+                'app_shop_id' => '4',
+            ], $options['query']);
+
+            return RecordedResponse::json([
+                'errno' => 0,
+                'data' => [
+                    'auth_token' => 'db-token',
+                    'token_expiration_time' => time() + 3600,
+                ],
+            ]);
+        });
+
+        $client = new Food99Client($httpClient, null, $configService);
+
+        try {
+            self::assertSame('db-token', $client->getAccessToken($provider));
         } finally {
             $this->restoreEnvironmentValues($previousValues);
         }

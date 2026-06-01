@@ -3,6 +3,7 @@
 namespace ControleOnline\Service\Client;
 
 use ControleOnline\Entity\People;
+use ControleOnline\Service\ConfigService;
 use ControleOnline\Service\LoggerService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
@@ -21,6 +22,7 @@ class Food99Client
     public function __construct(
         private HttpClientInterface $httpClient,
         private ?LoggerService $loggerService = null,
+        private ?ConfigService $configService = null,
     ) {}
 
     public function requestBorderWithResponse(string $method, string $uri, array $payload = [], array $logContext = []): ?array
@@ -38,10 +40,10 @@ class Food99Client
         return $this->requestWithResponse(self::PORTAL_BASE_URL, $method, $uri, $payload, $logContext, false);
     }
 
-    public function callAppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    public function callAppEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
+        $appId = $this->resolveAppId($provider);
+        $appSecret = $this->resolveAppSecret($provider);
 
         if (!$appId || !$appSecret) {
             return null;
@@ -64,48 +66,53 @@ class Food99Client
         return $payload;
     }
 
-    public function getAuthorizationPage(array $payload): ?array
+    public function getAuthorizationPage(array $payload, ?People $provider = null): ?array
     {
         return $this->callAppEndpointWithResponse(
             'POST',
             '/shop_center/v1/authorize/get_url',
-            $this->preparePortalPayload($payload)
+            $this->preparePortalPayload($payload),
+            $provider
         );
     }
 
-    public function bindStore(array $payload): ?array
+    public function bindStore(array $payload, ?People $provider = null): ?array
     {
         return $this->callAppEndpointWithResponse(
             'POST',
             '/shop_center/v1/authorize/bind',
-            $this->preparePortalPayload($payload)
+            $this->preparePortalPayload($payload),
+            $provider
         );
     }
 
-    public function listAuthorizedStores(array $payload = []): ?array
+    public function listAuthorizedStores(array $payload = [], ?People $provider = null): ?array
     {
         return $this->callAppEndpointWithResponse(
             'GET',
             '/shop_center/v1/authorize/list',
-            $this->preparePortalPayload($payload)
+            $this->preparePortalPayload($payload),
+            $provider
         );
     }
 
-    public function listBindStores(array $payload = []): ?array
+    public function listBindStores(array $payload = [], ?People $provider = null): ?array
     {
         return $this->callAppEndpointWithResponse(
             'GET',
             '/shop_center/v1/shop/list',
-            $this->preparePortalPayload($payload)
+            $this->preparePortalPayload($payload),
+            $provider
         );
     }
 
-    public function unbindStore(array $payload = []): ?array
+    public function unbindStore(array $payload = [], ?People $provider = null): ?array
     {
         return $this->callAppEndpointWithResponse(
             'POST',
             '/shop_center/v1/authorize/unbind',
-            $this->preparePortalPayload($payload)
+            $this->preparePortalPayload($payload),
+            $provider
         );
     }
 
@@ -464,8 +471,8 @@ class Food99Client
 
     public function getAccessToken(?People $provider = null): ?string
     {
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
+        $appId = $this->resolveAppId($provider);
+        $appSecret = $this->resolveAppSecret($provider);
         $appShopId = $this->resolveAppShopId($provider);
 
         if (!$appId || !$appSecret || !$appShopId) {
@@ -504,8 +511,8 @@ class Food99Client
 
     public function resolveIntegrationAccessToken(People $provider): ?string
     {
-        $appId = $this->resolveAppId();
-        $appSecret = $this->resolveAppSecret();
+        $appId = $this->resolveAppId($provider);
+        $appSecret = $this->resolveAppSecret($provider);
         $appShopId = $this->resolveAppShopId($provider);
 
         if (!$appId || !$appSecret || !$appShopId) {
@@ -734,40 +741,24 @@ class Food99Client
         }
     }
 
-    private function resolveAppId(): ?string
+    private function resolveAppId(?People $provider = null): ?string
     {
-        $appId = $this->resolveEnvironmentValue('OAUTH_99FOOD_CLIENT_ID');
-        if ($appId === '') {
-            $appId = $this->resolveEnvironmentValue('OAUTH_99FOOD_APP_ID');
-        }
-
-        if ($appId === '') {
-            $this->logger()?->warning('Food99 app_id is not configured', [
-                'expected_env' => ['OAUTH_99FOOD_CLIENT_ID', 'OAUTH_99FOOD_APP_ID'],
-            ]);
-
-            return null;
-        }
-
-        return $appId;
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_99FOOD_CLIENT_ID', 'OAUTH_99FOOD_APP_ID'],
+            ['OAUTH_99FOOD_CLIENT_ID', 'OAUTH_99FOOD_APP_ID'],
+            'Food99 app_id'
+        );
     }
 
-    private function resolveAppSecret(): ?string
+    private function resolveAppSecret(?People $provider = null): ?string
     {
-        $appSecret = $this->resolveEnvironmentValue('OAUTH_99FOOD_CLIENT_SECRET');
-        if ($appSecret === '') {
-            $appSecret = $this->resolveEnvironmentValue('OAUTH_99FOOD_APP_SECRET');
-        }
-
-        if ($appSecret === '') {
-            $this->logger()?->warning('Food99 app_secret is not configured', [
-                'expected_env' => ['OAUTH_99FOOD_CLIENT_SECRET', 'OAUTH_99FOOD_APP_SECRET'],
-            ]);
-
-            return null;
-        }
-
-        return $appSecret;
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_99FOOD_CLIENT_SECRET', 'OAUTH_99FOOD_APP_SECRET'],
+            ['OAUTH_99FOOD_CLIENT_SECRET', 'OAUTH_99FOOD_APP_SECRET'],
+            'Food99 app_secret'
+        );
     }
 
     private function resolveAppShopId(?People $provider = null): ?string
@@ -862,6 +853,37 @@ class Food99Client
             ?? getenv($name)
             ?: ''
         ));
+    }
+
+    private function resolveConfiguredValue(
+        ?People $provider,
+        array $configKeys,
+        array $environmentKeys,
+        string $label
+    ): ?string {
+        if ($this->configService instanceof ConfigService) {
+            foreach ($configKeys as $configKey) {
+                $configuredValue = trim((string) ($this->configService->getConfig($provider, $configKey) ?? ''));
+                if ($configuredValue !== '') {
+                    return $configuredValue;
+                }
+            }
+        }
+
+        foreach ($environmentKeys as $environmentKey) {
+            $environmentValue = $this->resolveEnvironmentValue($environmentKey);
+            if ($environmentValue !== '') {
+                return $environmentValue;
+            }
+        }
+
+        $this->logger()?->warning($label . ' is not configured', [
+            'expected_config' => $configKeys,
+            'expected_env' => $environmentKeys,
+            'provider_id' => $provider?->getId(),
+        ]);
+
+        return null;
     }
 
     private function logger(): ?LoggerInterface

@@ -2,7 +2,9 @@
 
 namespace ControleOnline\Service\Client;
 
+use ControleOnline\Entity\People;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\ConfigService;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -28,6 +30,7 @@ class IfoodClient
     public function __construct(
         private HttpClientInterface $httpClient,
         private ?LoggerService $loggerService = null,
+        private ?ConfigService $configService = null,
     ) {}
 
     public function getAuthorizationUrl(): string
@@ -40,38 +43,39 @@ class IfoodClient
         return $this->buildApiUrl('/authentication/v1.0/oauth/token');
     }
 
-    public function requestMerchantEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    public function requestMerchantEndpoint(string $method, string $path, array $options = [], ?People $provider = null): ResponseInterface
     {
-        return $this->requestApi($method, '/merchant/v1.0' . $this->normalizePath($path), $options);
+        return $this->requestApi($method, '/merchant/v1.0' . $this->normalizePath($path), $options, $provider);
     }
 
-    public function requestOrderEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    public function requestOrderEndpoint(string $method, string $path, array $options = [], ?People $provider = null): ResponseInterface
     {
-        return $this->requestApi($method, '/order/v1.0' . $this->normalizePath($path), $options);
+        return $this->requestApi($method, '/order/v1.0' . $this->normalizePath($path), $options, $provider);
     }
 
-    public function requestShippingEndpoint(string $method, string $path, array $options = []): ResponseInterface
+    public function requestShippingEndpoint(string $method, string $path, array $options = [], ?People $provider = null): ResponseInterface
     {
-        return $this->requestApi($method, '/shipping/v1.0' . $this->normalizePath($path), $options);
+        return $this->requestApi($method, '/shipping/v1.0' . $this->normalizePath($path), $options, $provider);
     }
 
-    public function requestCatalogEndpoint(string $method, string $merchantId, string $path, array $options = []): ResponseInterface
+    public function requestCatalogEndpoint(string $method, string $merchantId, string $path, array $options = [], ?People $provider = null): ResponseInterface
     {
         $normalizedMerchantId = rawurlencode(trim($merchantId));
 
         return $this->requestApi(
             $method,
             '/catalog/v2.0/merchants/' . $normalizedMerchantId . $this->normalizePath($path),
-            $options
+            $options,
+            $provider
         );
     }
 
-    public function request(string $method, string $url, array $options = []): ResponseInterface
+    public function request(string $method, string $url, array $options = [], ?People $provider = null): ResponseInterface
     {
         if ($this->shouldAttachAuthHeader($url)) {
             $headers = is_array($options['headers'] ?? null) ? $options['headers'] : [];
             if (!array_key_exists('Authorization', $headers) && !array_key_exists('authorization', $headers)) {
-                $token = $this->getAccessToken();
+                $token = $this->getAccessToken($provider);
                 if ($token !== null && $token !== '') {
                     $headers['Authorization'] = 'Bearer ' . $token;
                 }
@@ -83,7 +87,7 @@ class IfoodClient
         return $this->httpClient->request($method, $url, $options);
     }
 
-    private function getAccessToken(): ?string
+    private function getAccessToken(?People $provider = null): ?string
     {
         $cachedToken = self::$authTokenCache['token'] ?? null;
         $cachedExpiresAt = self::$authTokenCache['expires_at'] ?? 0;
@@ -96,8 +100,8 @@ class IfoodClient
                 'headers' => ['content-type' => 'application/x-www-form-urlencoded'],
                 'body' => http_build_query([
                     'grantType' => 'client_credentials',
-                    'clientId' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_ID'),
-                    'clientSecret' => $this->resolveEnvironmentValue('OAUTH_IFOOD_CLIENT_SECRET'),
+                    'clientId' => $this->resolveClientId($provider),
+                    'clientSecret' => $this->resolveClientSecret($provider),
                 ]),
             ]);
 
@@ -142,9 +146,9 @@ class IfoodClient
         }
     }
 
-    public function isAuthAvailable(): bool
+    public function isAuthAvailable(?People $provider = null): bool
     {
-        return $this->getAccessToken() !== null;
+        return $this->getAccessToken($provider) !== null;
     }
 
     public function resetAccessTokenCache(): void
@@ -152,9 +156,9 @@ class IfoodClient
         self::$authTokenCache = [];
     }
 
-    private function requestApi(string $method, string $path, array $options = []): ResponseInterface
+    private function requestApi(string $method, string $path, array $options = [], ?People $provider = null): ResponseInterface
     {
-        return $this->request($method, $this->buildApiUrl($path), $options);
+        return $this->request($method, $this->buildApiUrl($path), $options, $provider);
     }
 
     private function buildApiUrl(string $path): string
@@ -186,6 +190,57 @@ class IfoodClient
             ?? getenv($name)
             ?: ''
         ));
+    }
+
+    private function resolveClientId(?People $provider = null): ?string
+    {
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_IFOOD_CLIENT_ID'],
+            ['OAUTH_IFOOD_CLIENT_ID'],
+            'iFood client_id'
+        );
+    }
+
+    private function resolveClientSecret(?People $provider = null): ?string
+    {
+        return $this->resolveConfiguredValue(
+            $provider,
+            ['OAUTH_IFOOD_CLIENT_SECRET'],
+            ['OAUTH_IFOOD_CLIENT_SECRET'],
+            'iFood client_secret'
+        );
+    }
+
+    private function resolveConfiguredValue(
+        ?People $provider,
+        array $configKeys,
+        array $environmentKeys,
+        string $label
+    ): ?string {
+        if ($this->configService instanceof ConfigService) {
+            foreach ($configKeys as $configKey) {
+                $configuredValue = trim((string) ($this->configService->getConfig($provider, $configKey) ?? ''));
+                if ($configuredValue !== '') {
+                    return $configuredValue;
+                }
+            }
+        }
+
+        foreach ($environmentKeys as $environmentKey) {
+            $environmentValue = $this->resolveEnvironmentValue($environmentKey);
+            if ($environmentValue !== '') {
+                return $environmentValue;
+            }
+        }
+
+        $this->logger()?->warning($label . ' is not configured', [
+            'expected_config' => $configKeys,
+            'expected_env' => $environmentKeys,
+            'provider_id' => $provider?->getId(),
+        ]);
+
+        return null;
     }
 
     private function normalizeString(mixed $value): string

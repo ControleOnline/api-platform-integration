@@ -830,7 +830,7 @@ class IntegrationController extends AbstractController
             $provider->getId(),
         ]);
 
-        $boundStoresResponse = $this->food99Service->listAuthorizedStores([]) ?? [];
+        $boundStoresResponse = $this->food99Service->listAuthorizedStores([], $provider) ?? [];
         $boundStoreCandidate = $this->findBoundStoreCandidateInPayload($boundStoresResponse['data'] ?? $boundStoresResponse, $candidateShopIds);
         $boundStoreMatched = is_array($boundStoreCandidate);
         if (is_array($boundStoreCandidate)) {
@@ -1450,7 +1450,7 @@ class IntegrationController extends AbstractController
 
         $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
 
-        $authorizationResponse = $this->food99Service->getAuthorizationPage($payload);
+        $authorizationResponse = $this->food99Service->getAuthorizationPage($payload, $provider);
         $authorizationUrl = $this->extractFood99AuthorizationUrl($authorizationResponse);
 
         if ($authorizationUrl !== null) {
@@ -1548,7 +1548,7 @@ class IntegrationController extends AbstractController
         }
 
         $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
-        $result = $this->food99Service->bindStore($payload);
+        $result = $this->food99Service->bindStore($payload, $provider);
 
         if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
             $shopId = trim((string) ($payload['shop_id'] ?? $payload['food99_code'] ?? $payload['store_code'] ?? ''));
