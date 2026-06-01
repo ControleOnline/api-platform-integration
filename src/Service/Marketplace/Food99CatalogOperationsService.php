@@ -32,6 +32,12 @@ use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
+/*
+ * Store sync contract:
+ * - Reconciliation must emit the shared store.opened/store.closed manager notification when the remote store status changes.
+ * - The first known closed state must notify the manager so 99Food closes do not get swallowed by a cold cache.
+ * - Store snapshot and error-reset helpers are delegated to Food99StoreOperationsService; this class must not invent its own store transport.
+ */
 class Food99CatalogOperationsService extends AbstractMarketplaceService implements EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
@@ -100,6 +106,65 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         return $event;
+    }
+
+    private function shouldNotifyStoreStatusChange(array $previousState, bool $currentOnline): bool
+    {
+        $hasPreviousStatus = $this->normalizeString($previousState['biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['sub_biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['store_status'] ?? null) !== '';
+
+        if (!$hasPreviousStatus) {
+            return true;
+        }
+
+        return (bool) ($previousState['online'] ?? false) !== $currentOnline;
+    }
+
+    private function broadcastStoreStatusChange(People $provider, bool $currentOnline): void
+    {
+        $providerName = trim((string) ($provider->getName() ?? ''));
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $events = [[
+            'store' => 'orders',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
     private function normalizeIncomingFood99Value(mixed $value): string
@@ -297,6 +362,46 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         return [];
+    }
+
+    public function persistIntegrationAuthError(People $provider, ?string $message = null): void
+    {
+        $this->persistProviderLastError($provider, 'auth', $message ?: 'Nao foi possivel obter o auth_token da loja na 99Food.');
+    }
+
+    public function clearIntegrationError(People $provider): void
+    {
+        $this->persistProviderLastError($provider, '', '');
+    }
+
+    public function getStoreDetails(People $provider): ?array
+    {
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->getStoreDetails($provider);
+        }
+
+        return null;
+    }
+
+    public function listDeliveryAreas(People $provider): ?array
+    {
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->listDeliveryAreas($provider);
+        }
+
+        return null;
+    }
+
+    public function getStoreMenuDetails(People $provider): ?array
+    {
+        $storeService = $this->food99StoreOperationsService;
+        if ($storeService instanceof Food99StoreOperationsService) {
+            return $storeService->getStoreMenuDetails($provider);
+        }
+
+        return null;
     }
 
     public function fetchMenuProducts(People $provider, array $productIds = []): array
@@ -1090,6 +1195,10 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         $this->init();
+        $previousState = [];
+        if ($this->food99StoreOperationsService instanceof Food99StoreOperationsService) {
+            $previousState = $this->food99StoreOperationsService->getStoredIntegrationState($provider);
+        }
 
         $sync = [
             'auth_available' => false,
@@ -1116,6 +1225,14 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         $sync['store'] = $storeDetails;
         if (!$this->isSuccessfulErrno($storeDetails['errno'] ?? null)) {
             $sync['errors']['store'] = $storeDetails['errmsg'] ?? 'Nao foi possivel sincronizar os detalhes da loja.';
+        } else {
+            $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
+            $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
+            $currentOnline = $bizStatus === 1;
+
+            if ($bizStatus !== null && $this->shouldNotifyStoreStatusChange($previousState, $currentOnline)) {
+                $this->broadcastStoreStatusChange($provider, $currentOnline);
+            }
         }
 
         $deliveryAreas = $this->listDeliveryAreas($provider);

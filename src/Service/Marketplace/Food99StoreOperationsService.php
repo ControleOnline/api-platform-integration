@@ -31,6 +31,11 @@ use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
+/*
+ * Store lifecycle contract:
+ * - Manual store status updates and webhook sync must emit the shared store.opened/store.closed manager notification.
+ * - The first known closed state must still notify the manager, even when the previous cached state was absent.
+ */
 class Food99StoreOperationsService extends AbstractMarketplaceService implements EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
@@ -477,6 +482,65 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
         ]);
     }
 
+    private function shouldNotifyStoreStatusChange(array $previousState, bool $currentOnline): bool
+    {
+        $hasPreviousStatus = $this->normalizeString($previousState['biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['sub_biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['store_status'] ?? null) !== '';
+
+        if (!$hasPreviousStatus) {
+            return true;
+        }
+
+        return (bool) ($previousState['online'] ?? false) !== $currentOnline;
+    }
+
+    private function broadcastStoreStatusChange(People $provider, bool $currentOnline): void
+    {
+        $providerName = trim((string) ($provider->getName() ?? ''));
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $events = [[
+            'store' => 'orders',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
+    }
+
     private function persistProviderMenuState(People $provider, array $menuData, mixed $taskId = null): void
     {
         $menus = is_array($menuData['menus'] ?? null) ? $menuData['menus'] : [];
@@ -784,9 +848,9 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
             return;
         }
 
-        $previousState = $this->getStoredIntegrationState($provider);
-        $previousOnline = (bool) ($previousState['online'] ?? false);
-        $currentOnline = $this->resolveFood99WebhookOnlineState($data);
+	        $previousState = $this->getStoredIntegrationState($provider);
+	        $previousOnline = (bool) ($previousState['online'] ?? false);
+	        $currentOnline = $this->resolveFood99WebhookOnlineState($data);
 
         $this->persistProviderStoreState($provider, $data);
 
@@ -794,52 +858,11 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
             return;
         }
 
-        if ($previousOnline === $currentOnline) {
+        if (!$this->shouldNotifyStoreStatusChange($previousState, $currentOnline)) {
             return;
         }
 
-        $providerName = trim((string) ($provider->getName() ?? ''));
-        if ($providerName === '') {
-            $providerName = 'Loja';
-        }
-
-        $events = [[
-            'store' => 'orders',
-            'event' => $currentOnline ? 'store.opened' : 'store.closed',
-            'company' => $provider->getId(),
-            'provider' => $provider->getId(),
-            'providerName' => $providerName,
-            'source' => self::APP_CONTEXT,
-            'status' => $currentOnline ? 'open' : 'closed',
-            'realStatus' => $currentOnline ? 'open' : 'closed',
-            'message' => sprintf(
-                'Loja %s foi %s',
-                $providerName,
-                $currentOnline ? 'aberta' : 'fechada'
-            ),
-            'sentAt' => date(DATE_ATOM),
-            'alertSound' => true,
-        ]];
-
-        if ($currentOnline) {
-            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
-            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
-            $events[0]['notificationStatusLabel'] = 'Aberta';
-        } else {
-            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
-            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
-            $events[0]['notificationSubheader'] = sprintf(
-                'Vendas do dia: R$ %s',
-                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
-            );
-            $events[0]['notificationBody'] = sprintf(
-                'Fatura da semana: R$ %s',
-                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
-            );
-            $events[0]['notificationStatusLabel'] = 'Fechada';
-        }
-
-        $this->broadcastCompanyWebsocketEvents($provider, $events);
+        $this->broadcastStoreStatusChange($provider, $currentOnline);
     }
 
     public function resolveFood99WebhookOnlineState(array $data): ?bool
@@ -1729,6 +1752,7 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
     {
         $this->init();
 
+        $previousState = $this->getStoredIntegrationState($provider);
         $response = $this->resolveFood99Client()?->setStoreStatus($provider, $bizStatus, $autoSwitch);
         if ($this->isSuccessfulErrno($response['errno'] ?? null)) {
             $this->persistProviderIntegrationState($provider, [
@@ -1739,6 +1763,11 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
                 'last_error_code' => '',
                 'last_error_message' => '',
             ]);
+
+            $currentOnline = $bizStatus === 1;
+            if ($this->shouldNotifyStoreStatusChange($previousState, $currentOnline)) {
+                $this->broadcastStoreStatusChange($provider, $currentOnline);
+            }
         } else {
             $this->persistProviderLastError($provider, $response['errno'] ?? null, $response['errmsg'] ?? null);
         }

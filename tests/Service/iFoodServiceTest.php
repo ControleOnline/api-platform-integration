@@ -84,6 +84,41 @@ class iFoodServiceTest extends TestCase
         self::assertFalse($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'CONCLUDED'));
     }
 
+    public function testApplyOperationalStatusForRemoteStateReturnsCancellationBroadcastFlag(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $order = new Order();
+
+        $status = $this->createStub(\ControleOnline\Entity\Status::class);
+        $status->method('getRealStatus')->willReturn('canceled');
+        $status->method('getStatus')->willReturn('canceled');
+
+        $statusService = $this->createMock(\ControleOnline\Service\StatusService::class);
+        $statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('canceled', 'canceled', 'order')
+            ->willReturn($status);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->with($order);
+
+        $this->setObjectProperty($service, 'statusService', $statusService);
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        self::assertTrue($this->invokePrivateMethod(
+            $service,
+            'applyOperationalStatusForRemoteState',
+            $order,
+            'canceled'
+        ));
+        self::assertSame('canceled', $order->getStatus()?->getRealStatus());
+        self::assertSame('canceled', $order->getStatus()?->getStatus());
+    }
+
     public function testStoredQuoteStateReadsCurrentIfoodContextSnapshot(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
@@ -650,10 +685,8 @@ class iFoodServiceTest extends TestCase
         self::assertSame('remote-chas', $remoteCategoriesByName['chas']);
     }
 
-    public function testGetAccessTokenUsesServerFallbackWhenEnvIsMissing(): void
+    public function testIfoodClientGetAccessTokenUsesServerFallbackWhenEnvIsMissing(): void
     {
-        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
-        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
         $this->setStaticProperty(IfoodClient::class, 'authTokenCache', []);
 
         $envBackup = [
@@ -694,10 +727,10 @@ class iFoodServiceTest extends TestCase
                 })
             )
             ->willReturn($response);
-        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
+        $ifoodClient = $this->createIfoodClientStub($httpClient);
 
         try {
-            self::assertSame('token-from-server', $this->invokePrivateMethod($service, 'getAccessToken'));
+            self::assertSame('token-from-server', $this->invokePrivateMethod($ifoodClient, 'getAccessToken'));
         } finally {
             foreach ($envBackup as $key => $value) {
                 if ($value === null) {

@@ -3,6 +3,8 @@
 namespace ControleOnline\Integration\Tests\Service\Marketplace;
 
 use ControleOnline\Entity\People;
+use ControleOnline\Service\Client\Food99Client;
+use ControleOnline\Service\DefaultFoodService;
 use ControleOnline\Service\ExtraDataService;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\Marketplace\Food99CatalogOperationsService;
@@ -101,6 +103,80 @@ final class Food99CatalogOperationsServiceTest extends TestCase
             ],
             array_map(static fn(array $call): string => $call[0], $storeService->calls)
         );
+    }
+
+    public function testSyncIntegrationStateBroadcastsClosedNotificationOnFirstKnownClosedState(): void
+    {
+        $service = (new \ReflectionClass(Food99CatalogOperationsServiceProbe::class))->newInstanceWithoutConstructor();
+
+        $provider = new People();
+        $this->setEntityId($provider, 3);
+        $provider->setName('Mercado Central');
+
+        $storeService = $this->createMock(Food99StoreOperationsService::class);
+        $storeService
+            ->expects(self::once())
+            ->method('getStoredIntegrationState')
+            ->with($provider)
+            ->willReturn([
+                'biz_status' => 1,
+                'sub_biz_status' => 1,
+                'store_status' => 1,
+                'online' => 1,
+            ]);
+        $storeService
+            ->expects(self::once())
+            ->method('persistProviderLastError')
+            ->with($provider, '', '');
+        $storeService
+            ->method('getStoreDetails')
+            ->with($provider)
+            ->willReturn([
+                'errno' => 0,
+                'data' => [
+                    'shop_id' => 'shop-123',
+                    'name' => 'Mercado Central',
+                    'biz_status' => 0,
+                    'sub_biz_status' => 2,
+                    'store_status' => 0,
+                ],
+            ]);
+        $storeService
+            ->method('listDeliveryAreas')
+            ->with($provider)
+            ->willReturn([
+                'errno' => 0,
+                'data' => [
+                    'area_group' => [],
+                ],
+            ]);
+        $storeService
+            ->method('getStoreMenuDetails')
+            ->with($provider)
+            ->willReturn([
+                'errno' => 0,
+                'data' => [
+                    'menus' => [],
+                    'items' => [],
+                ],
+            ]);
+
+        $food99Client = $this->createMock(Food99Client::class);
+        $food99Client
+            ->method('resolveIntegrationAccessToken')
+            ->with($provider)
+            ->willReturn('token');
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'food99Client', $food99Client);
+        $this->setObjectProperty(Food99CatalogOperationsService::class, $service, 'food99StoreOperationsService', $storeService);
+
+        $result = $service->syncIntegrationState($provider, false);
+
+        self::assertSame(0, $result['store']['errno']);
+        self::assertCount(1, $service->capturedEvents);
+        self::assertSame('store.closed', $service->capturedEvents[0][1][0]['event']);
+        self::assertSame('MERCADO CENTRAL foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
+        self::assertSame('Fechada', $service->capturedEvents[0][1][0]['notificationStatusLabel']);
     }
 
     public function testBuildMenuProductChildrenByParentGroupsModifierRows(): void
@@ -248,6 +324,23 @@ final class Food99CatalogOperationsServiceTest extends TestCase
         return $method->invoke($object, ...$arguments);
     }
 
+    private function setEntityId(object $object, int $id): void
+    {
+        $reflection = new \ReflectionObject($object);
+        while ($reflection) {
+            if ($reflection->hasProperty('id')) {
+                $property = $reflection->getProperty('id');
+                $property->setAccessible(true);
+                $property->setValue($object, $id);
+                return;
+            }
+
+            $reflection = $reflection->getParentClass();
+        }
+
+        throw new \RuntimeException('Unable to set entity id in test.');
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
@@ -286,5 +379,26 @@ final class Food99CatalogOperationsServiceTest extends TestCase
                 return 'example.com';
             }
         };
+    }
+}
+
+final class Food99CatalogOperationsServiceProbe extends Food99CatalogOperationsService
+{
+    public array $capturedEvents = [];
+
+    protected function broadcastCompanyWebsocketEvents(People $company, array $events): void
+    {
+        $this->capturedEvents[] = [$company, $events];
+    }
+
+    protected function sendStoreClosingNotifications(
+        People $company,
+        string $app,
+        ?\DateTime $referenceDate = null
+    ): array {
+        return [
+            'daily_sales_amount' => 123.45,
+            'weekly_settlement_amount' => 678.90,
+        ];
     }
 }
