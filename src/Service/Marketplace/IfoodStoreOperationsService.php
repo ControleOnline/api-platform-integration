@@ -701,10 +701,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'source_address_destination' => get_debug_type($sourceOrder->getAddressDestination()),
         ]);
 
-        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
-        if (!$dropoffAddress instanceof Address) {
-            $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
-        }
+        $pickupAddress = $this->resolveIfoodQuotePickupAddress($order, $sourceOrder);
+        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
         self::$logger?->info('iFood quote dropoff resolution', [
             'quote_order_id' => $order->getId(),
             'resolved_dropoff_type' => get_debug_type($dropoffAddress),
