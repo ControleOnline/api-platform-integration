@@ -2,9 +2,14 @@
 
 namespace ControleOnline\Controller\iFood;
 
+use ControleOnline\Entity\Config;
+use ControleOnline\Entity\People;
+use ControleOnline\Service\ConfigService;
+use ControleOnline\Service\ExtraDataService;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\RequestPayloadService;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -13,11 +18,18 @@ use Symfony\Component\Routing\Attribute\Route;
 
 class iFoodController extends AbstractController
 {
+    private const APP_CONTEXT = 'iFood';
+    private const CLIENT_SECRET_CONFIG_KEY = 'OAUTH_IFOOD_CLIENT_SECRET';
+    private const WEBHOOK_SECRET_CONFIG_KEY = 'IFOOD_WEBHOOK_SECRET';
+
     protected static $logger;
 
     public function __construct(
         private LoggerService $loggerService,
         private RequestPayloadService $requestPayloadService,
+        private ConfigService $configService,
+        private ExtraDataService $extraDataService,
+        private EntityManagerInterface $entityManager,
     ) {
         self::$logger = $loggerService->getLogger('iFood');
     }
@@ -29,19 +41,9 @@ class iFoodController extends AbstractController
     ): Response {
         $rawInput = $request->getContent();
         $signature = trim((string) $request->headers->get('X-IFood-Signature', ''));
-        $secretKey = $this->resolveWebhookSecret();
 
-        if ($secretKey === '' || $signature === '') {
-            self::$logger->warning('iFood webhook missing signature or secret configuration');
-            return new Response('Invalid signature', Response::HTTP_UNAUTHORIZED);
-        }
-
-        $expectedSignature = hash_hmac('sha256', $rawInput, $secretKey);
-        if (!hash_equals($expectedSignature, $signature)) {
-            self::$logger->error('iFood webhook signature mismatch', [
-                'received_signature' => $signature,
-            ]);
-
+        if ($signature === '') {
+            self::$logger->warning('iFood webhook missing signature');
             return new Response('Invalid signature', Response::HTTP_UNAUTHORIZED);
         }
 
@@ -56,6 +58,25 @@ class iFoodController extends AbstractController
         }
 
         $events = array_is_list($payload) ? $payload : [$payload];
+        $secretKeys = $this->resolveWebhookSecrets($events);
+
+        if ($secretKeys === []) {
+            self::$logger->warning('iFood webhook secret configuration not found', [
+                'merchant_ids' => $this->collectMerchantIds($events),
+            ]);
+
+            return new Response('Invalid signature', Response::HTTP_UNAUTHORIZED);
+        }
+
+        if (!$this->matchesWebhookSignature($rawInput, $signature, $secretKeys)) {
+            self::$logger->error('iFood webhook signature mismatch', [
+                'received_signature' => $signature,
+                'merchant_ids' => $this->collectMerchantIds($events),
+            ]);
+
+            return new Response('Invalid signature', Response::HTTP_UNAUTHORIZED);
+        }
+
         $queued = 0;
 
         /* Coleta merchantIds dos eventos KEEPALIVE para sinalizar presenca.
@@ -137,25 +158,124 @@ class iFoodController extends AbstractController
         ], Response::HTTP_ACCEPTED);
     }
 
-    private function resolveWebhookSecret(): string
+    private function resolveWebhookSecrets(array $events): array
     {
-        $webhookSecret = trim((string) (
-            $_ENV['IFOOD_WEBHOOK_SECRET']
-            ?? $_SERVER['IFOOD_WEBHOOK_SECRET']
-            ?? getenv('IFOOD_WEBHOOK_SECRET')
-            ?: ''
-        ));
+        $secrets = [];
 
-        if ($webhookSecret !== '') {
-            return $webhookSecret;
+        foreach ($this->collectMerchantIds($events) as $merchantId) {
+            $provider = $this->resolveProviderByMerchantId($merchantId);
+            if (!$provider instanceof People) {
+                continue;
+            }
+
+            $this->appendSecret($secrets, $this->configService->getConfig($provider, self::WEBHOOK_SECRET_CONFIG_KEY));
+            $this->appendSecret($secrets, $this->configService->getConfig($provider, self::CLIENT_SECRET_CONFIG_KEY));
         }
 
-        return trim((string) (
-            $_ENV['OAUTH_IFOOD_CLIENT_SECRET']
-            ?? $_SERVER['OAUTH_IFOOD_CLIENT_SECRET']
-            ?? getenv('OAUTH_IFOOD_CLIENT_SECRET')
-            ?: ''
-        ));
+        if ($secrets === []) {
+            foreach ([self::WEBHOOK_SECRET_CONFIG_KEY, self::CLIENT_SECRET_CONFIG_KEY] as $configKey) {
+                foreach ($this->entityManager->getRepository(Config::class)->findBy(['configKey' => $configKey]) as $config) {
+                    if ($config instanceof Config) {
+                        $this->appendSecret($secrets, $config->getConfigValue());
+                    }
+                }
+            }
+        }
+
+        if ($secrets === []) {
+            $this->appendEnvironmentWebhookSecrets($secrets);
+        }
+
+        return array_values(array_unique($secrets));
+    }
+
+    private function resolveProviderByMerchantId(string $merchantId): ?People
+    {
+        $provider = $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'code', $merchantId, People::class);
+        if ($provider instanceof People) {
+            return $provider;
+        }
+
+        $provider = $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'merchant_id', $merchantId, People::class);
+        if ($provider instanceof People) {
+            return $provider;
+        }
+
+        return ctype_digit($merchantId)
+            ? $this->entityManager->getRepository(People::class)->find((int) $merchantId)
+            : null;
+    }
+
+    private function collectMerchantIds(array $events): array
+    {
+        $merchantIds = [];
+
+        foreach ($events as $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+
+            if (is_array($event['merchantIds'] ?? null)) {
+                foreach ($event['merchantIds'] as $merchantId) {
+                    $this->appendMerchantId($merchantIds, $merchantId);
+                }
+            }
+
+            $this->appendMerchantId($merchantIds, $event['merchantId'] ?? null);
+            $this->appendMerchantId($merchantIds, $event['merchant_id'] ?? null);
+
+            $merchant = is_array($event['merchant'] ?? null) ? $event['merchant'] : [];
+            $this->appendMerchantId($merchantIds, $merchant['id'] ?? null);
+            $this->appendMerchantId($merchantIds, $merchant['merchantId'] ?? null);
+            $this->appendMerchantId($merchantIds, $merchant['merchant_id'] ?? null);
+        }
+
+        return array_values(array_unique($merchantIds));
+    }
+
+    private function appendMerchantId(array &$merchantIds, mixed $value): void
+    {
+        if (!is_scalar($value)) {
+            return;
+        }
+
+        $merchantId = trim((string) $value);
+        if ($merchantId !== '') {
+            $merchantIds[] = $merchantId;
+        }
+    }
+
+    private function appendSecret(array &$secrets, mixed $value): void
+    {
+        if (!is_scalar($value)) {
+            return;
+        }
+
+        $secret = trim((string) $value);
+        if ($secret !== '') {
+            $secrets[] = $secret;
+        }
+    }
+
+    private function appendEnvironmentWebhookSecrets(array &$secrets): void
+    {
+        foreach ([self::WEBHOOK_SECRET_CONFIG_KEY, self::CLIENT_SECRET_CONFIG_KEY] as $key) {
+            $this->appendSecret(
+                $secrets,
+                $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key) ?: ''
+            );
+        }
+    }
+
+    private function matchesWebhookSignature(string $rawInput, string $signature, array $secretKeys): bool
+    {
+        foreach ($secretKeys as $secretKey) {
+            if (hash_equals(hash_hmac('sha256', $rawInput, $secretKey), $signature)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function buildWebhookMeta(array $event, string $rawInput): array
