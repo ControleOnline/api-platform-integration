@@ -867,12 +867,35 @@ class Food99StoreOperationsService extends AbstractMarketplaceService implements
 
     public function resolveFood99WebhookOnlineState(array $data): ?bool
     {
-        if (array_key_exists('biz_status', $data) && is_numeric($data['biz_status'])) {
-            return (int) $data['biz_status'] === 1;
-        }
+        $candidates = [
+            'biz_status',
+            'online',
+            'store_status',
+            'sub_biz_status',
+        ];
 
-        if (array_key_exists('online', $data)) {
-            return filter_var($data['online'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+        foreach ($candidates as $fieldName) {
+            if (!array_key_exists($fieldName, $data)) {
+                continue;
+            }
+
+            $value = $data[$fieldName];
+            if ($fieldName === 'online') {
+                $resolved = filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+                if ($resolved !== null) {
+                    return $resolved;
+                }
+
+                continue;
+            }
+
+            if (is_bool($value)) {
+                return $value;
+            }
+
+            if (is_numeric($value)) {
+                return (int) $value === 1;
+            }
         }
 
         return null;

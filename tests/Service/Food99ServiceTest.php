@@ -375,6 +375,29 @@ class Food99ServiceTest extends TestCase
         self::assertFalse($resolvedState);
     }
 
+    public function testFood99WebhookOnlineStateFallsBackToStoreStatusFieldsWhenBizStatusIsMissing(): void
+    {
+        $resolvedState = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WebhookOnlineState',
+            [
+                'store_status' => 0,
+            ]
+        );
+
+        self::assertFalse($resolvedState);
+
+        $resolvedState = $this->invokePrivateMethod(
+            $this->service,
+            'resolveFood99WebhookOnlineState',
+            [
+                'sub_biz_status' => 1,
+            ]
+        );
+
+        self::assertTrue($resolvedState);
+    }
+
     #[DataProvider('deliveryStatusNumericMappingProvider')]
     public function testNumericDeliveryStatusMapsToExpectedRemoteState(string $deliveryStatus, string $expectedRemoteState): void
     {
