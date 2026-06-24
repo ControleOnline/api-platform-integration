@@ -13,6 +13,7 @@ use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductGroup;
 use ControleOnline\Entity\ProductGroupProduct;
+use ControleOnline\Entity\ProductPeople;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Entity\Status;
 use ControleOnline\Entity\Wallet;
@@ -402,6 +403,474 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         return null;
+    }
+
+    public function importRemoteMenuSnapshot(People $provider): array
+    {
+        $this->init();
+
+        $food99Client = $this->resolveFood99Client();
+        $menuDetails = $food99Client instanceof Food99Client
+            ? $food99Client->getStoreMenuDetailsForSnapshot($provider)
+            : null;
+
+        if (!is_array($menuDetails)) {
+            return [
+                'errno' => 10001,
+                'errmsg' => 'Nao foi possivel ler o cardapio remoto da 99Food.',
+                'data' => $this->buildEmptyRemoteMenuSnapshot($provider),
+            ];
+        }
+
+        $snapshot = $this->buildFood99RemoteMenuSnapshot($provider, $menuDetails);
+        $errno = $menuDetails['errno'] ?? 0;
+
+        return [
+            'errno' => $this->isSuccessfulErrno($errno) ? 0 : $errno,
+            'errmsg' => $menuDetails['errmsg'] ?? 'ok',
+            'data' => $snapshot,
+        ];
+    }
+
+    private function buildEmptyRemoteMenuSnapshot(People $provider): array
+    {
+        return [
+            'provider_id' => $provider->getId(),
+            'source' => '99food',
+            'summary' => [
+                'menus' => 0,
+                'categories' => 0,
+                'products' => 0,
+                'groups' => 0,
+                'options' => 0,
+            ],
+            'menus' => [],
+            'categories' => [],
+            'raw' => null,
+        ];
+    }
+
+    private function buildFood99RemoteMenuSnapshot(People $provider, array $menuDetails): array
+    {
+        $data = is_array($menuDetails['data'] ?? null) ? $menuDetails['data'] : [];
+        $menus = is_array($data['menus'] ?? null) ? $data['menus'] : [];
+        $categories = is_array($data['categories'] ?? null) ? $data['categories'] : [];
+        $items = is_array($data['items'] ?? null) ? $data['items'] : [];
+        $modifierGroups = is_array($data['modifier_groups'] ?? null) ? $data['modifier_groups'] : [];
+
+        $rawItemsById = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            foreach ($this->resolveFood99RemoteItemLookupIds($item) as $itemId) {
+                $rawItemsById[$itemId] = $item;
+            }
+        }
+
+        $groupsById = [];
+        foreach ($modifierGroups as $group) {
+            if (!is_array($group)) {
+                continue;
+            }
+
+            $groupId = $this->normalizeFood99RemoteId(
+                $group['app_modifier_group_id']
+                ?? $group['app_mg_id']
+                ?? $group['modifier_group_id']
+                ?? $group['mg_id']
+                ?? $group['id']
+                ?? null
+            );
+            if ($groupId === '') {
+                continue;
+            }
+
+            $options = [];
+            foreach ($this->resolveFood99RemoteOptions($group) as $option) {
+                $optionItemId = $this->resolveFood99RemoteOptionItemId($option);
+                $linkedItem = is_array($rawItemsById[$optionItemId] ?? null) ? $rawItemsById[$optionItemId] : [];
+                $localProduct = $this->resolveFood99LocalProductFallback($provider, $optionItemId);
+
+                $optionName = $this->resolveFood99RemoteOptionName($option, $linkedItem, $localProduct);
+
+                $options[] = [
+                    'id' => $optionItemId,
+                    'pdv_code' => $optionItemId,
+                    'name' => $optionName,
+                    'name_missing' => $optionName === '',
+                    'price' => $option['price'] ?? null,
+                    'status' => $option['status'] ?? null,
+                    'external_code' => $this->normalizeString(
+                        $option['app_external_id']
+                        ?? $option['mdu_id']
+                        ?? $option['sku']
+                        ?? $linkedItem['app_external_id']
+                        ?? $linkedItem['mdu_id']
+                        ?? $linkedItem['sku']
+                        ?? $localProduct['external_code']
+                        ?? null
+                    ),
+                    'resolved_from' => $linkedItem !== [] ? '99food_items' : ($localProduct !== [] ? 'local_product' : null),
+                    'raw' => $option,
+                ];
+            }
+
+            $groupsById[$groupId] = [
+                'id' => $groupId,
+                'name' => $this->normalizeString($group['modifier_group_name'] ?? $group['name'] ?? null),
+                'minimum' => $group['quantity_min_permitted'] ?? $group['min'] ?? null,
+                'maximum' => $group['quantity_max_permitted'] ?? $group['max'] ?? null,
+                'required' => isset($group['is_required']) ? (int) $group['is_required'] === 1 : null,
+                'options' => $options,
+                'raw' => $group,
+            ];
+        }
+
+        $itemsById = [];
+        $itemsByCategory = [];
+        $categorizedItemIds = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $normalizedItem = $this->normalizeFood99RemoteItem($item, $groupsById);
+            $itemId = $this->normalizeFood99RemoteId($normalizedItem['id'] ?? null);
+            if ($itemId !== '') {
+                $itemsById[$itemId] = $normalizedItem;
+            }
+
+            $categoryIds = $this->resolveFood99ItemCategoryIds($item);
+            foreach ($categoryIds as $categoryId) {
+                $itemsByCategory[$categoryId][] = $normalizedItem;
+                if ($itemId !== '') {
+                    $categorizedItemIds[$itemId] = true;
+                }
+            }
+        }
+
+        $normalizedCategories = [];
+        foreach ($categories as $category) {
+            if (!is_array($category)) {
+                continue;
+            }
+
+            $categoryId = $this->normalizeFood99RemoteId($category['app_category_id'] ?? $category['category_id'] ?? $category['id'] ?? null);
+            $categoryProducts = $itemsByCategory[$categoryId] ?? [];
+            foreach ($this->resolveFood99CategoryItemIds($category) as $itemId) {
+                if (isset($itemsById[$itemId])) {
+                    $categoryProducts[] = $itemsById[$itemId];
+                    $categorizedItemIds[$itemId] = true;
+                }
+            }
+
+            $normalizedCategories[] = [
+                'id' => $categoryId,
+                'name' => $this->normalizeString($category['category_name'] ?? $category['name'] ?? null),
+                'products' => $this->uniqueFood99RemoteProducts($categoryProducts),
+                'raw' => $category,
+            ];
+        }
+
+        $standaloneItems = array_values(array_filter(
+            $itemsById,
+            static fn(array $item): bool => !isset($categorizedItemIds[(string) ($item['id'] ?? '')])
+        ));
+        if ($standaloneItems !== []) {
+            $normalizedCategories[] = [
+                'id' => 'uncategorized',
+                'name' => 'Sem categoria',
+                'products' => $standaloneItems,
+                'raw' => null,
+            ];
+        }
+
+        return [
+            'provider_id' => $provider->getId(),
+            'source' => '99food',
+            'summary' => [
+                'menus' => count($menus),
+                'categories' => count($normalizedCategories),
+                'products' => count($items),
+                'groups' => count($groupsById),
+                'options' => array_sum(array_map(
+                    static fn(array $group): int => count($group['options'] ?? []),
+                    $groupsById
+                )),
+                'missing_option_names' => array_sum(array_map(
+                    static fn(array $group): int => count(array_filter(
+                        $group['options'] ?? [],
+                        static fn(array $option): bool => !empty($option['name_missing'])
+                    )),
+                    $groupsById
+                )),
+            ],
+            'menus' => array_values(array_filter(array_map(function (mixed $menu): ?array {
+                if (!is_array($menu)) {
+                    return null;
+                }
+
+                return [
+                    'id' => $this->normalizeFood99RemoteId($menu['app_menu_id'] ?? $menu['menu_id'] ?? $menu['id'] ?? null),
+                    'name' => $this->normalizeString($menu['menu_name'] ?? $menu['name'] ?? null),
+                    'raw' => $menu,
+                ];
+            }, $menus))),
+            'categories' => $normalizedCategories,
+            'raw' => $menuDetails,
+        ];
+    }
+
+    private function normalizeFood99RemoteItem(array $item, array $groupsById): array
+    {
+        $groupIds = $this->resolveFood99ItemModifierGroupIds($item);
+        $groups = [];
+        foreach ($groupIds as $groupId) {
+            if (isset($groupsById[$groupId])) {
+                $groups[] = $groupsById[$groupId];
+            }
+        }
+
+        return [
+            'id' => $this->normalizeFood99RemoteId($item['app_item_id'] ?? $item['item_id'] ?? $item['id'] ?? null),
+            'name' => $this->normalizeString($item['item_name'] ?? $item['name'] ?? $item['content_name'] ?? null),
+            'description' => $this->normalizeString($item['description'] ?? null),
+            'price' => $item['price'] ?? $item['sku_price'] ?? null,
+            'status' => $item['status'] ?? null,
+            'image' => $this->normalizeString($item['head_img'] ?? $item['image'] ?? null),
+            'external_code' => $this->normalizeString($item['app_external_id'] ?? $item['mdu_id'] ?? $item['sku'] ?? null),
+            'groups' => $groups,
+            'raw' => $item,
+        ];
+    }
+
+    private function resolveFood99LocalProductFallback(People $provider, string $optionItemId): array
+    {
+        if ($optionItemId === '') {
+            return [];
+        }
+
+        $productRepository = $this->entityManager->getRepository(Product::class);
+        $product = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $optionItemId,
+            Product::class
+        );
+
+        if ($product instanceof Product && !$this->food99ProductBelongsToProvider($product, $provider)) {
+            $product = null;
+        }
+
+        if (!$product instanceof Product && ctype_digit($optionItemId)) {
+            $product = $productRepository->find((int) $optionItemId);
+            if ($product instanceof Product && !$this->food99ProductBelongsToProvider($product, $provider)) {
+                $product = null;
+            }
+        }
+
+        if (!$product instanceof Product && ctype_digit($optionItemId) && method_exists($productRepository, 'findProductBySkuAsInteger')) {
+            $product = $productRepository->findProductBySkuAsInteger((int) $optionItemId, $provider);
+        }
+
+        if (!$product instanceof Product) {
+            return [];
+        }
+
+        return [
+            'name' => $product->getProduct(),
+            'external_code' => $product->getSku(),
+        ];
+    }
+
+    private function food99ProductBelongsToProvider(Product $product, People $provider): bool
+    {
+        $company = $product->getCompany();
+        if (!$company instanceof People || (int) $company->getId() !== (int) $provider->getId()) {
+            $productPeople = $this->entityManager->getRepository(ProductPeople::class)->findOneBy([
+                'product' => $product,
+                'people' => $provider,
+            ]);
+
+            return $productPeople instanceof ProductPeople;
+        }
+
+        return true;
+    }
+
+    private function resolveFood99ItemCategoryIds(array $item): array
+    {
+        $values = $item['app_category_ids'] ?? $item['category_ids'] ?? $item['categories'] ?? $item['app_category_id'] ?? null;
+
+        return $this->normalizeFood99RemoteIdList($values);
+    }
+
+    private function resolveFood99ItemModifierGroupIds(array $item): array
+    {
+        $values = $item['app_modifier_group_ids']
+            ?? $item['app_mg_ids']
+            ?? $item['modifier_group_ids']
+            ?? $item['modifier_groups']
+            ?? $item['app_modifier_group_id']
+            ?? $item['app_mg_id']
+            ?? null;
+
+        return $this->normalizeFood99RemoteIdList($values);
+    }
+
+    private function resolveFood99CategoryItemIds(array $category): array
+    {
+        $values = $category['app_item_ids'] ?? $category['item_ids'] ?? $category['items'] ?? null;
+
+        return $this->normalizeFood99RemoteIdList($values);
+    }
+
+    private function uniqueFood99RemoteProducts(array $products): array
+    {
+        $seen = [];
+        $unique = [];
+
+        foreach ($products as $product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $id = (string) ($product['id'] ?? '');
+            $key = $id !== '' ? $id : sha1(json_encode($product));
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $product;
+        }
+
+        return $unique;
+    }
+
+    private function resolveFood99RemoteOptions(array $group): array
+    {
+        foreach (['app_mg_items', 'items', 'options', 'modifier_items'] as $key) {
+            if (is_array($group[$key] ?? null)) {
+                return array_values(array_filter($group[$key], 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    private function resolveFood99RemoteItemLookupIds(array $item): array
+    {
+        $ids = [];
+        foreach ([
+            'app_item_id',
+            'item_id',
+            'id',
+            'app_external_id',
+            'external_code',
+            'mdu_id',
+            'sku',
+            'code',
+            'pdv_code',
+            'app_content_id',
+            'content_id',
+        ] as $key) {
+            $id = $this->normalizeFood99RemoteId($item[$key] ?? null);
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function resolveFood99RemoteOptionItemId(array $option): string
+    {
+        foreach ([
+            'app_item_id',
+            'app_mg_item_id',
+            'item_id',
+            'id',
+            'app_external_id',
+            'external_code',
+            'mdu_id',
+            'sku',
+            'code',
+            'pdv_code',
+            'app_content_id',
+            'content_id',
+        ] as $key) {
+            $id = $this->normalizeFood99RemoteId($option[$key] ?? null);
+            if ($id !== '') {
+                return $id;
+            }
+        }
+
+        return '';
+    }
+
+    private function resolveFood99RemoteOptionName(array $option, array $linkedItem, array $localProduct): string
+    {
+        foreach ([
+            $option['name'] ?? null,
+            $option['item_name'] ?? null,
+            $option['option_name'] ?? null,
+            $option['modifier_item_name'] ?? null,
+            $option['content_name'] ?? null,
+            $option['title'] ?? null,
+            $linkedItem['item_name'] ?? null,
+            $linkedItem['name'] ?? null,
+            $linkedItem['option_name'] ?? null,
+            $linkedItem['modifier_item_name'] ?? null,
+            $linkedItem['content_name'] ?? null,
+            $linkedItem['title'] ?? null,
+            $localProduct['name'] ?? null,
+        ] as $candidate) {
+            $name = $this->normalizeString($candidate);
+            if ($name !== '') {
+                return $name;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeFood99RemoteIdList(mixed $values): array
+    {
+        if ($values === null || $values === '') {
+            return [];
+        }
+
+        if (!is_array($values)) {
+            $values = [$values];
+        }
+
+        $ids = [];
+        foreach ($values as $value) {
+            if (is_array($value)) {
+                $value = $value['app_category_id']
+                    ?? $value['category_id']
+                    ?? $value['app_modifier_group_id']
+                    ?? $value['app_mg_id']
+                    ?? $value['modifier_group_id']
+                    ?? $value['id']
+                    ?? null;
+            }
+
+            $id = $this->normalizeFood99RemoteId($value);
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function normalizeFood99RemoteId(mixed $value): string
+    {
+        return $this->normalizeString($value);
     }
 
     public function fetchMenuProducts(People $provider, array $productIds = []): array

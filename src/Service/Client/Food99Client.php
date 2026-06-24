@@ -220,6 +220,11 @@ class Food99Client
         return $this->callStoreEndpointWithResponse('GET', '/v3/item/item/list', [], $provider);
     }
 
+    public function getStoreMenuDetailsForSnapshot(People $provider): ?array
+    {
+        return $this->callOpenApiEndpointWithResponse('GET', '/v3/item/item/list', [], $provider);
+    }
+
     public function updateMenuItem(People $provider, array $payload): ?array
     {
         return $this->callStoreEndpointWithResponse('POST', '/v3/item/item/updateItem', $payload, $provider);

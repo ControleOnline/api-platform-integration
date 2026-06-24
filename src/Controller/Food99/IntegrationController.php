@@ -1772,6 +1772,44 @@ class IntegrationController extends AbstractController
         return new JsonResponse($preview, $statusCode);
     }
 
+    #[Route('/marketplace/integrations/99food/menu/import', name: 'marketplace_integrations_food99_menu_import', methods: ['POST'])]
+    public function importRemoteMenu(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        try {
+            $result = $this->food99Service->importRemoteMenuSnapshot($provider);
+
+            return new JsonResponse([
+                'provider_id' => $provider->getId(),
+                'result' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            self::$logger->error('Food99 remote menu import endpoint error', [
+                'provider_id' => $provider->getId(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return new JsonResponse([
+                'provider_id' => $provider->getId(),
+                'result' => [
+                    'errno' => 10001,
+                    'errmsg' => 'Nao foi possivel ler o cardapio remoto da 99Food.',
+                    'data' => null,
+                ],
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
     #[Route('/marketplace/integrations/99food/menu/upload', name: 'marketplace_integrations_food99_menu_upload', methods: ['POST'])]
     public function uploadMenu(Request $request): JsonResponse
     {
