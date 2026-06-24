@@ -91,9 +91,9 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         );
     }
 
-    private function isAuthAvailable(): bool
+    private function isAuthAvailable(?People $provider = null): bool
     {
-        return $this->ifoodClient->isAuthAvailable();
+        return $this->ifoodClient->isAuthAvailable($provider);
     }
 
     /* Catalog v2                                                          */
@@ -1149,6 +1149,343 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
 
     /* --- catálogo v2 helpers ------------------------------------------ */
 
+    public function importRemoteMenuSnapshot(People $provider): array
+    {
+        $this->init();
+
+        $state = $this->getStoredIntegrationState($provider);
+        $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
+        if ($merchantId === '') {
+            return [
+                'errno' => 10002,
+                'errmsg' => 'Loja iFood nao conectada.',
+                'data' => $this->buildEmptyIfoodRemoteMenuSnapshot($provider),
+            ];
+        }
+
+        if (!$this->isAuthAvailable($provider)) {
+            return [
+                'errno' => 10003,
+                'errmsg' => 'Autenticacao iFood indisponivel.',
+                'data' => $this->buildEmptyIfoodRemoteMenuSnapshot($provider, $merchantId),
+            ];
+        }
+
+        $catalogs = $this->fetchIfoodCatalogsV2($provider, $merchantId);
+        $catalogId = $this->resolveIfoodCatalogIdFromList($catalogs);
+        if ($catalogId === '') {
+            return [
+                'errno' => 10004,
+                'errmsg' => 'Nenhum catalogo iFood encontrado para a loja.',
+                'data' => $this->buildEmptyIfoodRemoteMenuSnapshot($provider, $merchantId, $catalogs),
+            ];
+        }
+
+        $categories = $this->fetchIfoodCatalogCategoriesWithItemsV2($provider, $merchantId, $catalogId);
+        $flatByItemId = [];
+        foreach ($categories as $category) {
+            foreach ($this->extractIfoodCategoryItems($category) as $item) {
+                $itemId = $this->normalizeString($item['id'] ?? $item['itemId'] ?? null);
+                if ($itemId === '' || isset($flatByItemId[$itemId])) {
+                    continue;
+                }
+
+                $flatByItemId[$itemId] = $this->fetchIfoodCatalogItemFlatV2($merchantId, $itemId, $provider);
+            }
+        }
+
+        return [
+            'errno' => 0,
+            'errmsg' => 'ok',
+            'data' => $this->buildIfoodRemoteMenuSnapshot($provider, $merchantId, $catalogs, $catalogId, $categories, $flatByItemId),
+        ];
+    }
+
+    private function buildEmptyIfoodRemoteMenuSnapshot(People $provider, ?string $merchantId = null, array $catalogs = []): array
+    {
+        return [
+            'provider_id' => $provider->getId(),
+            'source' => 'ifood',
+            'merchant_id' => $merchantId,
+            'catalog_id' => null,
+            'summary' => [
+                'catalogs' => count($catalogs),
+                'categories' => 0,
+                'products' => 0,
+                'groups' => 0,
+                'options' => 0,
+            ],
+            'catalogs' => $catalogs,
+            'categories' => [],
+            'raw' => [
+                'catalogs' => $catalogs,
+                'categories' => [],
+                'items_flat' => [],
+            ],
+        ];
+    }
+
+    private function buildIfoodRemoteMenuSnapshot(
+        People $provider,
+        string $merchantId,
+        array $catalogs,
+        string $catalogId,
+        array $categories,
+        array $flatByItemId
+    ): array {
+        $normalizedCategories = [];
+        $productCount = 0;
+        $groupCount = 0;
+        $optionCount = 0;
+
+        foreach ($categories as $category) {
+            if (!is_array($category)) {
+                continue;
+            }
+
+            $products = [];
+            foreach ($this->extractIfoodCategoryItems($category) as $item) {
+                $itemId = $this->normalizeString($item['id'] ?? $item['itemId'] ?? null);
+                $flat = is_array($flatByItemId[$itemId] ?? null) ? $flatByItemId[$itemId] : null;
+                $groups = $this->normalizeIfoodRemoteGroups($flat);
+                $groupCount += count($groups);
+                foreach ($groups as $group) {
+                    $optionCount += count($group['options'] ?? []);
+                }
+
+                $products[] = [
+                    'id' => $itemId,
+                    'name' => $this->normalizeString($item['name'] ?? $flat['name'] ?? null),
+                    'description' => $this->normalizeString($item['description'] ?? $flat['description'] ?? null),
+                    'price' => $item['price'] ?? $flat['price'] ?? null,
+                    'status' => $item['status'] ?? $flat['status'] ?? null,
+                    'image' => $this->normalizeString($item['imagePath'] ?? $item['image'] ?? $flat['imagePath'] ?? null),
+                    'external_code' => $this->normalizeString($item['externalCode'] ?? $flat['externalCode'] ?? null),
+                    'groups' => $groups,
+                    'raw' => [
+                        'category_item' => $item,
+                        'flat' => $flat,
+                    ],
+                ];
+            }
+
+            $productCount += count($products);
+            $normalizedCategories[] = [
+                'id' => $this->normalizeString($category['id'] ?? $category['categoryId'] ?? null),
+                'name' => $this->normalizeString($category['name'] ?? null),
+                'products' => $products,
+                'raw' => $category,
+            ];
+        }
+
+        return [
+            'provider_id' => $provider->getId(),
+            'source' => 'ifood',
+            'merchant_id' => $merchantId,
+            'catalog_id' => $catalogId,
+            'summary' => [
+                'catalogs' => count($catalogs),
+                'categories' => count($normalizedCategories),
+                'products' => $productCount,
+                'groups' => $groupCount,
+                'options' => $optionCount,
+            ],
+            'catalogs' => $catalogs,
+            'categories' => $normalizedCategories,
+            'raw' => [
+                'catalogs' => $catalogs,
+                'categories' => $categories,
+                'items_flat' => $flatByItemId,
+            ],
+        ];
+    }
+
+    private function normalizeIfoodRemoteGroups(?array $flat): array
+    {
+        if (!is_array($flat)) {
+            return [];
+        }
+
+        $flatOptionsById = [];
+        foreach ($this->extractIfoodFlatOptions($flat) as $option) {
+            $optionId = $this->normalizeString($option['id'] ?? $option['optionId'] ?? null);
+            if ($optionId !== '') {
+                $flatOptionsById[$optionId] = $option;
+            }
+        }
+
+        $flatProductsById = [];
+        foreach ($this->extractIfoodFlatProducts($flat) as $product) {
+            $productId = $this->normalizeString($product['id'] ?? $product['productId'] ?? null);
+            if ($productId !== '') {
+                $flatProductsById[$productId] = $product;
+            }
+        }
+
+        $groups = [];
+        foreach ($this->extractIfoodFlatGroups($flat) as $group) {
+            $options = [];
+            foreach ($this->extractIfoodGroupOptions($group, $flatOptionsById) as $option) {
+                $productId = $this->normalizeString($option['productId'] ?? $option['product_id'] ?? null);
+                $linkedProduct = is_array($flatProductsById[$productId] ?? null) ? $flatProductsById[$productId] : [];
+
+                $options[] = [
+                    'id' => $this->normalizeString($option['id'] ?? $option['optionId'] ?? null),
+                    'name' => $this->normalizeString($option['name'] ?? $linkedProduct['name'] ?? null),
+                    'price' => $this->normalizeIfoodRemotePrice($option['price'] ?? null),
+                    'status' => $option['status'] ?? null,
+                    'external_code' => $this->normalizeString($option['externalCode'] ?? $linkedProduct['externalCode'] ?? null),
+                    'product_id' => $productId !== '' ? $productId : null,
+                    'raw' => $option,
+                ];
+            }
+
+            $groups[] = [
+                'id' => $this->normalizeString($group['id'] ?? $group['groupId'] ?? null),
+                'name' => $this->normalizeString($group['name'] ?? null),
+                'minimum' => $group['min'] ?? $group['minimum'] ?? $group['minPermitted'] ?? null,
+                'maximum' => $group['max'] ?? $group['maximum'] ?? $group['maxPermitted'] ?? null,
+                'required' => $group['required'] ?? null,
+                'options' => $options,
+                'raw' => $group,
+            ];
+        }
+
+        return $groups;
+    }
+
+    private function normalizeIfoodRemotePrice(mixed $price): mixed
+    {
+        if (is_array($price)) {
+            return $price['value'] ?? $price['originalValue'] ?? null;
+        }
+
+        return $price;
+    }
+
+    private function extractIfoodCategoryItems(array $category): array
+    {
+        foreach (['items', 'products'] as $key) {
+            if (is_array($category[$key] ?? null)) {
+                return array_values(array_filter($category[$key], 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    private function extractIfoodFlatGroups(array $flat): array
+    {
+        foreach (['optionGroups', 'groups', 'modifierGroups', 'optionsGroups'] as $key) {
+            if (is_array($flat[$key] ?? null)) {
+                return array_values(array_filter($flat[$key], 'is_array'));
+            }
+        }
+
+        if (is_array($flat['product']['optionGroups'] ?? null)) {
+            return array_values(array_filter($flat['product']['optionGroups'], 'is_array'));
+        }
+
+        return [];
+    }
+
+    private function extractIfoodFlatOptions(array $flat): array
+    {
+        foreach (['options', 'itemsOptions'] as $key) {
+            if (is_array($flat[$key] ?? null)) {
+                return array_values(array_filter($flat[$key], 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    private function extractIfoodFlatProducts(array $flat): array
+    {
+        foreach (['products', 'optionProducts'] as $key) {
+            if (is_array($flat[$key] ?? null)) {
+                return array_values(array_filter($flat[$key], 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    private function extractIfoodGroupOptions(array $group, array $flatOptionsById = []): array
+    {
+        foreach (['options', 'items', 'products'] as $key) {
+            if (is_array($group[$key] ?? null)) {
+                return array_values(array_filter($group[$key], 'is_array'));
+            }
+        }
+
+        $options = [];
+        if (is_array($group['optionIds'] ?? null)) {
+            foreach ($group['optionIds'] as $optionId) {
+                $normalizedOptionId = $this->normalizeString($optionId);
+                if ($normalizedOptionId !== '' && is_array($flatOptionsById[$normalizedOptionId] ?? null)) {
+                    $options[] = $flatOptionsById[$normalizedOptionId];
+                }
+            }
+        }
+
+        if ($options !== []) {
+            return $options;
+        }
+
+        return [];
+    }
+
+    private function fetchIfoodCatalogsV2(People $provider, string $merchantId): array
+    {
+        try {
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs', [], $provider);
+            if ($response->getStatusCode() !== 200) {
+                return [];
+            }
+
+            $catalogs = $response->toArray(false);
+            return is_array($catalogs) ? $catalogs : [];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood catalog v2 list failed', ['merchant_id' => $merchantId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    private function resolveIfoodCatalogIdFromList(array $catalogs): string
+    {
+        foreach ($catalogs as $catalog) {
+            if (!is_array($catalog)) {
+                continue;
+            }
+
+            $id = $this->normalizeString($catalog['catalogId'] ?? $catalog['id'] ?? null);
+            if ($id !== '') {
+                return $id;
+            }
+        }
+
+        return '';
+    }
+
+    private function fetchIfoodCatalogCategoriesWithItemsV2(People $provider, string $merchantId, string $catalogId): array
+    {
+        try {
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/catalogs/' . rawurlencode($catalogId) . '/categories', [
+                'query' => ['includeItems' => 'true'],
+            ], $provider);
+            if ($response->getStatusCode() !== 200) {
+                return [];
+            }
+
+            $categories = $response->toArray(false);
+            return is_array($categories) ? $categories : [];
+        } catch (\Throwable $e) {
+            self::$logger->error('iFood catalog v2 categories fetch failed', ['merchant_id' => $merchantId, 'catalog_id' => $catalogId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
     private function fetchIfoodDefaultCatalogId(string $merchantId): ?string
     {
         if (!$this->isAuthAvailable()) return null;
@@ -1195,13 +1532,13 @@ class IfoodCatalogOperationsService extends AbstractMarketplaceService
         }
     }
 
-    private function fetchIfoodCatalogItemFlatV2(string $merchantId, string $itemId): ?array
+    private function fetchIfoodCatalogItemFlatV2(string $merchantId, string $itemId, ?People $provider = null): ?array
     {
         $normalizedItemId = $this->normalizeString($itemId);
-        if (!$this->isAuthAvailable() || $normalizedItemId === '') return null;
+        if (!$this->isAuthAvailable($provider) || $normalizedItemId === '') return null;
 
         try {
-            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/items/' . rawurlencode($normalizedItemId) . '/flat');
+            $response = $this->ifoodClient->requestCatalogEndpoint('GET', $merchantId, '/items/' . rawurlencode($normalizedItemId) . '/flat', [], $provider);
 
             if ($response->getStatusCode() !== 200) return null;
             $item = $response->toArray(false);

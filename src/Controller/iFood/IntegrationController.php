@@ -1586,6 +1586,36 @@ class IntegrationController extends AbstractController
         ));
     }
 
+    #[Route('/marketplace/integrations/ifood/menu/import', name: 'marketplace_integrations_ifood_menu_import', methods: ['POST'])]
+    public function importRemoteMenu(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerNotFound();
+        }
+
+        try {
+            $result = $this->iFoodService->importRemoteMenuSnapshot($provider);
+        } catch (\Throwable $e) {
+            $result = [
+                'errno' => 10001,
+                'errmsg' => 'Nao foi possivel ler o cardapio remoto do iFood.',
+                'data' => null,
+            ];
+        }
+
+        return new JsonResponse(array_merge(
+            $this->buildProviderIntegrationDetail($provider, false),
+            ['action' => 'menu_import', 'result' => $result]
+        ));
+    }
+
     #[Route('/marketplace/integrations/ifood/menu/item/price', name: 'marketplace_integrations_ifood_menu_item_price', methods: ['PATCH'])]
     public function updateMenuItemPrice(Request $request): JsonResponse
     {
