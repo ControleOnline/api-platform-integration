@@ -2790,7 +2790,6 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         ]);
 
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
-            $order->getClient(),
             $postalCode,
             $streetNumberPayload['street_number'] ?? null,
             $streetName !== '' ? $streetName : 'Endereço não informado',
@@ -2798,6 +2797,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $city !== '' ? $city : 'Sem cidade',
             $stateCode !== '' ? $stateCode : 'NI',
             $countryCode,
+            $order->getClient(),
             $streetNumberPayload['complement'] ?? '',
             (int) round($latitude),
             (int) round($longitude),

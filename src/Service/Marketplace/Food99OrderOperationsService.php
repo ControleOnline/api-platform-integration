@@ -3852,7 +3852,6 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $addr = $this->addressService->discoveryAddress(
-            $order->getClient(),
             $postalCode,
             $address['street_number'] ?? null,
             $address['street_name'] ?? null,
@@ -3860,6 +3859,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $address['city'] ?? null,
             $address['state'] ?? null,
             $address['country_code'] ?? null,
+            $order->getClient(),
             $address['complement'] ?? null,
             $address['poi_lat'] ?? 0,
             $address['poi_lng'] ?? 0
