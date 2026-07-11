@@ -169,6 +169,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         $service->storedIntegrationState = [
             'biz_status' => 1,
             'sub_biz_status' => 1,
+            'online' => 1,
         ];
 
         $this->setObjectProperty(DefaultFoodService::class, $service, 'food99Client', new FakeFood99Client());
@@ -178,7 +179,7 @@ final class Food99StoreOperationsServiceTest extends TestCase
         self::assertSame(0, $response['errno']);
         self::assertCount(1, $service->capturedEvents);
         self::assertSame('store.closed', $service->capturedEvents[0][1][0]['event']);
-        self::assertSame('Mercado Central foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
+        self::assertSame('MERCADO CENTRAL foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
         self::assertSame('Fechada', $service->capturedEvents[0][1][0]['notificationStatusLabel']);
     }
 
@@ -362,7 +363,7 @@ final class FakeFood99Client extends Food99Client
     {
     }
 
-    public function callAppEndpointWithResponse(string $method, string $uri, array $payload = []): ?array
+    public function callAppEndpointWithResponse(string $method, string $uri, array $payload = [], ?People $provider = null): ?array
     {
         $this->appCalls[] = [
             'method' => $method,
