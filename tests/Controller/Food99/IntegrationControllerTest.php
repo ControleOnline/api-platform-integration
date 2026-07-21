@@ -18,6 +18,119 @@ use Symfony\Component\HttpFoundation\Request;
 
 final class IntegrationControllerTest extends TestCase
 {
+    public function testIntegrationIndexKeepsIfoodVisibleWhenFood99CatalogFails(): void
+    {
+        $provider = new class extends People {
+            public function getId(): ?int
+            {
+                return 2;
+            }
+        };
+
+        $repository = $this->createMock(\Doctrine\ORM\EntityRepository::class);
+        $repository->method('find')->with(2)->willReturn($provider);
+
+        $manager = $this->createMock(EntityManagerInterface::class);
+        $manager->method('getRepository')->with(People::class)->willReturn($repository);
+
+        $loggerService = $this->createStub(LoggerService::class);
+        $loggerService->method('getLogger')->willReturn(new NullLogger());
+
+        $security = $this->createStub(\Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface::class);
+        $token = $this->createStub(\Symfony\Component\Security\Core\Authentication\Token\TokenInterface::class);
+        $token->method('getUser')->willReturn(
+            new class($provider) implements \Symfony\Component\Security\Core\User\UserInterface {
+                public function __construct(private People $provider) {}
+
+                public function getUserIdentifier(): string
+                {
+                    return 'marketplace-user';
+                }
+
+                public function getRoles(): array
+                {
+                    return ['ROLE_HUMAN'];
+                }
+
+                public function eraseCredentials(): void
+                {
+                }
+
+                public function getPeople(): People
+                {
+                    return $this->provider;
+                }
+            }
+        );
+        $security->method('getToken')->willReturn($token);
+
+        $food99Service = $this->createMock(Food99Service::class);
+        $food99Service
+            ->expects(self::once())
+            ->method('__call')
+            ->with('listSelectableMenuProducts', [$provider])
+            ->willThrowException(new \RuntimeException("Unknown column 'p.id' in 'on clause'"));
+
+        $ifoodService = $this->createMock(iFoodService::class);
+        $ifoodService
+            ->expects(self::atLeastOnce())
+            ->method('getStoredIntegrationState')
+            ->with($provider)
+            ->willReturn([
+                'connected' => true,
+                'remote_connected' => true,
+                'merchant_id' => 'merchant-test',
+                'merchant_status' => 'AVAILABLE',
+            ]);
+        $ifoodService
+            ->expects(self::once())
+            ->method('__call')
+            ->with('countEligibleProducts', [$provider])
+            ->willReturn(88);
+
+        $companyStatus = $this->createStub(CompanyIntegrationStatusService::class);
+        $companyStatus->method('listCompanyIntegrations')->willReturn([]);
+
+        $hydrator = $this->createStub(HydratorService::class);
+        $hydrator->method('result')->willReturnCallback(static fn(array $result): array => $result);
+
+        $requestPayloadService = $this->createStub(RequestPayloadService::class);
+        $requestPayloadService->method('normalizeOptionalNumericId')
+            ->willReturnCallback(static fn(mixed $value): ?int => is_numeric($value) ? (int) $value : null);
+
+        $controller = new IntegrationController(
+            $manager,
+            $loggerService,
+            $security,
+            $this->createStub(PeopleService::class),
+            $food99Service,
+            $ifoodService,
+            $companyStatus,
+            $hydrator,
+            $requestPayloadService,
+        );
+
+        $response = $controller->listIntegrations(Request::create(
+            '/marketplace/integrations?provider_id=2',
+            'GET',
+            ['provider_id' => 2]
+        ));
+        $payload = json_decode((string) $response->getContent(), true);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('99food', $payload[0]['key']);
+        self::assertFalse($payload[0]['connected']);
+        self::assertSame(
+            'Não foi possível carregar os dados da integração 99Food.',
+            $payload[0]['store_error']
+        );
+        self::assertSame('ifood', $payload[1]['key']);
+        self::assertTrue($payload[1]['connected']);
+        self::assertSame(88, $payload[1]['eligible_product_count']);
+        self::assertSame('merchant-test', $payload[1]['merchant_id']);
+        self::assertNull($payload[1]['store_error']);
+    }
+
     public function testAuthorizationPageFallsBackToMerchantManagerOverview(): void
     {
         $provider = new class extends People {

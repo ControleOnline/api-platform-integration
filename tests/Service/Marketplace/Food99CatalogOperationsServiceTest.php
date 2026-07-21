@@ -9,10 +9,63 @@ use ControleOnline\Service\ExtraDataService;
 use ControleOnline\Service\DomainService;
 use ControleOnline\Service\Marketplace\Food99CatalogOperationsService;
 use ControleOnline\Service\Marketplace\Food99StoreOperationsService;
+use Doctrine\DBAL\Connection;
+use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
 
 final class Food99CatalogOperationsServiceTest extends TestCase
 {
+    public function testFetchMenuProductsDoesNotCorrelateOuterProductAliasInsideJoinSubqueries(): void
+    {
+        $connection = $this->createMock(Connection::class);
+        $connection
+            ->expects(self::once())
+            ->method('fetchAllAssociative')
+            ->with(
+                self::callback(function (string $sql): bool {
+                    $normalizedSql = preg_replace('/\s+/', ' ', trim($sql));
+
+                    self::assertDoesNotMatchRegularExpression(
+                        '/LEFT JOIN product_category pc ON pc\.id = \(.*?WHERE pc2\.product_id = p\.id.*?\)/',
+                        $normalizedSql,
+                        'The category JOIN must not reference the outer p alias from its scalar subquery.'
+                    );
+                    self::assertDoesNotMatchRegularExpression(
+                        '/LEFT JOIN product_file pf ON pf\.id = \(.*?WHERE pf2\.product_id = p\.id.*?\)/',
+                        $normalizedSql,
+                        'The product-file JOIN must not reference the outer p alias from its scalar subquery.'
+                    );
+                    self::assertStringNotContainsString(
+                        'ON pg_parent_req.product_group_id = pg_req.id AND pg_parent_req.parent_product_id = p.id',
+                        $normalizedSql,
+                        'The modifier EXISTS must correlate the outer p alias from its WHERE clause.'
+                    );
+                    self::assertStringContainsString(
+                        'WHERE pg_req.active = 1 AND pgp_req.active = 1 AND child_req.active = 1 AND pg_parent_req.parent_product_id = p.id',
+                        $normalizedSql
+                    );
+
+                    return true;
+                }),
+                self::callback(static fn(array $params): bool => ($params['providerId'] ?? null) === 2)
+            )
+            ->willReturn([]);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager
+            ->expects(self::once())
+            ->method('getConnection')
+            ->willReturn($connection);
+
+        $service = (new \ReflectionClass(Food99CatalogOperationsService::class))->newInstanceWithoutConstructor();
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'entityManager', $entityManager);
+
+        $provider = new People();
+        $this->setEntityId($provider, 2);
+
+        self::assertSame([], $service->fetchMenuProducts($provider));
+    }
+
     public function testCatalogMenuTaskHelpersDelegateToStoreService(): void
     {
         $storeService = new class extends Food99StoreOperationsService {

@@ -900,7 +900,6 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
                     FROM product_group pg_req
                     INNER JOIN product_group_parent pg_parent_req
                         ON pg_parent_req.product_group_id = pg_req.id
-                       AND pg_parent_req.parent_product_id = p.id
                        AND pg_parent_req.active = 1
                     INNER JOIN product_group_product pgp_req
                         ON pgp_req.product_group_id = pg_req.id
@@ -909,24 +908,27 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
                     WHERE pg_req.active = 1
                       AND pgp_req.active = 1
                       AND child_req.active = 1
+                      AND pg_parent_req.parent_product_id = p.id
                       AND pgp_req.product_type IN ('component', 'package')
                       AND COALESCE(pg_req.required, 0) = 1
                       AND COALESCE(pg_req.minimum, 0) >= 1
                 ) THEN 1 ELSE 0 END AS has_required_modifiers
             FROM product p
-            LEFT JOIN product_category pc ON pc.id = (
-                SELECT MIN(pc2.id)
+            LEFT JOIN (
+                SELECT pc2.product_id, MIN(pc2.id) AS product_category_id
                 FROM product_category pc2
                 INNER JOIN category c2 ON c2.id = pc2.category_id
-                WHERE pc2.product_id = p.id
-                  AND c2.context = 'products'
-            )
+                WHERE c2.context = 'products'
+                GROUP BY pc2.product_id
+            ) pc_first ON pc_first.product_id = p.id
+            LEFT JOIN product_category pc ON pc.id = pc_first.product_category_id
             LEFT JOIN category c ON c.id = pc.category_id
-            LEFT JOIN product_file pf ON pf.id = (
-                SELECT MIN(pf2.id)
+            LEFT JOIN (
+                SELECT pf2.product_id, MIN(pf2.id) AS product_file_id
                 FROM product_file pf2
-                WHERE pf2.product_id = p.id
-            )
+                GROUP BY pf2.product_id
+            ) pf_first ON pf_first.product_id = p.id
+            LEFT JOIN product_file pf ON pf.id = pf_first.product_file_id
             LEFT JOIN extra_fields ef
                 ON ef.context = :food99Context
                AND ef.field_name = :codeFieldName
