@@ -42,6 +42,7 @@ use Symfony\Contracts\Service\Attribute\Required;
  *   - Food99 is the reference consumer of the shared marketplace lifecycle helpers.
  *   - Delivery sync and action persistence must converge to the canonical local statuses open, preparing, ready, way, and closed.
  *   - Do not invent Food99-only status aliases or bypass the shared lifecycle contract.
+ *   - Canceled order transitions must also emit the shared order.canceled manager push event after persistence.
  */
 
 class Food99OrderOperationsService extends AbstractMarketplaceService
@@ -1527,8 +1528,11 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $this->extractOrderDeliveryStatus($json)
         );
 
+        $shouldBroadcastCancellation = false;
         if ($isCanceled) {
+            $wasCanceled = $this->isOrderInCanceledState($order);
             $this->applyLocalCanceledStatus($order);
+            $shouldBroadcastCancellation = !$wasCanceled && $this->isOrderInCanceledState($order);
         } elseif ($isClosed) {
             $this->applyLocalClosedStatus($order);
         } else {
@@ -1536,6 +1540,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $this->entityManager->flush();
+
+        if ($shouldBroadcastCancellation) {
+            $this->broadcastOrderCancellationManagerPush(
+                $order,
+                $integrationState['cancel_reason'] ?? null
+            );
+        }
 
         return $order;
     }
@@ -3396,8 +3407,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             'message' => $confirmResult['errmsg'] ?? null,
         ]);
 
+        $wasCanceled = $this->isOrderInCanceledState($order);
         $this->applyLocalCanceledStatus($order);
         $this->entityManager->flush();
+
+        if (!$wasCanceled && $this->isOrderInCanceledState($order)) {
+            $this->broadcastOrderCancellationManagerPush($order);
+        }
 
         return true;
     }
@@ -3836,7 +3852,6 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         }
 
         $addr = $this->addressService->discoveryAddress(
-            $order->getClient(),
             $postalCode,
             $address['street_number'] ?? null,
             $address['street_name'] ?? null,
@@ -3844,6 +3859,7 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $address['city'] ?? null,
             $address['state'] ?? null,
             $address['country_code'] ?? null,
+            $order->getClient(),
             $address['complement'] ?? null,
             $address['poi_lat'] ?? 0,
             $address['poi_lng'] ?? 0

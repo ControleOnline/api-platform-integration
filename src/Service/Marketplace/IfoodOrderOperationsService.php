@@ -50,6 +50,7 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *   - The local order lifecycle must stay aligned with Food99: use the shared status contract for confirm/preparing, rider pickup/way, and delivered/closed transitions.
  *   - iFood must not invent its own local lifecycle aliases; every action must route through the shared marketplace lifecycle helpers from DefaultFoodService.
  *   - Do not add endpoint/base-url/token ownership here.
+ *   - The remote iFood order identifier for actions must come from canonical `extra_data` fields `id` and `code`; do not fall back to `otherInformations`.
  */
 class IfoodOrderOperationsService extends AbstractMarketplaceService
 {
@@ -191,7 +192,7 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
                 $orderId = trim((string) ($candidates[0]['value'] ?? ''));
             }
         } catch (\Throwable $e) {
-            self::$logger?->warning('iFood order remote id lookup via extraDataService failed, using fallback state', [
+            self::$logger?->warning('iFood order remote id lookup via extraDataService failed', [
                 'local_order_id' => $order->getId(),
                 'error' => $e->getMessage(),
             ]);
@@ -199,17 +200,6 @@ class IfoodOrderOperationsService extends AbstractMarketplaceService
 
         if ($orderId !== '') {
             return $orderId;
-        }
-
-        $storedState = $this->getStoredOrderIntegrationState($order);
-        $orderId = $this->normalizeString($storedState['ifood_id'] ?? null);
-        if ($orderId !== '') {
-            return $orderId;
-        }
-
-        $orderCode = $this->normalizeString($storedState['ifood_code'] ?? null);
-        if ($orderCode !== '') {
-            return $orderCode;
         }
 
         return null;

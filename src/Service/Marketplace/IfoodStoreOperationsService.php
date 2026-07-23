@@ -49,6 +49,7 @@ use Symfony\Contracts\Service\Attribute\Required;
  *   - Store ids, operational state, and order snapshots are materialized, not inferred by reflection.
  *   - Do not reintroduce service-owned endpoint URLs, token helpers, or raw Authorization header logic.
  *   - Keep extra_data limited to ids/codes/state fields that have no better canonical home.
+ *   - Manual open/close actions and syncIntegrationState must emit the same store.opened/store.closed manager notification as the webhook path.
  */
 class IfoodStoreOperationsService extends AbstractMarketplaceService
 {
@@ -256,11 +257,17 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         );
     }
 
-    private function resolveOrderDetailsFromEvent(string $orderId, array $event, ?Order $order = null): array
+    private function resolveOrderDetailsFromEvent(
+        string $orderId,
+        array $event,
+        ?Order $order = null,
+        ?People $provider = null
+    ): array
     {
         $eventOrderDetails = is_array($event['order'] ?? null) ? $event['order'] : [];
         $storedOrderDetails = [];
         $otherInformations = [];
+        $provider = $provider ?? ($order instanceof Order ? $order->getProvider() : null);
 
         if ($order instanceof Order) {
             $otherInformations = $this->getDecodedOrderOtherInformations($order);
@@ -277,7 +284,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         } elseif ($storedOrderDetails !== []) {
             $orderDetails = $storedOrderDetails;
         } else {
-            $fetchedOrderDetails = $this->fetchOrderDetails($orderId);
+            $fetchedOrderDetails = $this->fetchOrderDetails($orderId, $provider);
             $orderDetails = is_array($fetchedOrderDetails) ? $fetchedOrderDetails : [];
         }
 
@@ -485,10 +492,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return $normalized;
     }
 
-    private function listMerchantsRaw(): array
+    private function listMerchantsRaw(?People $provider = null): array
     {
         $this->init();
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return [
                 'errno' => 10001,
                 'errmsg' => 'Token iFood indisponivel',
@@ -500,7 +507,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants');
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants', [], $provider);
 
             $statusCode = $response->getStatusCode();
             $content = $response->getContent(false);
@@ -555,10 +562,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
      * Retorna detalhe completo da loja incluindo o campo "status" (AVAILABLE, UNAVAILABLE, etc.)
      * que o endpoint de listagem nao inclui.
      */
-    private function getMerchantDetailRaw(string $merchantId): array
+    private function getMerchantDetailRaw(string $merchantId, ?People $provider = null): array
     {
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId));
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId), [], $provider);
             $statusCode = $response->getStatusCode();
             $content    = (string) $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -584,11 +591,11 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $detail = $this->getMerchantDetailRaw($merchantId);
+        $detail = $this->getMerchantDetailRaw($merchantId, $provider);
         if ((int) ($detail['errno'] ?? 1) !== 0 || !is_array($detail['data'] ?? null)) {
             return [
                 'errno' => (int) ($detail['errno'] ?? 1),
@@ -604,16 +611,16 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         ];
     }
 
-    public function listMerchants(): array
+    public function listMerchants(?People $provider = null): array
     {
-        return $this->listMerchantsRaw();
+        return $this->listMerchantsRaw($provider);
     }
 
-    public function isAuthAvailable(): bool
+    public function isAuthAvailable(?People $provider = null): bool
     {
         $this->init();
 
-        return $this->ifoodClient->isAuthAvailable();
+        return $this->ifoodClient->isAuthAvailable($provider);
     }
 
     public function countEligibleProducts(People $provider): int
@@ -673,7 +680,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'last_sync_at' => $context['last_sync_at'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_sync_at'),
             'last_error_code' => $context['last_error_code'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_error_code'),
             'last_error_message' => $context['last_error_message'] ?? $this->getIfoodExtraDataValue('People', $providerId, 'last_error_message'),
-            'auth_available' => $includeAuthCheck ? $this->isAuthAvailable() : null,
+            'auth_available' => $includeAuthCheck ? $this->isAuthAvailable($provider) : null,
         ];
     }
 
@@ -700,10 +707,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'source_address_destination' => get_debug_type($sourceOrder->getAddressDestination()),
         ]);
 
-        $dropoffAddress = $this->resolveAddressCandidate($order->getAddressDestination());
-        if (!$dropoffAddress instanceof Address) {
-            $dropoffAddress = $this->resolveAddressCandidate($sourceOrder->getAddressDestination());
-        }
+        $pickupAddress = $this->resolveIfoodQuotePickupAddress($order, $sourceOrder);
+        $dropoffAddress = $this->resolveIfoodQuoteDropoffAddress($order, $sourceOrder);
         self::$logger?->info('iFood quote dropoff resolution', [
             'quote_order_id' => $order->getId(),
             'resolved_dropoff_type' => get_debug_type($dropoffAddress),
@@ -1103,11 +1108,11 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/status');
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/status', [], $provider);
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -1147,7 +1152,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             }
 
             /* Obtém interrupções ativas */
-            $interruptions = $this->listInterruptionsRaw($merchantId);
+            $interruptions = $this->listInterruptionsRaw($merchantId, $provider);
 
             return [
                 'errno'  => 0,
@@ -1268,51 +1273,19 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         return null;
     }
 
-    private function syncStoreStatusWebhook(array $event, ?Integration $integration = null): void
-    {
-        $merchantId = $this->resolveWebhookMerchantId($event);
-        if ($merchantId === '') {
-            self::$logger->warning('iFood store status webhook ignored because merchantId is missing', [
-                'integration_id' => $integration?->getId(),
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
-        $provider = $this->extraDataService->getEntityByExtraData(
-            self::APP_CONTEXT,
-            'code',
-            $merchantId,
-            People::class
-        );
-        if (!$provider instanceof People && ctype_digit($merchantId)) {
-            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
-        }
-
-        if (!$provider instanceof People) {
-            self::$logger->warning('iFood store status webhook ignored because provider was not found', [
-                'integration_id' => $integration?->getId(),
-                'merchant_id' => $merchantId,
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
-        $merchantStatus = $this->resolveWebhookMerchantStatus($event);
-        if ($merchantStatus === null) {
-            self::$logger->warning('iFood store status webhook ignored because status could not be resolved', [
-                'integration_id' => $integration?->getId(),
-                'merchant_id' => $merchantId,
-                'event_code' => $this->resolveEventCode($event),
-            ]);
-            return;
-        }
-
+    private function emitStoreStatusChange(
+        People $provider,
+        string $merchantId,
+        string $merchantStatus,
+        bool $currentOnline,
+        bool $forceNotify = false
+    ): void {
         $previousState = $this->getStoredIntegrationState($provider);
         $previousOnline = (bool) ($previousState['online'] ?? false);
-        $currentOnline = in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true);
+        $hasPreviousStatus = $this->normalizeString($previousState['merchant_status'] ?? null) !== '';
 
         $this->persistProviderIntegrationState($provider, [
+            'merchant_id' => $merchantId,
             'merchant_status' => $merchantStatus,
             'remote_connected' => '1',
             'online' => $currentOnline ? '1' : '0',
@@ -1321,7 +1294,9 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             'last_error_message' => '',
         ]);
 
-        if ($previousOnline === $currentOnline) {
+        $this->entityManager->flush();
+
+        if (!$forceNotify && $hasPreviousStatus && $previousOnline === $currentOnline) {
             return;
         }
 
@@ -1374,6 +1349,51 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
+    private function syncStoreStatusWebhook(array $event, ?Integration $integration = null): void
+    {
+        $merchantId = $this->resolveWebhookMerchantId($event);
+        if ($merchantId === '') {
+            self::$logger->warning('iFood store status webhook ignored because merchantId is missing', [
+                'integration_id' => $integration?->getId(),
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $provider = $this->extraDataService->getEntityByExtraData(
+            self::APP_CONTEXT,
+            'code',
+            $merchantId,
+            People::class
+        );
+        if (!$provider instanceof People && ctype_digit($merchantId)) {
+            $provider = $this->entityManager->getRepository(People::class)->find((int) $merchantId);
+        }
+
+        if (!$provider instanceof People) {
+            self::$logger->warning('iFood store status webhook ignored because provider was not found', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $merchantStatus = $this->resolveWebhookMerchantStatus($event);
+        if ($merchantStatus === null) {
+            self::$logger->warning('iFood store status webhook ignored because status could not be resolved', [
+                'integration_id' => $integration?->getId(),
+                'merchant_id' => $merchantId,
+                'event_code' => $this->resolveEventCode($event),
+            ]);
+            return;
+        }
+
+        $currentOnline = in_array($merchantStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true);
+
+        $this->emitStoreStatusChange($provider, $merchantId, $merchantStatus, $currentOnline);
+    }
+
     /* Fecha a loja criando uma interrupção de até 7 dias (máximo permitido pela API).
      * POST /merchant/v1.0/merchants/{id}/interruptions
      */
@@ -1422,7 +1442,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
@@ -1432,9 +1452,14 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('POST', '/merchants/' . rawurlencode($merchantId) . '/interruptions', [
-                'json' => $interruption,
-            ]);
+            $response = $this->ifoodClient->requestMerchantEndpoint(
+                'POST',
+                '/merchants/' . rawurlencode($merchantId) . '/interruptions',
+                [
+                    'json' => $interruption,
+                ],
+                $provider
+            );
             $statusCode = $response->getStatusCode();
             $content    = $response->getContent(false);
             $decoded    = json_decode($content, true);
@@ -1449,6 +1474,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                     'data' => null,
                 ];
             }
+
+            $this->emitStoreStatusChange($provider, $merchantId, 'UNAVAILABLE', false, true);
 
             return [
                 'errno'  => 0,
@@ -1472,12 +1499,14 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($merchantId === '') {
             return ['errno' => 10002, 'errmsg' => 'Loja iFood nao conectada.', 'data' => null];
         }
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
-        $interruptions = $this->listInterruptionsRaw($merchantId);
+        $interruptions = $this->listInterruptionsRaw($merchantId, $provider);
         if (empty($interruptions)) {
+            $this->emitStoreStatusChange($provider, $merchantId, 'AVAILABLE', true, true);
+
             return ['errno' => 0, 'errmsg' => 'ok', 'data' => ['removed' => 0, 'online' => true]];
         }
 
@@ -1487,7 +1516,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $id = $this->normalizeString($interruption['id'] ?? null);
             if ($id === '') continue;
             try {
-                $resp = $this->ifoodClient->requestMerchantEndpoint('DELETE', '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id));
+                $resp = $this->ifoodClient->requestMerchantEndpoint(
+                    'DELETE',
+                    '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($id),
+                    [],
+                    $provider
+                );
                 if ($resp->getStatusCode() < 300) {
                     $removed++;
                 } else {
@@ -1501,6 +1535,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($removed === 0 && $lastError !== null) {
             return ['errno' => 1, 'errmsg' => $lastError, 'data' => null];
         }
+
+        $this->emitStoreStatusChange($provider, $merchantId, 'AVAILABLE', true, true);
 
         return [
             'errno'  => 0,
@@ -1521,12 +1557,17 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         if ($interruptionId === '') {
             return ['errno' => 10003, 'errmsg' => 'Pausa iFood invalida.', 'data' => null];
         }
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.', 'data' => null];
         }
 
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('DELETE', '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId));
+            $response = $this->ifoodClient->requestMerchantEndpoint(
+                'DELETE',
+                '/merchants/' . rawurlencode($merchantId) . '/interruptions/' . rawurlencode($interruptionId),
+                [],
+                $provider
+            );
             $statusCode = $response->getStatusCode();
 
             if ($statusCode >= 200 && $statusCode < 300) {
@@ -1549,10 +1590,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
     }
 
-    private function listInterruptionsRaw(string $merchantId): array
+    private function listInterruptionsRaw(string $merchantId, ?People $provider = null): array
     {
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/interruptions');
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/interruptions', [], $provider);
             $statusCode = $response->getStatusCode();
             // Aceita qualquer 2xx; 204 = lista vazia valida
             if ($statusCode < 200 || $statusCode >= 300) return [];
@@ -1588,8 +1629,10 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
     {
         $this->init();
         $state = $this->getStoredIntegrationState($provider);
+        $previousOnline = (bool) ($state['online'] ?? false);
+        $hasPreviousStatus = $this->normalizeString($state['merchant_status'] ?? null) !== '';
         $merchantId = $this->normalizeString($state['merchant_id'] ?? null);
-        $storesResponse = $this->listMerchantsRaw();
+        $storesResponse = $this->listMerchantsRaw($provider);
         $merchants = is_array($storesResponse['data']['merchants'] ?? null) ? $storesResponse['data']['merchants'] : [];
 
         if ((int) ($storesResponse['errno'] ?? 1) !== 0) {
@@ -1610,6 +1653,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $matchedStore = null;
+        $detailStatus = null;
         if ($merchantId !== '') {
             foreach ($merchants as $store) {
                 if ($this->normalizeString($store['merchant_id'] ?? null) === $merchantId) {
@@ -1625,8 +1669,8 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
              */
             $detailStatus = strtoupper($this->normalizeString($matchedStore['status'] ?? null));
             if ($detailStatus === '' && $merchantId !== '') {
-                if ($this->isAuthAvailable()) {
-                    $detail = $this->getMerchantDetailRaw($merchantId);
+                if ($this->isAuthAvailable($provider)) {
+                    $detail = $this->getMerchantDetailRaw($merchantId, $provider);
                     if ((int) ($detail['errno'] ?? 1) === 0 && is_array($detail['data'])) {
                         $detailStatus = strtoupper($this->normalizeString(
                             $detail['data']['status'] ?? $detail['data']['merchantStatus'] ?? null
@@ -1660,6 +1704,24 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         }
 
         $this->entityManager->flush();
+
+        $currentOnline = is_string($detailStatus)
+            ? in_array($detailStatus, ['AVAILABLE', 'ONLINE', 'OPEN'], true)
+            : false;
+        if (
+            $merchantId !== ''
+            && $detailStatus !== null
+            && $detailStatus !== ''
+            && (!$hasPreviousStatus || $previousOnline !== $currentOnline)
+        ) {
+            $this->emitStoreStatusChange(
+                $provider,
+                $merchantId,
+                $detailStatus,
+                $currentOnline,
+                true
+            );
+        }
 
         return [
             'errno' => 0,
@@ -1738,7 +1800,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
                 return $order;
             }
 
-            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $json);
+            $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $json, null, $provider);
 
             if (!$orderDetails) {
                 self::$logger->error('iFood order details could not be fetched after retries', [
@@ -2093,7 +2155,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             return [];
         }
 
-        $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event, $order);
+        $orderDetails = $this->resolveOrderDetailsFromEvent($orderId, $event, $order, $provider);
         if (!$orderDetails) {
             return [];
         }
@@ -2728,7 +2790,6 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
         ]);
 
         $deliveryAddressEntity = $this->addressService->discoveryAddress(
-            $order->getClient(),
             $postalCode,
             $streetNumberPayload['street_number'] ?? null,
             $streetName !== '' ? $streetName : 'Endereço não informado',
@@ -2736,6 +2797,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $city !== '' ? $city : 'Sem cidade',
             $stateCode !== '' ? $stateCode : 'NI',
             $countryCode,
+            $order->getClient(),
             $streetNumberPayload['complement'] ?? '',
             (int) round($latitude),
             (int) round($longitude),
@@ -2866,12 +2928,12 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
 
     // FETCH DETALHES DO PEDIDO
     // Chama API do iFood para buscar informa��es completas do pedido (cliente, produtos, entrega, pagamentos)
-    public function fetchOrderDetails(string $orderId): ?array
+    public function fetchOrderDetails(string $orderId, ?People $provider = null): ?array
     {
         try {
             $encodedOrderId = rawurlencode($orderId);
             $endpoint = '/order/v1.0/orders/' . $encodedOrderId;
-            if (!$this->isAuthAvailable()) {
+            if (!$this->isAuthAvailable($provider)) {
                 self::$logger->warning('iFood order details request skipped because token is unavailable', [
                     'order_id' => $orderId,
                     'endpoint' => $endpoint,
@@ -2881,7 +2943,7 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             }
 
             try {
-                $response = $this->ifoodClient->requestOrderEndpoint('GET', '/orders/' . $encodedOrderId);
+                $response = $this->ifoodClient->requestOrderEndpoint('GET', '/orders/' . $encodedOrderId, [], $provider);
 
                 $statusCode = $response->getStatusCode();
                 $rawBody = $response->getContent(false);

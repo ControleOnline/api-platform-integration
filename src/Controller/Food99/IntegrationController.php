@@ -830,7 +830,7 @@ class IntegrationController extends AbstractController
             $provider->getId(),
         ]);
 
-        $boundStoresResponse = $this->food99Service->listAuthorizedStores([]) ?? [];
+        $boundStoresResponse = $this->food99Service->listAuthorizedStores([], $provider) ?? [];
         $boundStoreCandidate = $this->findBoundStoreCandidateInPayload($boundStoresResponse['data'] ?? $boundStoresResponse, $candidateShopIds);
         $boundStoreMatched = is_array($boundStoreCandidate);
         if (is_array($boundStoreCandidate)) {
@@ -1212,15 +1212,39 @@ class IntegrationController extends AbstractController
             return $this->providerErrorResponse();
         }
 
-        $products = $this->food99Service->listSelectableMenuProducts($provider);
-        $storedState = $this->food99Service->getStoredIntegrationState($provider);
-        $ifoodState = $this->iFoodService->getStoredIntegrationState($provider);
+        $products = [];
+        $storedState = [];
+        $food99Error = null;
+        try {
+            $products = $this->food99Service->listSelectableMenuProducts($provider);
+            $storedState = $this->food99Service->getStoredIntegrationState($provider);
+        } catch (\Throwable $exception) {
+            $food99Error = 'Não foi possível carregar os dados da integração 99Food.';
+            self::$logger?->error('Failed to load 99Food integration summary', [
+                'provider_id' => $provider->getId(),
+                'exception' => $exception,
+            ]);
+        }
+
+        $ifoodState = [];
+        $ifoodEligibleProducts = 0;
+        $ifoodError = null;
+        try {
+            $ifoodState = $this->iFoodService->getStoredIntegrationState($provider);
+            $ifoodEligibleProducts = $this->iFoodService->countEligibleProducts($provider);
+        } catch (\Throwable $exception) {
+            $ifoodError = 'Não foi possível carregar os dados da integração iFood.';
+            self::$logger?->error('Failed to load iFood integration summary', [
+                'provider_id' => $provider->getId(),
+                'exception' => $exception,
+            ]);
+        }
+
         $companyIntegrations = $this->companyIntegrationStatusService->listCompanyIntegrations($provider);
         $publishedProductCount = count(array_filter(
             $products['products'] ?? [],
             static fn(array $product) => !empty($product['food99_published'])
         ));
-        $ifoodEligibleProducts = $this->iFoodService->countEligibleProducts($provider);
 
         return new JsonResponse($this->hydratorService->result(array_merge([
             [
@@ -1228,25 +1252,25 @@ class IntegrationController extends AbstractController
                 'label' => '99Food',
                 'minimum_required_items' => 5,
                 'eligible_product_count' => $products['eligible_product_count'] ?? 0,
-                'connected' => $storedState['connected'],
-                'remote_connected' => $storedState['remote_connected'],
-                'food99_code' => $storedState['food99_code'],
-                'app_shop_id' => $storedState['app_shop_id'],
-                'biz_status' => $storedState['biz_status'],
-                'sub_biz_status' => $storedState['sub_biz_status'],
-                'store_status' => $storedState['store_status'],
-                'online' => $storedState['online'],
-                'last_sync_at' => $storedState['last_sync_at'],
-                'last_menu_task_status' => $storedState['last_menu_task_status'],
-                'last_menu_task_message' => $storedState['last_menu_task_message'],
-                'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'],
-                'last_menu_publish_state' => $storedState['last_menu_publish_state'],
+                'connected' => (bool) ($storedState['connected'] ?? false),
+                'remote_connected' => (bool) ($storedState['remote_connected'] ?? false),
+                'food99_code' => $storedState['food99_code'] ?? null,
+                'app_shop_id' => $storedState['app_shop_id'] ?? null,
+                'biz_status' => $storedState['biz_status'] ?? null,
+                'sub_biz_status' => $storedState['sub_biz_status'] ?? null,
+                'store_status' => $storedState['store_status'] ?? null,
+                'online' => (bool) ($storedState['online'] ?? false),
+                'last_sync_at' => $storedState['last_sync_at'] ?? null,
+                'last_menu_task_status' => $storedState['last_menu_task_status'] ?? null,
+                'last_menu_task_message' => $storedState['last_menu_task_message'] ?? null,
+                'last_menu_task_checked_at' => $storedState['last_menu_task_checked_at'] ?? null,
+                'last_menu_publish_state' => $storedState['last_menu_publish_state'] ?? null,
                 'published_product_count' => $publishedProductCount,
-                'remote_only_item_count' => $storedState['remote_only_item_count'],
-                'last_error_code' => $storedState['last_error_code'],
-                'last_error_message' => $storedState['last_error_message'],
+                'remote_only_item_count' => $storedState['remote_only_item_count'] ?? 0,
+                'last_error_code' => $storedState['last_error_code'] ?? null,
+                'last_error_message' => $storedState['last_error_message'] ?? null,
                 'store' => null,
-                'store_error' => null,
+                'store_error' => $food99Error,
             ],
             [
                 'key' => 'ifood',
@@ -1271,7 +1295,7 @@ class IntegrationController extends AbstractController
                     'status' => $ifoodState['merchant_status'] ?? null,
                     'status_label' => $ifoodState['merchant_status_label'] ?? 'Indefinido',
                 ] : null,
-                'store_error' => null,
+                'store_error' => $ifoodError,
             ],
         ], $companyIntegrations)));
     }
@@ -1450,7 +1474,7 @@ class IntegrationController extends AbstractController
 
         $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
 
-        $authorizationResponse = $this->food99Service->getAuthorizationPage($payload);
+        $authorizationResponse = $this->food99Service->getAuthorizationPage($payload, $provider);
         $authorizationUrl = $this->extractFood99AuthorizationUrl($authorizationResponse);
 
         if ($authorizationUrl !== null) {
@@ -1548,7 +1572,7 @@ class IntegrationController extends AbstractController
         }
 
         $payload['app_shop_id'] = (string) ($payload['app_shop_id'] ?? $provider->getId());
-        $result = $this->food99Service->bindStore($payload);
+        $result = $this->food99Service->bindStore($payload, $provider);
 
         if ($this->isSuccessfulErrno($result['errno'] ?? null)) {
             $shopId = trim((string) ($payload['shop_id'] ?? $payload['food99_code'] ?? $payload['store_code'] ?? ''));

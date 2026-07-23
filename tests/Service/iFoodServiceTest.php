@@ -84,6 +84,41 @@ class iFoodServiceTest extends TestCase
         self::assertFalse($this->invokePrivateMethod($service, 'shouldCreateOrderFromEvent', 'CONCLUDED'));
     }
 
+    public function testApplyOperationalStatusForRemoteStateReturnsCancellationBroadcastFlag(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+        $order = new Order();
+
+        $status = $this->createStub(\ControleOnline\Entity\Status::class);
+        $status->method('getRealStatus')->willReturn('canceled');
+        $status->method('getStatus')->willReturn('canceled');
+
+        $statusService = $this->createMock(\ControleOnline\Service\StatusService::class);
+        $statusService
+            ->expects(self::once())
+            ->method('discoveryStatus')
+            ->with('canceled', 'canceled', 'order')
+            ->willReturn($status);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager
+            ->expects(self::once())
+            ->method('persist')
+            ->with($order);
+
+        $this->setObjectProperty($service, 'statusService', $statusService);
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        self::assertTrue($this->invokePrivateMethod(
+            $service,
+            'applyOperationalStatusForRemoteState',
+            $order,
+            'canceled'
+        ));
+        self::assertSame('canceled', $order->getStatus()?->getRealStatus());
+        self::assertSame('canceled', $order->getStatus()?->getStatus());
+    }
+
     public function testStoredQuoteStateReadsCurrentIfoodContextSnapshot(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
@@ -360,6 +395,86 @@ class iFoodServiceTest extends TestCase
         );
     }
 
+    public function testPersistIfoodOrderIntegrationStateMaterializesCanonicalIdentifiersInExtraData(): void
+    {
+        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())
+            ->method('persist')
+            ->with(self::isInstanceOf(Order::class));
+        $this->setObjectProperty($service, 'entityManager', $entityManager);
+
+        $calls = [];
+        $extraDataService = $this->createMock(\ControleOnline\Service\ExtraDataService::class);
+        $extraDataService->expects(self::exactly(2))
+            ->method('upsertExtraDataValue')
+            ->willReturnCallback(function (
+                string $context,
+                string $entityName,
+                int $entityId,
+                string $fieldName,
+                mixed $value,
+                string $fieldType = 'text',
+                ?string $source = null
+            ) use (&$calls): void {
+                $calls[] = [
+                    'context' => $context,
+                    'entityName' => $entityName,
+                    'entityId' => $entityId,
+                    'fieldName' => $fieldName,
+                    'value' => $value,
+                    'fieldType' => $fieldType,
+                    'source' => $source,
+                ];
+            });
+        $this->setObjectProperty($service, 'extraDataService', $extraDataService);
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(71759);
+        $order->expects(self::once())
+            ->method('getOtherInformations')
+            ->with(true)
+            ->willReturn((object) []);
+        $order->expects(self::once())
+            ->method('setOtherInformations')
+            ->with(self::callback(static function (array $otherInformations): bool {
+                return ($otherInformations['iFood']['id'] ?? null) === '71759'
+                    && ($otherInformations['iFood']['code'] ?? null) === '3984'
+                    && ($otherInformations['iFood']['merchant_id'] ?? null) === '1234'
+                    && ($otherInformations['iFood']['customer_name'] ?? null) === 'DANILO VALESI';
+            }))
+            ->willReturnSelf();
+
+        $service->persistOrderIntegrationState($order, [
+            'id' => '71759',
+            'code' => '3984',
+            'merchant_id' => '1234',
+            'customer_name' => 'DANILO VALESI',
+        ]);
+
+        self::assertSame([
+            [
+                'context' => 'iFood',
+                'entityName' => 'Order',
+                'entityId' => 71759,
+                'fieldName' => 'id',
+                'value' => '71759',
+                'fieldType' => 'text',
+                'source' => 'iFood',
+            ],
+            [
+                'context' => 'iFood',
+                'entityName' => 'Order',
+                'entityId' => 71759,
+                'fieldName' => 'code',
+                'value' => '3984',
+                'fieldType' => 'text',
+                'source' => 'iFood',
+            ],
+        ], $calls);
+    }
+
     public function testIfoodBenefitSnapshotSeparatesSponsorAndDeliveryTarget(): void
     {
         $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
@@ -570,10 +685,8 @@ class iFoodServiceTest extends TestCase
         self::assertSame('remote-chas', $remoteCategoriesByName['chas']);
     }
 
-    public function testGetAccessTokenUsesServerFallbackWhenEnvIsMissing(): void
+    public function testIfoodClientGetAccessTokenUsesServerFallbackWhenEnvIsMissing(): void
     {
-        $service = (new \ReflectionClass(iFoodService::class))->newInstanceWithoutConstructor();
-        $this->setStaticProperty(DefaultFoodService::class, 'logger', $this->createNullLoggerStub());
         $this->setStaticProperty(IfoodClient::class, 'authTokenCache', []);
 
         $envBackup = [
@@ -614,10 +727,10 @@ class iFoodServiceTest extends TestCase
                 })
             )
             ->willReturn($response);
-        $this->setObjectProperty($service, 'ifoodClient', $this->createIfoodClientStub($httpClient));
+        $ifoodClient = $this->createIfoodClientStub($httpClient);
 
         try {
-            self::assertSame('token-from-server', $this->invokePrivateMethod($service, 'getAccessToken'));
+            self::assertSame('token-from-server', $this->invokePrivateMethod($ifoodClient, 'getAccessToken'));
         } finally {
             foreach ($envBackup as $key => $value) {
                 if ($value === null) {

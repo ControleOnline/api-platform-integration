@@ -41,6 +41,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *   - Canonical local order lifecycle is shared by Food99 and iFood: pickup, delivery, and closed transitions must reuse the same local status contract.
  *   - This class owns the shared marketplace lifecycle map and rank helpers; provider services must consume these helpers instead of redefining local status literals.
  *   - Preserve canonical payload/materialization helpers instead of reintroducing ad hoc fallbacks.
+ *   - Canceled order transitions must enqueue the shared manager push notification with the canonical order.canceled event.
  */
 
 class DefaultFoodService
@@ -431,6 +432,71 @@ class DefaultFoodService
             $sentDevices[$deviceId] = true;
             $this->websocketClient->push($device, $payload);
         }
+    }
+
+    protected function isOrderInCanceledState(Order $order): bool
+    {
+        return in_array(
+            strtolower(trim((string) ($order->getStatus()?->getRealStatus() ?? ''))),
+            ['canceled', 'cancelled'],
+            true
+        );
+    }
+
+    protected function broadcastOrderCancellationManagerPush(Order $order, ?string $reason = null): void
+    {
+        $company = $order->getProvider();
+        if (!$company instanceof People || (int) $order->getId() <= 0) {
+            return;
+        }
+
+        $integrationService = $this->resolveIntegrationService();
+        if (!$integrationService instanceof IntegrationService) {
+            return;
+        }
+
+        $orderId = (string) $order->getId();
+        $companyLabel = trim((string) (
+            $company->getAlias() ?: $company->getName() ?: $company->getId()
+        ));
+        $customerLabel = trim((string) (
+            $order->getClient()?->getName() ?: $order->getPayer()?->getName()
+        ));
+        $reasonLabel = trim((string) $reason);
+        $bodyParts = array_filter([
+            $customerLabel !== '' ? 'Cliente: ' . $customerLabel : null,
+            $companyLabel !== '' ? $companyLabel : null,
+        ]);
+
+        $event = [
+            'event' => 'order.canceled',
+            'route' => 'OrderDetails',
+            'routeName' => 'OrderDetails',
+            'screen' => 'OrderDetails',
+            'orderId' => $orderId,
+            'companyId' => (string) $company->getId(),
+            'company' => (string) $company->getId(),
+            'provider' => (string) $company->getId(),
+            'providerName' => $companyLabel,
+            'source' => strtolower(trim((string) $order->getApp())) ?: 'marketplace',
+            'status' => 'canceled',
+            'realStatus' => 'canceled',
+            'notificationHeader' => sprintf('Pedido #%s cancelado', $orderId),
+            'notificationSubheader' => $bodyParts !== [] ? implode(' | ', $bodyParts) : 'Pedido cancelado',
+            'notificationBody' => $reasonLabel !== ''
+                ? 'Motivo: ' . $reasonLabel
+                : 'Toque para ver os detalhes do pedido.',
+            'message' => sprintf('Pedido #%s foi cancelado', $orderId),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ];
+
+        $payload = json_encode($event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            return;
+        }
+
+        $integrationService->addManagerPushIntegrations($payload, $company);
     }
 
     protected function sendStoreClosingNotifications(

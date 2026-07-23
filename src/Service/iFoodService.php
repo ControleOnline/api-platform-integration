@@ -50,6 +50,8 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *   - Keep business rules in the capability classes and the domain model, not in nested AGENTS files.
  *   - Do not re-concentrate catalog, store, order, people, or financial behavior into this class.
  *   - Webhook and polling events must collapse into the shared marketplace lifecycle contract, so iFood uses the same local order states as Food99 for preparing, way, closed, and canceled transitions.
+ *   - Canceled order transitions must emit the canonical order.canceled manager push after persistence.
+ *   - Incoming iFood orders must materialize canonical numeric identifiers from `otherInformations.iFood` into `extra_data` for `id` and `code`; `merchant_id` already lives in `order.provider`.
  */
 class iFoodService extends AbstractMarketplaceService implements
     MarketplaceIntegrationHandlerInterface,
@@ -93,9 +95,9 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
-    private function isAuthAvailable(): bool
+    private function isAuthAvailable(?People $provider = null): bool
     {
-        return $this->ifoodClient->isAuthAvailable();
+        return $this->ifoodClient->isAuthAvailable($provider);
     }
 
     public static function getSubscribedEvents(): array
@@ -358,13 +360,17 @@ class iFoodService extends AbstractMarketplaceService implements
             $this->resumePendingEntryFlowIfNeeded($order, $event, $eventCode, $orderDetails);
         }
 
-        $this->applyOperationalStatusForRemoteState(
+        $shouldBroadcastCancellation = $this->applyOperationalStatusForRemoteState(
             $order,
             $this->resolveRemoteOrderStateByEventCode($eventCode)
         );
 
         $this->entityManager->persist($order);
         $this->entityManager->flush();
+
+        if ($shouldBroadcastCancellation) {
+            $this->broadcastOrderCancellationManagerPush($order);
+        }
 
         return $order;
     }
@@ -1573,18 +1579,23 @@ class iFoodService extends AbstractMarketplaceService implements
         };
     }
 
-    private function applyOperationalStatusForRemoteState(Order $order, ?string $remoteState): void
+    private function applyOperationalStatusForRemoteState(Order $order, ?string $remoteState): bool
     {
         $statusMapping = $this->resolveOperationalStatusFromRemoteState($remoteState);
         if (!is_array($statusMapping)) {
-            return;
+            return false;
         }
 
+        $wasCanceled = $this->isOrderInCanceledState($order);
         $this->applyLocalStatus(
             $order,
             (string) ($statusMapping['realStatus'] ?? ''),
             (string) ($statusMapping['status'] ?? '')
         );
+
+        return in_array(strtolower(trim((string) $remoteState)), ['cancelled', 'canceled'], true)
+            && !$wasCanceled
+            && $this->isOrderInCanceledState($order);
     }
 
     private function upsertIfoodExtraDataValue(
@@ -1617,6 +1628,12 @@ class iFoodService extends AbstractMarketplaceService implements
         );
     }
 
+    /*
+     * Business rule:
+     * - Persist iFood order identifiers only from the canonical iFood state block already merged into otherInformations.
+     * - Materialize only numeric identifiers into extra_data: id and code.
+     * - Do not derive identifiers from alternate payloads, legacy aliases, or fallback sources.
+     */
     public function persistOrderIntegrationState(Order $order, array $fields): void
     {
         $normalizedFields = [];
@@ -1634,6 +1651,32 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         $this->mergeEntityOtherInformations($order, self::APP_CONTEXT, $normalizedFields);
+        $this->persistIfoodOrderIdentifiers($order, $normalizedFields);
+    }
+
+    private function persistIfoodOrderIdentifiers(Order $order, array $fields): void
+    {
+        $orderId = (int) $order->getId();
+        if ($orderId <= 0) {
+            return;
+        }
+
+        foreach (['id', 'code'] as $fieldName) {
+            $value = $this->normalizeString($fields[$fieldName] ?? null);
+            if ($value === '' || preg_match('/^[0-9]+$/', $value) !== 1) {
+                continue;
+            }
+
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Order',
+                $orderId,
+                $fieldName,
+                $value,
+                'text',
+                self::APP_CONTEXT
+            );
+        }
     }
 
     private function getIfoodExtraDataValue(string $entityName, int $entityId, string $fieldName = 'code'): ?string
@@ -1691,7 +1734,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1720,7 +1763,7 @@ class iFoodService extends AbstractMarketplaceService implements
                         'originalValue' => $roundedPrice,
                     ],
                 ],
-            ]);
+            ], $provider);
 
             $status = $response->getStatusCode();
             if ($status >= 200 && $status < 300) {
@@ -1753,7 +1796,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1764,7 +1807,7 @@ class iFoodService extends AbstractMarketplaceService implements
         }
 
         try {
-            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/opening-hours');
+            $response = $this->ifoodClient->requestMerchantEndpoint('GET', '/merchants/' . rawurlencode($merchantId) . '/opening-hours', [], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1796,7 +1839,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1824,7 +1867,7 @@ class iFoodService extends AbstractMarketplaceService implements
         try {
             $response = $this->ifoodClient->requestMerchantEndpoint('PUT', '/merchants/' . rawurlencode($merchantId) . '/opening-hours', [
                 'json' => $payload,
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1855,7 +1898,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1884,7 +1927,7 @@ class iFoodService extends AbstractMarketplaceService implements
                         'originalValue' => $roundedPrice,
                     ],
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1917,7 +1960,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -1944,7 +1987,7 @@ class iFoodService extends AbstractMarketplaceService implements
                     'itemId' => $normalizedItemId,
                     'status' => $normalizedStatus,
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {
@@ -1977,7 +2020,7 @@ class iFoodService extends AbstractMarketplaceService implements
     {
         $this->init();
 
-        if (!$this->isAuthAvailable()) {
+        if (!$this->isAuthAvailable($provider)) {
             return ['errno' => 10001, 'errmsg' => 'Token iFood indisponivel.'];
         }
 
@@ -2004,7 +2047,7 @@ class iFoodService extends AbstractMarketplaceService implements
                     'optionId' => $normalizedOptionId,
                     'status'   => $normalizedStatus,
                 ],
-            ]);
+            ], $provider);
 
             $httpStatus = $response->getStatusCode();
             if ($httpStatus >= 200 && $httpStatus < 300) {

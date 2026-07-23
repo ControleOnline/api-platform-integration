@@ -845,7 +845,7 @@ class IntegrationController extends AbstractController
             $syncResult = $this->iFoodService->syncIntegrationState($provider);
         }
 
-        $storesResponse = $this->iFoodService->listMerchants();
+        $storesResponse = $this->iFoodService->listMerchants($provider);
         $rawStores = is_array($storesResponse['data']['merchants'] ?? null)
             ? $storesResponse['data']['merchants']
             : [];
@@ -1250,7 +1250,7 @@ class IntegrationController extends AbstractController
             return $this->providerNotFound();
         }
 
-        $storesResponse = $this->iFoodService->listMerchants();
+        $storesResponse = $this->iFoodService->listMerchants($provider);
         $stores = array_map(function (array $store): array {
             $status = strtoupper((string) ($store['status'] ?? ''));
             $store['status_label'] = match ($status) {
@@ -1303,7 +1303,7 @@ class IntegrationController extends AbstractController
             ], Response::HTTP_BAD_REQUEST);
         }
 
-        $storesResponse = $this->iFoodService->listMerchants();
+        $storesResponse = $this->iFoodService->listMerchants($provider);
         $storePayload = null;
         foreach ((array) ($storesResponse['data']['merchants'] ?? []) as $store) {
             if ($this->normalizeString($store['merchant_id'] ?? null) === $merchantId) {

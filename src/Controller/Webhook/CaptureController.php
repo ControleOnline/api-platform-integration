@@ -1,0 +1,42 @@
+<?php
+
+namespace ControleOnline\Controller\Webhook;
+
+use ControleOnline\Service\WebhookCaptureService;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Routing\Attribute\Route;
+
+class CaptureController extends AbstractController
+{
+    public function __construct(
+        private readonly WebhookCaptureService $webhookCaptureService,
+    ) {
+    }
+
+    #[Route('/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications', methods: ['POST'])]
+    #[Route('/webhook/mercadolivre', name: 'webhook_mercadolivre_notifications', methods: ['POST'])]
+    public function mercadoLivre(Request $request): Response
+    {
+        $capture = $this->webhookCaptureService->capture($request, 'MercadoLivre');
+
+        return new JsonResponse([
+            'accepted' => true,
+            'id' => $capture->getId(),
+        ], Response::HTTP_OK);
+    }
+
+    #[Route('/oauth/github/notifications', name: 'oauth_github_notifications', methods: ['POST'])]
+    #[Route('/webhook/github', name: 'webhook_github_notifications', methods: ['POST'])]
+    public function github(Request $request): Response
+    {
+        $capture = $this->webhookCaptureService->capture($request, 'GitHub');
+
+        return new JsonResponse([
+            'accepted' => true,
+            'id' => $capture->getId(),
+        ], Response::HTTP_OK);
+    }
+}

@@ -179,8 +179,8 @@ class DefaultFoodServiceTest extends TestCase
 
             $service->applyMarketplaceOrderDateValue($order, '2026-05-29T23:37:20.421Z');
 
-            self::assertInstanceOf(DateTimeImmutable::class, $order->getOrderDate());
-            self::assertInstanceOf(DateTimeImmutable::class, $order->getAlterDate());
+            self::assertInstanceOf(\DateTime::class, $order->getOrderDate());
+            self::assertInstanceOf(\DateTime::class, $order->getAlterDate());
             self::assertSame('2026-05-29 20:37:20', $order->getOrderDate()->format('Y-m-d H:i:s'));
             self::assertSame('2026-05-29 20:37:20', $order->getAlterDate()->format('Y-m-d H:i:s'));
             self::assertSame('America/Sao_Paulo', $order->getOrderDate()->getTimezone()->getName());
@@ -189,11 +189,72 @@ class DefaultFoodServiceTest extends TestCase
         }
     }
 
+    public function testBroadcastOrderCancellationManagerPushQueuesCanonicalOrderCanceledEvent(): void
+    {
+        $service = (new \ReflectionClass(DefaultFoodServiceProbe::class))->newInstanceWithoutConstructor();
+
+        $company = $this->createStub(People::class);
+        $company->method('getId')->willReturn(88);
+        $company->method('getAlias')->willReturn('Mercado Central');
+        $company->method('getName')->willReturn('Mercado Central');
+        $customer = $this->createStub(People::class);
+        $customer->method('getName')->willReturn('Cliente Teste');
+        $integrationService = $this->createMock(IntegrationService::class);
+
+        $order = new Order();
+        $order->setProvider($company);
+        $order->setClient($customer);
+        $order->setPayer($customer);
+        $order->setApp('iFood');
+        $this->setEntityId($order, 71722);
+
+        $integrationService
+            ->expects(self::once())
+            ->method('addManagerPushIntegrations')
+            ->with(
+                self::callback(function (string $payload) {
+                    $event = json_decode($payload, true);
+                    if (!is_array($event)) {
+                        return false;
+                    }
+
+                    return ($event['event'] ?? null) === 'order.canceled'
+                        && ($event['orderId'] ?? null) === '71722'
+                        && ($event['notificationHeader'] ?? null) === 'Pedido #71722 cancelado'
+                        && str_contains((string) ($event['notificationSubheader'] ?? ''), 'Cliente: Cliente Teste')
+                        && ($event['notificationBody'] ?? null) === 'Motivo: Cliente desistiu';
+                }),
+                $company
+            )
+            ->willReturn(1);
+
+        $this->setObjectProperty(DefaultFoodService::class, $service, 'integrationService', $integrationService);
+
+        $service->broadcastOrderCancellationManagerPushValue($order, 'Cliente desistiu');
+    }
+
     private function setObjectProperty(string $className, object $object, string $propertyName, mixed $value): void
     {
         $property = new \ReflectionProperty($className, $propertyName);
         $property->setAccessible(true);
         $property->setValue($object, $value);
+    }
+
+    private function setEntityId(object $object, int $id): void
+    {
+        $reflection = new \ReflectionObject($object);
+        while ($reflection) {
+            if ($reflection->hasProperty('id')) {
+                $property = $reflection->getProperty('id');
+                $property->setAccessible(true);
+                $property->setValue($object, $id);
+                return;
+            }
+
+            $reflection = $reflection->getParentClass();
+        }
+
+        throw new \RuntimeException('Unable to set entity id in test.');
     }
 }
 
@@ -217,5 +278,10 @@ final class DefaultFoodServiceProbe extends DefaultFoodService
     public function applyMarketplaceOrderDateValue(Order $order, mixed $value): void
     {
         $this->applyMarketplaceOrderDate($order, $value);
+    }
+
+    public function broadcastOrderCancellationManagerPushValue(Order $order, ?string $reason = null): void
+    {
+        $this->broadcastOrderCancellationManagerPush($order, $reason);
     }
 }

@@ -33,6 +33,12 @@ use Symfony\Contracts\Service\Attribute\Required;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\FormDataPart;
 
+/*
+ * Store sync contract:
+ * - Reconciliation must emit the shared store.opened/store.closed manager notification when the remote store status changes.
+ * - The first known closed state must notify the manager so 99Food closes do not get swallowed by a cold cache.
+ * - Store snapshot and error-reset helpers are delegated to Food99StoreOperationsService; this class must not invent its own store transport.
+ */
 class Food99CatalogOperationsService extends AbstractMarketplaceService implements EventSubscriberInterface
 {
     private const APP_CONTEXT = Order::APP_FOOD99;
@@ -101,6 +107,65 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         return $event;
+    }
+
+    private function shouldNotifyStoreStatusChange(array $previousState, bool $currentOnline): bool
+    {
+        $hasPreviousStatus = $this->normalizeString($previousState['biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['sub_biz_status'] ?? null) !== ''
+            || $this->normalizeString($previousState['store_status'] ?? null) !== '';
+
+        if (!$hasPreviousStatus) {
+            return true;
+        }
+
+        return (bool) ($previousState['online'] ?? false) !== $currentOnline;
+    }
+
+    private function broadcastStoreStatusChange(People $provider, bool $currentOnline): void
+    {
+        $providerName = trim((string) ($provider->getName() ?? ''));
+        if ($providerName === '') {
+            $providerName = 'Loja';
+        }
+
+        $events = [[
+            'store' => 'orders',
+            'event' => $currentOnline ? 'store.opened' : 'store.closed',
+            'company' => $provider->getId(),
+            'provider' => $provider->getId(),
+            'providerName' => $providerName,
+            'source' => self::APP_CONTEXT,
+            'status' => $currentOnline ? 'open' : 'closed',
+            'realStatus' => $currentOnline ? 'open' : 'closed',
+            'message' => sprintf(
+                'Loja %s foi %s',
+                $providerName,
+                $currentOnline ? 'aberta' : 'fechada'
+            ),
+            'sentAt' => date(DATE_ATOM),
+            'alertSound' => true,
+        ]];
+
+        if ($currentOnline) {
+            $events[0]['notificationHeader'] = sprintf('%s foi aberta', $providerName);
+            $events[0]['notificationSubheader'] = 'A loja voltou a ficar online.';
+            $events[0]['notificationStatusLabel'] = 'Aberta';
+        } else {
+            $summary = $this->sendStoreClosingNotifications($provider, self::APP_CONTEXT);
+            $events[0]['notificationHeader'] = sprintf('%s foi fechada', $providerName);
+            $events[0]['notificationSubheader'] = sprintf(
+                'Vendas do dia: R$ %s',
+                number_format((float) ($summary['daily_sales_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationBody'] = sprintf(
+                'Fatura da semana: R$ %s',
+                number_format((float) ($summary['weekly_settlement_amount'] ?? 0), 2, ',', '.')
+            );
+            $events[0]['notificationStatusLabel'] = 'Fechada';
+        }
+
+        $this->broadcastCompanyWebsocketEvents($provider, $events);
     }
 
     private function normalizeIncomingFood99Value(mixed $value): string
@@ -835,7 +900,6 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
                     FROM product_group pg_req
                     INNER JOIN product_group_parent pg_parent_req
                         ON pg_parent_req.product_group_id = pg_req.id
-                       AND pg_parent_req.parent_product_id = p.id
                        AND pg_parent_req.active = 1
                     INNER JOIN product_group_product pgp_req
                         ON pgp_req.product_group_id = pg_req.id
@@ -844,24 +908,27 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
                     WHERE pg_req.active = 1
                       AND pgp_req.active = 1
                       AND child_req.active = 1
+                      AND pg_parent_req.parent_product_id = p.id
                       AND pgp_req.product_type IN ('component', 'package')
                       AND COALESCE(pg_req.required, 0) = 1
                       AND COALESCE(pg_req.minimum, 0) >= 1
                 ) THEN 1 ELSE 0 END AS has_required_modifiers
             FROM product p
-            LEFT JOIN product_category pc ON pc.id = (
-                SELECT MIN(pc2.id)
+            LEFT JOIN (
+                SELECT pc2.product_id, MIN(pc2.id) AS product_category_id
                 FROM product_category pc2
                 INNER JOIN category c2 ON c2.id = pc2.category_id
-                WHERE pc2.product_id = p.id
-                  AND c2.context = 'products'
-            )
+                WHERE c2.context = 'products'
+                GROUP BY pc2.product_id
+            ) pc_first ON pc_first.product_id = p.id
+            LEFT JOIN product_category pc ON pc.id = pc_first.product_category_id
             LEFT JOIN category c ON c.id = pc.category_id
-            LEFT JOIN product_file pf ON pf.id = (
-                SELECT MIN(pf2.id)
+            LEFT JOIN (
+                SELECT pf2.product_id, MIN(pf2.id) AS product_file_id
                 FROM product_file pf2
-                WHERE pf2.product_id = p.id
-            )
+                GROUP BY pf2.product_id
+            ) pf_first ON pf_first.product_id = p.id
+            LEFT JOIN product_file pf ON pf.id = pf_first.product_file_id
             LEFT JOIN extra_fields ef
                 ON ef.context = :food99Context
                AND ef.field_name = :codeFieldName
@@ -1599,6 +1666,10 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         }
 
         $this->init();
+        $previousState = [];
+        if ($this->food99StoreOperationsService instanceof Food99StoreOperationsService) {
+            $previousState = $this->food99StoreOperationsService->getStoredIntegrationState($provider);
+        }
 
         $sync = [
             'auth_available' => false,
@@ -1625,6 +1696,14 @@ class Food99CatalogOperationsService extends AbstractMarketplaceService implemen
         $sync['store'] = $storeDetails;
         if (!$this->isSuccessfulErrno($storeDetails['errno'] ?? null)) {
             $sync['errors']['store'] = $storeDetails['errmsg'] ?? 'Nao foi possivel sincronizar os detalhes da loja.';
+        } else {
+            $remoteStore = is_array($storeDetails['data'] ?? null) ? $storeDetails['data'] : null;
+            $bizStatus = isset($remoteStore['biz_status']) ? (int) $remoteStore['biz_status'] : null;
+            $currentOnline = $bizStatus === 1;
+
+            if ($bizStatus !== null && $this->shouldNotifyStoreStatusChange($previousState, $currentOnline)) {
+                $this->broadcastStoreStatusChange($provider, $currentOnline);
+            }
         }
 
         $deliveryAreas = $this->listDeliveryAreas($provider);
