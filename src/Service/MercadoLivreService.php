@@ -85,6 +85,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         $state = $this->getStoredIntegrationState($provider);
         $shopShowcase = $this->findShopShowcase($provider);
+        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl);
 
         return [
             'provider' => [
@@ -95,6 +96,11 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             'webhook' => [
                 'url' => rtrim($apiBaseUrl, '/') . '/webhook/mercadolivre',
                 'oauth_url' => rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/notifications',
+            ],
+            'oauth' => [
+                'callback_url' => $oauthCallbackUrl,
+                'authorization_endpoint' => '/marketplace/integrations/mercadolivre/authorization-page',
+                'client_configured' => $this->resolveClientId() !== '',
             ],
             'configs' => [
                 self::CONFIG_USER_ID => $this->readConfigValue($provider, self::CONFIG_USER_ID),
@@ -109,6 +115,102 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
                 'active' => $shopShowcase->isActive(),
             ] : null,
             'showcases' => $this->listImportShowcases($provider),
+        ];
+    }
+
+    public function buildAuthorizationPage(People $provider, string $apiBaseUrl, ?string $returnUrl = null): array
+    {
+        $clientId = $this->resolveClientId();
+        if ($clientId === '') {
+            return [
+                'success' => false,
+                'error' => 'missing_client_id',
+                'message' => 'Client ID do Mercado Livre nao configurado.',
+            ];
+        }
+
+        $redirectUri = $this->buildOAuthCallbackUrl($apiBaseUrl);
+        $state = $this->encodeOAuthState([
+            'provider_id' => $provider->getId(),
+            'return_url' => $returnUrl,
+            'issued_at' => time(),
+        ]);
+
+        return array_merge([
+            'success' => true,
+            'state' => $state,
+        ], $this->mercadoLivreClient->buildAuthorizationUrl($clientId, $redirectUri, $state));
+    }
+
+    public function connectViaOAuthCode(string $code, string $state, string $redirectUri): array
+    {
+        $payload = $this->decodeOAuthState($state);
+        if ($payload === null) {
+            return [
+                'success' => false,
+                'error' => 'invalid_state',
+                'message' => 'Estado OAuth invalido.',
+            ];
+        }
+
+        $provider = $this->entityManager->getRepository(People::class)->find((int) ($payload['provider_id'] ?? 0));
+        if (!$provider instanceof People) {
+            return [
+                'success' => false,
+                'error' => 'invalid_provider',
+                'message' => 'Empresa da autorizacao nao encontrada.',
+            ];
+        }
+
+        $clientId = $this->resolveClientId();
+        $clientSecret = $this->resolveClientSecret();
+        if ($clientId === '' || $clientSecret === '') {
+            return [
+                'success' => false,
+                'error' => 'missing_client_config',
+                'message' => 'Client ID/secret do Mercado Livre nao configurado.',
+                'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
+            ];
+        }
+
+        $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $redirectUri);
+        if (!is_array($token) || trim((string) ($token['access_token'] ?? '')) === '') {
+            return [
+                'success' => false,
+                'error' => 'token_exchange_failed',
+                'message' => 'Nao foi possivel concluir a autorizacao no Mercado Livre.',
+                'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
+            ];
+        }
+
+        $userId = trim((string) ($token['user_id'] ?? $token['seller_id'] ?? ''));
+        if ($userId === '') {
+            $currentUser = $this->mercadoLivreClient->requestApi('GET', '/users/me', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . trim((string) $token['access_token']),
+                ],
+            ]);
+            $userId = trim((string) ($currentUser['id'] ?? ''));
+        }
+
+        $this->persistProviderConfig($provider, self::CONFIG_ACCESS_TOKEN, trim((string) $token['access_token']));
+        $this->persistProviderConfig($provider, self::CONFIG_REFRESH_TOKEN, trim((string) ($token['refresh_token'] ?? '')));
+        if ($userId !== '') {
+            $this->persistProviderConfig($provider, self::CONFIG_USER_ID, $userId);
+            $this->materializeProviderSellerId($provider, $userId);
+        }
+
+        $this->storeProviderState($provider, [
+            'connected_at' => date('Y-m-d H:i:s'),
+            'expires_in' => $token['expires_in'] ?? null,
+            'last_error_code' => null,
+            'last_error_message' => null,
+        ]);
+
+        return [
+            'success' => true,
+            'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
+            'user_id' => $userId !== '' ? $userId : null,
         ];
     }
 
@@ -754,7 +856,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
                INNER JOIN extra_fields ef ON ef.id = ed.extra_fields_id
                INNER JOIN product p ON p.id = ed.entity_id
               WHERE ef.context = :context
-                AND ef.name = 'id'
+                AND ef.field_name = 'id'
                 AND LOWER(ed.entity_name) = 'product'
                 AND p.company_id = :provider_id",
             [
@@ -809,6 +911,125 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         return $value;
+    }
+
+    private function persistProviderConfig(People $provider, string $key, string $value): void
+    {
+        $config = $this->configService->discoveryConfig($provider, $key);
+        if (!$config instanceof Config) {
+            return;
+        }
+
+        $config->setConfigValue($value);
+        $config->setVisibility('private');
+        $this->entityManager->persist($config);
+        $this->entityManager->flush();
+    }
+
+    private function buildOAuthCallbackUrl(string $apiBaseUrl): string
+    {
+        return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/callback';
+    }
+
+    private function encodeOAuthState(array $payload): string
+    {
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) ?: '{}';
+        $encodedPayload = $this->base64UrlEncode($json);
+        $signature = hash_hmac('sha256', $encodedPayload, $this->resolveStateSecret());
+
+        return $this->base64UrlEncode(json_encode([
+            'payload' => $encodedPayload,
+            'signature' => $signature,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) ?: '{}');
+    }
+
+    private function decodeOAuthState(string $state): ?array
+    {
+        $decoded = json_decode($this->base64UrlDecode($state), true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        $payload = trim((string) ($decoded['payload'] ?? ''));
+        $signature = trim((string) ($decoded['signature'] ?? ''));
+        if ($payload === '' || $signature === '') {
+            return null;
+        }
+
+        $expectedSignature = hash_hmac('sha256', $payload, $this->resolveStateSecret());
+        if (!hash_equals($expectedSignature, $signature)) {
+            return null;
+        }
+
+        $payloadData = json_decode($this->base64UrlDecode($payload), true);
+        if (!is_array($payloadData)) {
+            return null;
+        }
+
+        $issuedAt = (int) ($payloadData['issued_at'] ?? 0);
+        if ($issuedAt <= 0 || $issuedAt < (time() - 3600)) {
+            return null;
+        }
+
+        return $payloadData;
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    private function base64UrlDecode(string $value): string
+    {
+        $padding = strlen($value) % 4;
+        if ($padding > 0) {
+            $value .= str_repeat('=', 4 - $padding);
+        }
+
+        return base64_decode(strtr($value, '-_', '+/'), true) ?: '';
+    }
+
+    private function resolveClientId(): string
+    {
+        return trim((string) (
+            $_ENV['OAUTH_MERCADO_LIVRE_CLIENT_ID']
+            ?? $_SERVER['OAUTH_MERCADO_LIVRE_CLIENT_ID']
+            ?? $_ENV['OAUTH_MERCADO_LIVRE_APP_ID']
+            ?? $_SERVER['OAUTH_MERCADO_LIVRE_APP_ID']
+            ?? ''
+        ));
+    }
+
+    private function resolveClientSecret(): string
+    {
+        return trim((string) (
+            $_ENV['OAUTH_MERCADO_LIVRE_CLIENT_SECRET']
+            ?? $_SERVER['OAUTH_MERCADO_LIVRE_CLIENT_SECRET']
+            ?? $_ENV['OAUTH_MERCADO_LIVRE_APP_SECRET']
+            ?? $_SERVER['OAUTH_MERCADO_LIVRE_APP_SECRET']
+            ?? ''
+        ));
+    }
+
+    private function resolveStateSecret(): string
+    {
+        return trim((string) (
+            $_ENV['OAUTH_MERCADO_LIVRE_STATE_SECRET']
+            ?? $_SERVER['OAUTH_MERCADO_LIVRE_STATE_SECRET']
+            ?? $_ENV['APP_SECRET']
+            ?? $_SERVER['APP_SECRET']
+            ?? 'mercadolivre'
+        ));
+    }
+
+    private function normalizeReturnUrl(mixed $returnUrl): string
+    {
+        $returnUrl = trim((string) $returnUrl);
+        if ($returnUrl === '') {
+            return '/integrations-page';
+        }
+
+        return $returnUrl;
     }
 
     private function decodeJson(?string $json): array

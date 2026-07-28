@@ -11,6 +11,8 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 class MercadoLivreClient
 {
     private const API_BASE_URL = 'https://api.mercadolibre.com';
+    private const DEFAULT_AUTHORIZATION_URL = 'https://auth.mercadolivre.com.br/authorization';
+    private const TOKEN_URL = 'https://api.mercadolibre.com/oauth/token';
 
     private ?LoggerInterface $logger = null;
 
@@ -50,6 +52,66 @@ class MercadoLivreClient
     public function getOrder(string $orderId, ?People $provider = null): ?array
     {
         return $this->requestApi('GET', '/orders/' . rawurlencode($orderId), [], $provider);
+    }
+
+    public function buildAuthorizationUrl(string $clientId, string $redirectUri, string $state): array
+    {
+        $authorizationBaseUrl = trim((string) ($_ENV['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? $_SERVER['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? ''))
+            ?: self::DEFAULT_AUTHORIZATION_URL;
+
+        $authorizationUrl = $authorizationBaseUrl . '?' . http_build_query([
+            'response_type' => 'code',
+            'client_id' => $clientId,
+            'redirect_uri' => $redirectUri,
+            'state' => $state,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        return [
+            'authorization_url' => $authorizationUrl,
+            'url' => $authorizationUrl,
+            'auth_url' => $authorizationUrl,
+            'redirect_uri' => $redirectUri,
+        ];
+    }
+
+    public function exchangeAuthorizationCode(string $clientId, string $clientSecret, string $code, string $redirectUri): ?array
+    {
+        try {
+            $response = $this->httpClient->request('POST', self::TOKEN_URL, [
+                'headers' => [
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                ],
+                'body' => http_build_query([
+                    'grant_type' => 'authorization_code',
+                    'client_id' => $clientId,
+                    'client_secret' => $clientSecret,
+                    'code' => $code,
+                    'redirect_uri' => $redirectUri,
+                ], '', '&', PHP_QUERY_RFC3986),
+                'timeout' => 20,
+                'max_duration' => 30,
+            ]);
+
+            $status = $response->getStatusCode();
+            $body = $this->decodeResponseBody((string) $response->getContent(false));
+            if ($status < 200 || $status >= 300) {
+                $this->logger?->warning('Mercado Livre OAuth token request failed', [
+                    'status' => $status,
+                    'body' => $body,
+                ]);
+
+                return null;
+            }
+
+            return $body;
+        } catch (\Throwable $exception) {
+            $this->logger?->error('Mercado Livre OAuth token request exception', [
+                'exception' => $exception,
+            ]);
+
+            return null;
+        }
     }
 
     public function requestApi(string $method, string $path, array $options = [], ?People $provider = null): ?array
@@ -109,5 +171,20 @@ class MercadoLivreClient
         }
 
         return trim((string) ($_ENV['OAUTH_MERCADO_LIVRE_ACCESS_TOKEN'] ?? $_SERVER['OAUTH_MERCADO_LIVRE_ACCESS_TOKEN'] ?? ''));
+    }
+
+    private function decodeResponseBody(string $rawBody): array
+    {
+        $rawBody = trim($rawBody);
+        if ($rawBody === '') {
+            return [];
+        }
+
+        $decoded = json_decode($rawBody, true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+            return $decoded;
+        }
+
+        return ['message' => $rawBody];
     }
 }
