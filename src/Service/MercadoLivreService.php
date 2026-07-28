@@ -997,7 +997,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         return $this->resolveConfiguredValue(
             $provider,
-            [self::CONFIG_CLIENT_ID, 'OAUTH_MERCADO_LIVRE_APP_ID', 'mercado_livre_app_id'],
+            [self::CONFIG_CLIENT_ID, 'OAUTH_MERCADO_LIVRE_APP_ID', 'mercado_livre_app_id', 'mercadolivre_app_id'],
             ['OAUTH_MERCADO_LIVRE_CLIENT_ID', 'OAUTH_MERCADO_LIVRE_APP_ID']
         );
     }
@@ -1006,7 +1006,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         return $this->resolveConfiguredValue(
             $provider,
-            [self::CONFIG_CLIENT_SECRET, 'OAUTH_MERCADO_LIVRE_APP_SECRET', 'mercado_livre_app_secret'],
+            [self::CONFIG_CLIENT_SECRET, 'OAUTH_MERCADO_LIVRE_APP_SECRET', 'mercado_livre_app_secret', 'mercadolivre_app_secret'],
             ['OAUTH_MERCADO_LIVRE_CLIENT_SECRET', 'OAUTH_MERCADO_LIVRE_APP_SECRET']
         );
     }
