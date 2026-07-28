@@ -10,6 +10,7 @@ use ControleOnline\Service\HydratorService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\MercadoLivreService;
 use ControleOnline\Service\RequestPayloadService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -32,6 +33,7 @@ class IntegrationController extends AbstractController
         private PeopleService $peopleService,
         private Food99Service $food99Service,
         private iFoodService $iFoodService,
+        private MercadoLivreService $mercadoLivreService,
         private CompanyIntegrationStatusService $companyIntegrationStatusService,
         private HydratorService $hydratorService,
         private RequestPayloadService $requestPayloadService,
@@ -1240,6 +1242,18 @@ class IntegrationController extends AbstractController
             ]);
         }
 
+        $mercadoLivreState = [];
+        $mercadoLivreError = null;
+        try {
+            $mercadoLivreState = $this->mercadoLivreService->getStoredIntegrationState($provider);
+        } catch (\Throwable $exception) {
+            $mercadoLivreError = 'Não foi possível carregar os dados da integração Mercado Livre.';
+            self::$logger?->error('Failed to load Mercado Livre integration summary', [
+                'provider_id' => $provider->getId(),
+                'exception' => $exception,
+            ]);
+        }
+
         $companyIntegrations = $this->companyIntegrationStatusService->listCompanyIntegrations($provider);
         $publishedProductCount = count(array_filter(
             $products['products'] ?? [],
@@ -1297,6 +1311,26 @@ class IntegrationController extends AbstractController
                 ] : null,
                 'store_error' => $ifoodError,
             ],
+            [
+                'key' => 'mercadolivre',
+                'label' => 'Mercado Livre',
+                'minimum_required_items' => 1,
+                'eligible_product_count' => $mercadoLivreState['imported_product_count'] ?? 0,
+                'connected' => (bool) ($mercadoLivreState['connected'] ?? false),
+                'remote_connected' => (bool) ($mercadoLivreState['remote_connected'] ?? false),
+                'auth_available' => (bool) ($mercadoLivreState['auth_available'] ?? false),
+                'user_id' => $mercadoLivreState['user_id'] ?? null,
+                'seller_id' => $mercadoLivreState['seller_id'] ?? null,
+                'imported_product_count' => $mercadoLivreState['imported_product_count'] ?? 0,
+                'last_sync_at' => $mercadoLivreState['last_sync_at'] ?? null,
+                'last_webhook_event_id' => $mercadoLivreState['last_webhook_event_id'] ?? null,
+                'last_webhook_event_type' => $mercadoLivreState['last_webhook_event_type'] ?? null,
+                'last_webhook_received_at' => $mercadoLivreState['last_webhook_received_at'] ?? null,
+                'last_webhook_processed_at' => $mercadoLivreState['last_webhook_processed_at'] ?? null,
+                'last_error_code' => $mercadoLivreState['last_error_code'] ?? null,
+                'last_error_message' => $mercadoLivreState['last_error_message'] ?? null,
+                'store_error' => $mercadoLivreError,
+            ],
         ], $companyIntegrations)));
     }
 
@@ -1316,8 +1350,44 @@ class IntegrationController extends AbstractController
             'platforms' => [
                 '99food' => $this->food99Service->getCatalogSyncStatus($provider),
                 'ifood' => $this->iFoodService->getCatalogSyncStatus($provider),
+                'mercadolivre' => $this->mercadoLivreService->getCatalogSyncStatus($provider),
             ],
         ]);
+    }
+
+    #[Route('/marketplace/integrations/mercadolivre/detail', name: 'marketplace_integrations_mercadolivre_detail', methods: ['GET'])]
+    public function getMercadoLivreIntegrationDetail(Request $request): JsonResponse
+    {
+        $provider = $this->resolveProvider($request);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        return new JsonResponse($this->mercadoLivreService->buildIntegrationDetail(
+            $provider,
+            $request->getSchemeAndHttpHost()
+        ));
+    }
+
+    #[Route('/marketplace/integrations/mercadolivre/products/import', name: 'marketplace_integrations_mercadolivre_products_import', methods: ['POST'])]
+    public function importMercadoLivreProducts(Request $request): JsonResponse
+    {
+        $payload = $this->parseJsonBody($request);
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $limit = $this->requestPayloadService->normalizeOptionalNumericId($payload['limit'] ?? $request->query->get('limit') ?? 50) ?: 50;
+        $showcaseId = $payload['showcase_id']
+            ?? $payload['showcase']
+            ?? $request->query->get('showcase_id')
+            ?? null;
+
+        $result = $this->mercadoLivreService->importProducts($provider, (int) $limit, $showcaseId);
+        $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
+
+        return new JsonResponse($result, $status);
     }
 
     #[Route('/marketplace/integrations/99food/store', name: 'marketplace_integrations_food99_store', methods: ['GET'])]
