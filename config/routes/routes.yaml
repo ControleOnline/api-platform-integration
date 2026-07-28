@@ -1,0 +1,3 @@
+controleonline_integration:
+    resource: ../../src/Controller/
+    type: attribute

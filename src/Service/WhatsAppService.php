@@ -21,10 +21,7 @@ class WhatsAppService
         private EntityManagerInterface $manager,
         private TaskInterationService $taskInterationService,
 
-    ) {
-        if (!self::$whatsAppClient)
-            self::$whatsAppClient = new WhatsAppClient($_ENV['WHATSAPP_SERVER'], $this->getApiKey());
-    }
+    ) {}
 
     private function getApiKey()
     {
@@ -35,6 +32,15 @@ class WhatsAppService
         if (!$whatsAppKey) throw new \Exception('WhatsApp key not found');
 
         return $whatsAppKey->getApiKey();
+    }
+
+    private function getWhatsAppClient(): WhatsAppClient
+    {
+        if (!self::$whatsAppClient) {
+            self::$whatsAppClient = new WhatsAppClient($_ENV['WHATSAPP_SERVER'], $this->getApiKey());
+        }
+
+        return self::$whatsAppClient;
     }
 
     public function integrate(Integration $integration)
@@ -63,7 +69,7 @@ class WhatsAppService
         $whatsAppProfile = new WhatsAppProfile();
         $whatsAppProfile->setPhoneNumber($phoneNumber);
 
-        return self::$whatsAppClient->createSession($whatsAppProfile);
+        return $this->getWhatsAppClient()->createSession($whatsAppProfile);
     }
 
     private function receiveMessage(WhatsAppMessage $whatsAppMessage)
@@ -102,13 +108,13 @@ class WhatsAppService
         $message = json_decode($content->getBody(), true);
         switch ($whatsAppMessage->getAction()) {
             case 'sendMessage':
-                return self::$whatsAppClient->send($whatsAppMessage);
+                return $this->getWhatsAppClient()->send($whatsAppMessage);
                 break;
             case 'sendMedia':
                 $media = new WhatsAppMedia();
                 $media->setData($message['file']);
                 $content->setMedia($media);
-                return self::$whatsAppClient->sendMedia($whatsAppMessage);
+                return $this->getWhatsAppClient()->sendMedia($whatsAppMessage);
                 break;
             case 'receiveMessage':
                 return $this->receiveMessage($whatsAppMessage);
