@@ -1064,6 +1064,17 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         } catch (\Throwable) {
         }
 
+        $tenantMainCompany = $this->entityManager->getRepository(People::class)->find(1);
+        if ($tenantMainCompany instanceof People) {
+            foreach ($companies as $company) {
+                if ((int) $company->getId() === (int) $tenantMainCompany->getId()) {
+                    return $companies;
+                }
+            }
+
+            $companies[] = $tenantMainCompany;
+        }
+
         return $companies;
     }
 
