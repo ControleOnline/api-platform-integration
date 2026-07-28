@@ -36,6 +36,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         private readonly ConfigService $configService,
         private readonly ExtraDataService $extraDataService,
         private readonly PeopleService $peopleService,
+        private readonly PeopleRoleService $peopleRoleService,
         private readonly StatusService $statusService,
         private readonly LoggerService $loggerService,
     ) {
@@ -996,7 +997,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         return $this->resolveConfiguredValue(
             $provider,
-            [self::CONFIG_CLIENT_ID, 'OAUTH_MERCADO_LIVRE_APP_ID'],
+            [self::CONFIG_CLIENT_ID, 'OAUTH_MERCADO_LIVRE_APP_ID', 'mercado_livre_app_id'],
             ['OAUTH_MERCADO_LIVRE_CLIENT_ID', 'OAUTH_MERCADO_LIVRE_APP_ID']
         );
     }
@@ -1005,16 +1006,16 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         return $this->resolveConfiguredValue(
             $provider,
-            [self::CONFIG_CLIENT_SECRET, 'OAUTH_MERCADO_LIVRE_APP_SECRET'],
+            [self::CONFIG_CLIENT_SECRET, 'OAUTH_MERCADO_LIVRE_APP_SECRET', 'mercado_livre_app_secret'],
             ['OAUTH_MERCADO_LIVRE_CLIENT_SECRET', 'OAUTH_MERCADO_LIVRE_APP_SECRET']
         );
     }
 
     private function resolveConfiguredValue(?People $provider, array $configKeys, array $environmentKeys): string
     {
-        if ($provider instanceof People) {
+        foreach ($this->resolveConfigCompanies($provider) as $company) {
             foreach ($configKeys as $configKey) {
-                $configuredValue = $this->readConfigValue($provider, $configKey);
+                $configuredValue = $this->readConfigValue($company, $configKey);
                 if ($configuredValue !== '') {
                     return $configuredValue;
                 }
@@ -1035,6 +1036,35 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         return '';
+    }
+
+    /**
+     * Integration app credentials belong to the domain main company; seller tokens
+     * still remain scoped to the selected provider.
+     */
+    private function resolveConfigCompanies(?People $provider): array
+    {
+        $companies = [];
+
+        if ($provider instanceof People) {
+            $companies[] = $provider;
+        }
+
+        try {
+            $mainCompany = $this->peopleRoleService->getMainCompany();
+            if ($mainCompany instanceof People) {
+                foreach ($companies as $company) {
+                    if ((int) $company->getId() === (int) $mainCompany->getId()) {
+                        return $companies;
+                    }
+                }
+
+                $companies[] = $mainCompany;
+            }
+        } catch (\Throwable) {
+        }
+
+        return $companies;
     }
 
     private function resolveStateSecret(): string
