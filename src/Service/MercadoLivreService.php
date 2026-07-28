@@ -24,6 +24,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     private const CONFIG_REFRESH_TOKEN = 'mercado-livre-refresh-token';
     private const CONFIG_USER_ID = 'mercado-livre-user-id';
     private const CONFIG_SHOP_DOMAIN = 'mercado-livre-shop-domain';
+    private const CONFIG_CLIENT_ID = 'OAUTH_MERCADO_LIVRE_CLIENT_ID';
+    private const CONFIG_CLIENT_SECRET = 'OAUTH_MERCADO_LIVRE_CLIENT_SECRET';
     private const DEFAULT_SHOP_SOURCE = 'mercado-livre';
 
     protected static $logger;
@@ -100,7 +102,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             'oauth' => [
                 'callback_url' => $oauthCallbackUrl,
                 'authorization_endpoint' => '/marketplace/integrations/mercadolivre/authorization-page',
-                'client_configured' => $this->resolveClientId() !== '',
+                'client_configured' => $this->resolveClientId($provider) !== ''
+                    && $this->resolveClientSecret($provider) !== '',
             ],
             'configs' => [
                 self::CONFIG_USER_ID => $this->readConfigValue($provider, self::CONFIG_USER_ID),
@@ -120,7 +123,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
 
     public function buildAuthorizationPage(People $provider, string $apiBaseUrl, ?string $returnUrl = null): array
     {
-        $clientId = $this->resolveClientId();
+        $clientId = $this->resolveClientId($provider);
         if ($clientId === '') {
             return [
                 'success' => false,
@@ -162,8 +165,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ];
         }
 
-        $clientId = $this->resolveClientId();
-        $clientSecret = $this->resolveClientSecret();
+        $clientId = $this->resolveClientId($provider);
+        $clientSecret = $this->resolveClientSecret($provider);
         if ($clientId === '' || $clientSecret === '') {
             return [
                 'success' => false,
@@ -989,26 +992,49 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         return base64_decode(strtr($value, '-_', '+/'), true) ?: '';
     }
 
-    private function resolveClientId(): string
+    private function resolveClientId(?People $provider = null): string
     {
-        return trim((string) (
-            $_ENV['OAUTH_MERCADO_LIVRE_CLIENT_ID']
-            ?? $_SERVER['OAUTH_MERCADO_LIVRE_CLIENT_ID']
-            ?? $_ENV['OAUTH_MERCADO_LIVRE_APP_ID']
-            ?? $_SERVER['OAUTH_MERCADO_LIVRE_APP_ID']
-            ?? ''
-        ));
+        return $this->resolveConfiguredValue(
+            $provider,
+            [self::CONFIG_CLIENT_ID, 'OAUTH_MERCADO_LIVRE_APP_ID'],
+            ['OAUTH_MERCADO_LIVRE_CLIENT_ID', 'OAUTH_MERCADO_LIVRE_APP_ID']
+        );
     }
 
-    private function resolveClientSecret(): string
+    private function resolveClientSecret(?People $provider = null): string
     {
-        return trim((string) (
-            $_ENV['OAUTH_MERCADO_LIVRE_CLIENT_SECRET']
-            ?? $_SERVER['OAUTH_MERCADO_LIVRE_CLIENT_SECRET']
-            ?? $_ENV['OAUTH_MERCADO_LIVRE_APP_SECRET']
-            ?? $_SERVER['OAUTH_MERCADO_LIVRE_APP_SECRET']
-            ?? ''
-        ));
+        return $this->resolveConfiguredValue(
+            $provider,
+            [self::CONFIG_CLIENT_SECRET, 'OAUTH_MERCADO_LIVRE_APP_SECRET'],
+            ['OAUTH_MERCADO_LIVRE_CLIENT_SECRET', 'OAUTH_MERCADO_LIVRE_APP_SECRET']
+        );
+    }
+
+    private function resolveConfiguredValue(?People $provider, array $configKeys, array $environmentKeys): string
+    {
+        if ($provider instanceof People) {
+            foreach ($configKeys as $configKey) {
+                $configuredValue = $this->readConfigValue($provider, $configKey);
+                if ($configuredValue !== '') {
+                    return $configuredValue;
+                }
+            }
+        }
+
+        foreach ($environmentKeys as $environmentKey) {
+            $environmentValue = trim((string) (
+                $_ENV[$environmentKey]
+                ?? $_SERVER[$environmentKey]
+                ?? getenv($environmentKey)
+                ?: ''
+            ));
+
+            if ($environmentValue !== '') {
+                return $environmentValue;
+            }
+        }
+
+        return '';
     }
 
     private function resolveStateSecret(): string
