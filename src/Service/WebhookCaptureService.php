@@ -12,6 +12,7 @@ class WebhookCaptureService
     public function __construct(
         private readonly IntegrationService $integrationService,
         private readonly LoggerService $loggerService,
+        private readonly ?MercadoLivreService $mercadoLivreService = null,
     ) {
     }
 
@@ -69,11 +70,15 @@ class WebhookCaptureService
         return $integration;
     }
 
-    public function integrate(Integration $integration): void
+    public function integrate(Integration $integration): ?\ControleOnline\Entity\Order
     {
         $headers = json_decode((string) $integration->getHeaders(), true);
         $webhook = is_array($headers['webhook'] ?? null) ? $headers['webhook'] : [];
         $provider = trim((string) ($webhook['provider'] ?? 'WebhookCapture'));
+
+        if (strcasecmp($provider, 'MercadoLivre') === 0 && $this->mercadoLivreService instanceof MercadoLivreService) {
+            return $this->mercadoLivreService->handleWebhookCapture($integration);
+        }
 
         /* @agents Generic captures are archival only until a provider-specific
          * integration exists; the worker must close the queue without mutating
@@ -84,6 +89,8 @@ class WebhookCaptureService
             'event_id' => $webhook['event_id'] ?? null,
             'event_type' => $webhook['event_type'] ?? null,
         ]);
+
+        return null;
     }
 
     private function decodePayload(string $rawBody): array

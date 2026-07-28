@@ -3,6 +3,7 @@
 namespace ControleOnline\Service\Marketplace;
 
 use ControleOnline\Service\Food99Service;
+use ControleOnline\Service\MercadoLivreService;
 use ControleOnline\Service\UberService;
 use ControleOnline\Service\iFoodService;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -13,6 +14,7 @@ final class MarketplaceProviderRegistry
         iFoodService::class,
         Food99Service::class,
         UberService::class,
+        MercadoLivreService::class,
     ];
 
     /** @var array<class-string, object> */
