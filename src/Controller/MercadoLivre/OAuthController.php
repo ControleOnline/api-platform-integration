@@ -74,6 +74,37 @@ class OAuthController extends AbstractController
         );
     }
 
+    #[Route('/marketplace/integrations/mercadolivre/oauth/callback', name: 'marketplace_integrations_mercadolivre_front_oauth_callback', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function frontCallback(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $state = trim((string) ($payload['state'] ?? ''));
+        $code = trim((string) ($payload['code'] ?? ''));
+        $redirectUri = trim((string) ($payload['redirect_uri'] ?? ''));
+        $error = trim((string) ($payload['error'] ?? ''));
+
+        if ($error !== '' || $code === '' || $state === '' || $redirectUri === '') {
+            return new JsonResponse([
+                'success' => false,
+                'error' => $error !== '' ? $error : 'missing_oauth_payload',
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        $result = $this->mercadoLivreService->connectViaOAuthCode(
+            $code,
+            $state,
+            $redirectUri
+        );
+
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
     private function parseJsonBody(Request $request): array
     {
         $content = trim((string) $request->getContent());

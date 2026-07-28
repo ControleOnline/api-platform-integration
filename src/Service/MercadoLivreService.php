@@ -133,9 +133,10 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ];
         }
 
-        $redirectUri = $this->buildOAuthCallbackUrl($apiBaseUrl);
+        $redirectUri = $this->resolveOAuthRedirectUri($returnUrl, $apiBaseUrl);
         $state = $this->encodeOAuthState([
             'provider_id' => $provider->getId(),
+            'redirect_uri' => $redirectUri,
             'return_url' => $returnUrl,
             'issued_at' => time(),
         ]);
@@ -177,7 +178,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ];
         }
 
-        $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $redirectUri);
+        $exchangeRedirectUri = $this->resolveOAuthExchangeRedirectUri($redirectUri, $payload);
+        $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $exchangeRedirectUri);
         if (!is_array($token) || trim((string) ($token['access_token'] ?? '')) === '') {
             return [
                 'success' => false,
@@ -933,6 +935,28 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     private function buildOAuthCallbackUrl(string $apiBaseUrl): string
     {
         return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/callback';
+    }
+
+    private function resolveOAuthRedirectUri(?string $returnUrl, string $apiBaseUrl): string
+    {
+        $returnUrl = trim((string) $returnUrl);
+
+        if ($returnUrl !== '' && preg_match('#^https?://#i', $returnUrl) === 1) {
+            return $returnUrl;
+        }
+
+        return $this->buildOAuthCallbackUrl($apiBaseUrl);
+    }
+
+    private function resolveOAuthExchangeRedirectUri(string $redirectUri, array $payload): string
+    {
+        $stateRedirectUri = trim((string) ($payload['redirect_uri'] ?? ''));
+
+        if ($stateRedirectUri !== '') {
+            return $stateRedirectUri;
+        }
+
+        return trim($redirectUri);
     }
 
     private function encodeOAuthState(array $payload): string
