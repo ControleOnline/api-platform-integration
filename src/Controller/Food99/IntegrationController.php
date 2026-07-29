@@ -4,9 +4,11 @@ namespace ControleOnline\Controller\Food99;
 
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\People;
+use ControleOnline\Entity\User;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\CompanyIntegrationStatusService;
 use ControleOnline\Service\HydratorService;
+use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\iFoodService;
 use ControleOnline\Service\LoggerService;
@@ -34,6 +36,7 @@ class IntegrationController extends AbstractController
         private Food99Service $food99Service,
         private iFoodService $iFoodService,
         private MercadoLivreService $mercadoLivreService,
+        private IntegrationService $integrationService,
         private CompanyIntegrationStatusService $companyIntegrationStatusService,
         private HydratorService $hydratorService,
         private RequestPayloadService $requestPayloadService,
@@ -1385,10 +1388,37 @@ class IntegrationController extends AbstractController
             ?? $request->query->get('showcase_id')
             ?? null;
 
-        $result = $this->mercadoLivreService->importProducts($provider, (int) $limit, $showcaseId);
-        $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
+        $showcaseId = $this->requestPayloadService->normalizeOptionalNumericId($showcaseId);
+        if (!$showcaseId) {
+            return new JsonResponse([
+                'success' => false,
+                'error' => 'missing_showcase',
+                'message' => 'Selecione a vitrine que recebera os produtos importados.',
+            ], Response::HTTP_BAD_REQUEST);
+        }
 
-        return new JsonResponse($result, $status);
+        $limit = max(1, min((int) $limit, 200));
+        $user = $this->security->getToken()?->getUser();
+        $integration = $this->integrationService->addIntegration(
+            json_encode([
+                'action' => 'products_import',
+                'provider_id' => $provider->getId(),
+                'showcase_id' => $showcaseId,
+                'limit' => $limit,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'MercadoLivre',
+            null,
+            $user instanceof User ? $user : null,
+            $provider
+        );
+
+        return new JsonResponse([
+            'success' => true,
+            'queued' => true,
+            'integration_id' => $integration->getId(),
+            'status' => 'open',
+            'message' => 'Importacao do Mercado Livre enviada para a fila.',
+        ], Response::HTTP_ACCEPTED);
     }
 
     #[Route('/marketplace/integrations/99food/store', name: 'marketplace_integrations_food99_store', methods: ['GET'])]

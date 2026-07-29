@@ -57,42 +57,49 @@ class TenantIntegrationCommand extends DefaultCommand
             $this->addLog('Outro processo ainda está em execução. Ignorando...');
             return Command::SUCCESS;
         }
-        $this->addLog('Iniciando a verificação da fila de integração...');
-        $integrations = $this->integrationService->getAllOpenIntegrations(1000);
 
-        foreach ($integrations as $integration)
-            try {
-                $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
-                $this->addLog(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
-                $this->addLog('Service: ' . $serviceName);
-                $this->integrationService->executeIntegration($integration);
-            } catch (Throwable $e) {
-                $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
-                $this->addLog($e->getLine());
-                $this->addLog($e->getFile());
+        try {
+            $this->addLog('Iniciando a verificação da fila de integração...');
+            $integrations = $this->integrationService->getAllOpenIntegrations(1000);
 
-                if (!$this->entityManager->isOpen()) {
-                    $this->managerRegistry->resetManager();
-                    $this->entityManager = $this->managerRegistry->getManager();
-                }
-
+            foreach ($integrations as $integration)
                 try {
-                    $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
-                    $integration = $this->entityManager->find(Integration::class, $integration->getId());
-                    if ($integration) {
-                        $integration->incrementRetry();
-                        $integration->setStatus($statusError);
-                        $this->entityManager->persist($integration);
-                        $this->entityManager->flush();
+                    $serviceName = 'ControleOnline\\Service\\' . $integration->getQueueName() . 'Service';
+                    $this->addLog(sprintf('Iniciando o processamento do ID: %d - %s', $integration->getId(), $integration->getQueueName()));
+                    $this->addLog('Service: ' . $serviceName);
+                    $this->integrationService->executeIntegration($integration);
+                } catch (Throwable $e) {
+                    $this->addLog(sprintf('<error>Erro ao processar o ID: %d. Erro: %s</error>', $integration->getId(), $e->getMessage()));
+                    $this->addLog($e->getLine());
+                    $this->addLog($e->getFile());
+
+                    if (!$this->entityManager->isOpen()) {
+                        $this->managerRegistry->resetManager();
+                        $this->entityManager = $this->managerRegistry->getManager();
                     }
-                } catch (Throwable $persistError) {
-                    $this->addLog(sprintf('<error>Erro ao salvar status de erro para ID %d: %s</error>', $integration->getId(), $persistError->getMessage()));
+
+                    try {
+                        $statusError = $this->statusService->discoveryStatus('pending', 'error', 'integration');
+                        $integration = $this->entityManager->find(Integration::class, $integration->getId());
+                        if ($integration) {
+                            $integration->incrementRetry();
+                            $integration->setStatus($statusError);
+                            $this->entityManager->persist($integration);
+                            $this->entityManager->flush();
+                        }
+                    } catch (Throwable $persistError) {
+                        $this->addLog(sprintf('<error>Erro ao salvar status de erro para ID %d: %s</error>', $integration->getId(), $persistError->getMessage()));
+                    }
                 }
+
+
+            $this->addLog('Verificação da fila de integração concluída.');
+
+            return Command::SUCCESS;
+        } finally {
+            if ($this->lock->isAcquired()) {
+                $this->lock->release();
             }
-
-
-        $this->addLog('Verificação da fila de integração concluída.');
-
-        return Command::SUCCESS;
+        }
     }
 }

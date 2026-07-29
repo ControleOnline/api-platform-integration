@@ -15,10 +15,11 @@ use ControleOnline\Entity\ProductShowcase;
 use ControleOnline\Entity\ProductShowcaseItem;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Service\Client\MercadoLivreClient;
+use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationStateProviderInterface;
 use Doctrine\ORM\EntityManagerInterface;
 
-class MercadoLivreService implements MarketplaceIntegrationStateProviderInterface
+class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, MarketplaceIntegrationStateProviderInterface
 {
     private const APP_CONTEXT = 'MercadoLivre';
     private const CONFIG_ACCESS_TOKEN = 'mercado-livre-access-token';
@@ -48,6 +49,20 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     public function getMarketplaceKey(): string
     {
         return self::APP_CONTEXT;
+    }
+
+    public function integrate(Integration $integration): ?Order
+    {
+        $body = $this->decodeJson($integration->getBody());
+        $action = strtolower(trim((string) ($body['action'] ?? '')));
+
+        if ($action === 'products_import') {
+            $this->handleQueuedProductImport($integration, $body);
+
+            return null;
+        }
+
+        return $this->handleWebhookCapture($integration);
     }
 
     public function getStoredIntegrationState(People $provider): array
@@ -398,6 +413,41 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             'skipped_count' => $skipped,
             'products' => $products,
         ];
+    }
+
+    private function handleQueuedProductImport(Integration $integration, array $payload): void
+    {
+        $provider = $integration->getPeople();
+        if (!$provider instanceof People) {
+            $provider = $this->resolveProviderFromPayload($payload);
+        }
+
+        if (!$provider instanceof People) {
+            throw new \RuntimeException('Mercado Livre product import requires a provider.');
+        }
+
+        $result = $this->importProducts(
+            $provider,
+            (int) ($payload['limit'] ?? 50),
+            $payload['showcase_id'] ?? null
+        );
+
+        if (empty($result['success']) && is_array($result)) {
+            $this->storeProviderState($provider, [
+                'last_error_code' => $result['error'] ?? 'product_import_failed',
+                'last_error_message' => $this->formatProductImportError($result['error'] ?? null),
+            ]);
+        }
+    }
+
+    private function formatProductImportError(mixed $error): string
+    {
+        return match ((string) $error) {
+            'missing_showcase' => 'Selecione a vitrine que recebera os produtos importados.',
+            'invalid_showcase' => 'A vitrine selecionada nao pertence a empresa informada.',
+            'missing_user_id' => 'Conecte a conta do Mercado Livre antes de importar produtos.',
+            default => 'Nao foi possivel importar os produtos do Mercado Livre.',
+        };
     }
 
     public function handleWebhookCapture(Integration $integration): ?Order
