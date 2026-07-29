@@ -133,7 +133,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ];
         }
 
-        $redirectUri = $this->resolveOAuthRedirectUri($returnUrl, $apiBaseUrl);
+        $redirectUri = $this->resolveOAuthRedirectUri($apiBaseUrl);
         $state = $this->encodeOAuthState([
             'provider_id' => $provider->getId(),
             'redirect_uri' => $redirectUri,
@@ -937,14 +937,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/callback';
     }
 
-    private function resolveOAuthRedirectUri(?string $returnUrl, string $apiBaseUrl): string
+    private function resolveOAuthRedirectUri(string $apiBaseUrl): string
     {
-        $returnUrl = trim((string) $returnUrl);
-
-        if ($returnUrl !== '' && preg_match('#^https?://#i', $returnUrl) === 1) {
-            return $returnUrl;
-        }
-
         return $this->buildOAuthCallbackUrl($apiBaseUrl);
     }
 
