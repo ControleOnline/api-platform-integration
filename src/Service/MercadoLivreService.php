@@ -5,6 +5,7 @@ namespace ControleOnline\Service;
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Module;
 use ControleOnline\Entity\Order;
 use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
@@ -27,6 +28,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     private const CONFIG_CLIENT_ID = 'OAUTH_MERCADO_LIVRE_CLIENT_ID';
     private const CONFIG_CLIENT_SECRET = 'OAUTH_MERCADO_LIVRE_CLIENT_SECRET';
     private const DEFAULT_SHOP_SOURCE = 'mercado-livre';
+    private const CONFIG_MODULE_NAME = 'integration';
 
     protected static $logger;
 
@@ -1013,10 +1015,27 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             return;
         }
 
+        if (!$config->getModule() instanceof Module) {
+            $config->setModule($this->resolveConfigModule());
+        }
+
         $config->setConfigValue($value);
         $config->setVisibility('private');
         $this->entityManager->persist($config);
         $this->entityManager->flush();
+    }
+
+    private function resolveConfigModule(): Module
+    {
+        $module = $this->entityManager->getRepository(Module::class)->findOneBy([
+            'name' => self::CONFIG_MODULE_NAME,
+        ]);
+
+        if (!$module instanceof Module) {
+            throw new \RuntimeException(sprintf('Modulo "%s" nao encontrado para salvar configuracao.', self::CONFIG_MODULE_NAME));
+        }
+
+        return $module;
     }
 
     private function buildOAuthCallbackUrl(string $apiBaseUrl): string

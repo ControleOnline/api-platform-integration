@@ -77,12 +77,21 @@ class OAuthController extends AbstractController
             return $this->redirectWithOAuthStatus($returnUrl, false, $error !== '' ? $error : 'missing_code', $errorDescription);
         }
 
-        $result = $this->mercadoLivreService->connectViaOAuthCode(
-            $code,
-            $state,
-            $request->getSchemeAndHttpHost() . $request->getPathInfo(),
-            $resolvedAppDomain
-        );
+        try {
+            $result = $this->mercadoLivreService->connectViaOAuthCode(
+                $code,
+                $state,
+                $request->getSchemeAndHttpHost() . $request->getPathInfo(),
+                $resolvedAppDomain
+            );
+        } catch (\Throwable $exception) {
+            return $this->redirectWithOAuthStatus(
+                $returnUrl,
+                false,
+                'oauth_callback_failed',
+                $exception->getMessage()
+            );
+        }
 
         return $this->redirectWithOAuthStatus(
             (string) ($result['return_url'] ?? '/integrations-page'),
