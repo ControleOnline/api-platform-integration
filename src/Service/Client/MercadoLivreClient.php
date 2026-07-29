@@ -54,17 +54,17 @@ class MercadoLivreClient
         return $this->requestApi('GET', '/orders/' . rawurlencode($orderId), [], $provider);
     }
 
-    public function buildAuthorizationUrl(string $clientId, string $redirectUri, string $state): array
+    public function buildAuthorizationUrl(string $clientId, string $redirectUri, string $state, array $extraParams = []): array
     {
         $authorizationBaseUrl = trim((string) ($_ENV['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? $_SERVER['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? ''))
             ?: self::DEFAULT_AUTHORIZATION_URL;
 
-        $authorizationUrl = $authorizationBaseUrl . '?' . http_build_query([
+        $authorizationUrl = $authorizationBaseUrl . '?' . http_build_query(array_filter(array_merge([
             'response_type' => 'code',
             'client_id' => $clientId,
             'redirect_uri' => $redirectUri,
             'state' => $state,
-        ], '', '&', PHP_QUERY_RFC3986);
+        ], $extraParams), static fn($value): bool => $value !== null && $value !== ''), '', '&', PHP_QUERY_RFC3986);
 
         return [
             'authorization_url' => $authorizationUrl,
@@ -74,21 +74,27 @@ class MercadoLivreClient
         ];
     }
 
-    public function exchangeAuthorizationCode(string $clientId, string $clientSecret, string $code, string $redirectUri): ?array
+    public function exchangeAuthorizationCode(string $clientId, string $clientSecret, string $code, string $redirectUri, ?string $codeVerifier = null): ?array
     {
         try {
+            $body = [
+                'grant_type' => 'authorization_code',
+                'client_id' => $clientId,
+                'client_secret' => $clientSecret,
+                'code' => $code,
+                'redirect_uri' => $redirectUri,
+            ];
+
+            if (trim((string) $codeVerifier) !== '') {
+                $body['code_verifier'] = trim((string) $codeVerifier);
+            }
+
             $response = $this->httpClient->request('POST', self::TOKEN_URL, [
                 'headers' => [
                     'Accept' => 'application/json',
                     'Content-Type' => 'application/x-www-form-urlencoded',
                 ],
-                'body' => http_build_query([
-                    'grant_type' => 'authorization_code',
-                    'client_id' => $clientId,
-                    'client_secret' => $clientSecret,
-                    'code' => $code,
-                    'redirect_uri' => $redirectUri,
-                ], '', '&', PHP_QUERY_RFC3986),
+                'body' => http_build_query($body, '', '&', PHP_QUERY_RFC3986),
                 'timeout' => 20,
                 'max_duration' => 30,
             ]);

@@ -149,18 +149,23 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         $redirectUri = $this->resolveOAuthRedirectUri($apiBaseUrl, $appDomain);
+        $pkce = $this->createPkceState($provider, $redirectUri);
         $state = $this->encodeOAuthState([
             'provider_id' => $provider->getId(),
             'app_domain' => $appDomain,
             'redirect_uri' => $redirectUri,
             'return_url' => $returnUrl,
+            'oauth_nonce' => $pkce['nonce'],
             'issued_at' => time(),
         ]);
 
         return array_merge([
             'success' => true,
             'state' => $state,
-        ], $this->mercadoLivreClient->buildAuthorizationUrl($clientId, $redirectUri, $state));
+        ], $this->mercadoLivreClient->buildAuthorizationUrl($clientId, $redirectUri, $state, [
+            'code_challenge' => $pkce['challenge'],
+            'code_challenge_method' => 'S256',
+        ]));
     }
 
     public function resolveOAuthAppDomain(string $state, ?string $callbackAppDomain = null): string
@@ -243,7 +248,17 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         $exchangeRedirectUri = $this->resolveOAuthExchangeRedirectUri($redirectUri, $payload);
-        $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $exchangeRedirectUri);
+        $codeVerifier = $this->resolvePkceVerifier($provider, $payload, $exchangeRedirectUri);
+        if ($codeVerifier === '') {
+            return [
+                'success' => false,
+                'error' => 'missing_code_verifier',
+                'message' => 'Autorizacao Mercado Livre expirada. Inicie a conexao novamente.',
+                'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
+            ];
+        }
+
+        $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $exchangeRedirectUri, $codeVerifier);
         if (!is_array($token) || trim((string) ($token['access_token'] ?? '')) === '') {
             $exchangeError = $this->formatOAuthExchangeError($token);
             $this->storeProviderState($provider, [
@@ -282,6 +297,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             'expires_in' => $token['expires_in'] ?? null,
             'last_error_code' => null,
             'last_error_message' => null,
+            'oauth_pkce' => null,
         ]);
 
         return [
@@ -1022,6 +1038,55 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         return trim($redirectUri);
+    }
+
+    private function createPkceState(People $provider, string $redirectUri): array
+    {
+        $verifier = $this->base64UrlEncode(random_bytes(48));
+        $nonce = $this->base64UrlEncode(random_bytes(24));
+        $challenge = $this->base64UrlEncode(hash('sha256', $verifier, true));
+
+        $this->storeProviderState($provider, [
+            'oauth_pkce' => [
+                'nonce' => $nonce,
+                'code_verifier' => $verifier,
+                'redirect_uri' => $redirectUri,
+                'issued_at' => time(),
+            ],
+        ]);
+
+        return [
+            'nonce' => $nonce,
+            'challenge' => $challenge,
+        ];
+    }
+
+    private function resolvePkceVerifier(People $provider, array $payload, string $redirectUri): string
+    {
+        $nonce = trim((string) ($payload['oauth_nonce'] ?? ''));
+        if ($nonce === '') {
+            return '';
+        }
+
+        $pkce = $this->getProviderState($provider)['oauth_pkce'] ?? null;
+        if (!is_array($pkce)) {
+            return '';
+        }
+
+        if (!hash_equals(trim((string) ($pkce['nonce'] ?? '')), $nonce)) {
+            return '';
+        }
+
+        if (trim((string) ($pkce['redirect_uri'] ?? '')) !== trim($redirectUri)) {
+            return '';
+        }
+
+        $issuedAt = (int) ($pkce['issued_at'] ?? 0);
+        if ($issuedAt <= 0 || $issuedAt < (time() - 3600)) {
+            return '';
+        }
+
+        return trim((string) ($pkce['code_verifier'] ?? ''));
     }
 
     private function formatOAuthExchangeError(?array $token): array
