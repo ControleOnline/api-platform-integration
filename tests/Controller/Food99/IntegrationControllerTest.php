@@ -7,7 +7,9 @@ use ControleOnline\Entity\People;
 use ControleOnline\Service\CompanyIntegrationStatusService;
 use ControleOnline\Service\Food99Service;
 use ControleOnline\Service\HydratorService;
+use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
+use ControleOnline\Service\MercadoLivreService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\RequestPayloadService;
 use ControleOnline\Service\iFoodService;
@@ -105,6 +107,8 @@ final class IntegrationControllerTest extends TestCase
             $this->createStub(PeopleService::class),
             $food99Service,
             $ifoodService,
+            $this->createStub(MercadoLivreService::class),
+            $this->createStub(IntegrationService::class),
             $companyStatus,
             $hydrator,
             $requestPayloadService,
@@ -220,6 +224,8 @@ final class IntegrationControllerTest extends TestCase
             $peopleService,
             $food99Service,
             $this->createStub(iFoodService::class),
+            $this->createStub(MercadoLivreService::class),
+            $this->createStub(IntegrationService::class),
             $this->createStub(CompanyIntegrationStatusService::class),
             $this->createStub(HydratorService::class),
             $requestPayloadService,
@@ -321,6 +327,8 @@ final class IntegrationControllerTest extends TestCase
             $peopleService,
             $food99Service,
             $this->createStub(iFoodService::class),
+            $this->createStub(MercadoLivreService::class),
+            $this->createStub(IntegrationService::class),
             $this->createStub(CompanyIntegrationStatusService::class),
             $this->createStub(HydratorService::class),
             $requestPayloadService,
@@ -424,6 +432,8 @@ final class IntegrationControllerTest extends TestCase
             $peopleService,
             $food99Service,
             $this->createStub(iFoodService::class),
+            $this->createStub(MercadoLivreService::class),
+            $this->createStub(IntegrationService::class),
             $this->createStub(CompanyIntegrationStatusService::class),
             $this->createStub(HydratorService::class),
             $requestPayloadService,
