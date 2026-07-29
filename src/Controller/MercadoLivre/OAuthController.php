@@ -53,8 +53,8 @@ class OAuthController extends AbstractController
         return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
     }
 
-    #[Route('/{appDomain}/mercadolivre/oauth/return', name: 'marketplace_integrations_mercadolivre_oauth_tenant_callback', requirements: ['appDomain' => '[^/]+'], methods: ['GET'])]
-    public function callback(Request $request, string $appDomain): RedirectResponse
+    #[Route('/oauth/mercadolivre/return', name: 'marketplace_integrations_mercadolivre_oauth_callback', methods: ['GET'])]
+    public function callback(Request $request): RedirectResponse
     {
         $state = trim((string) $request->query->get('state', ''));
         $code = trim((string) $request->query->get('code', ''));
@@ -65,7 +65,7 @@ class OAuthController extends AbstractController
         }
 
         try {
-            $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state, $appDomain);
+            $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state);
             $this->databaseSwitchService->switchDatabaseByDomain($resolvedAppDomain);
         } catch (\Throwable $exception) {
             return $this->redirectWithOAuthStatus('/integrations-page', false, 'invalid_app_domain');
@@ -75,7 +75,7 @@ class OAuthController extends AbstractController
             $code,
             $state,
             $request->getSchemeAndHttpHost() . $request->getPathInfo(),
-            $appDomain
+            $resolvedAppDomain
         );
 
         return $this->redirectWithOAuthStatus(

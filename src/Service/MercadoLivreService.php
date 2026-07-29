@@ -88,7 +88,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
     {
         $state = $this->getStoredIntegrationState($provider);
         $shopShowcase = $this->findShopShowcase($provider);
-        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
+        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl);
 
         return [
             'provider' => [
@@ -985,19 +985,14 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         $this->entityManager->flush();
     }
 
-    private function buildOAuthCallbackUrl(string $apiBaseUrl, ?string $appDomain = null): string
+    private function buildOAuthCallbackUrl(string $apiBaseUrl): string
     {
-        $appDomain = $this->normalizeOAuthDomain($appDomain);
-        if ($appDomain === '') {
-            throw new \InvalidArgumentException('Dominio da aplicacao nao informado para callback Mercado Livre.');
-        }
-
-        return rtrim($apiBaseUrl, '/') . '/' . rawurlencode($appDomain) . '/mercadolivre/oauth/return';
+        return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/return';
     }
 
     private function resolveOAuthRedirectUri(string $apiBaseUrl, string $appDomain): string
     {
-        return $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
+        return $this->buildOAuthCallbackUrl($apiBaseUrl);
     }
 
     private function resolveOAuthExchangeRedirectUri(string $redirectUri, array $payload): string
