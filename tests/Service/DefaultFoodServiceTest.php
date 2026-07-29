@@ -163,7 +163,7 @@ class DefaultFoodServiceTest extends TestCase
         $this->setObjectProperty(DefaultFoodService::class, $service, 'domainService', $domainService);
 
         self::assertSame(
-            'https://api.custom-domain.test/files/123/download?app-domain=api.custom-domain.test',
+            'https://api.custom-domain.test/api.custom-domain.test/files/123/download',
             $service->buildPublicFileDownloadUrlValue(123)
         );
     }

@@ -892,11 +892,13 @@ class DefaultFoodService
             $mainDomain = 'https://' . ltrim($mainDomain, '/');
         }
 
+        $appDomain = rawurlencode($this->resolvePublicAppDomain($mainDomain));
+
         return sprintf(
-            '%s/files/%s/download?app-domain=%s',
+            '%s/%s/files/%s/download',
             rtrim($mainDomain, '/'),
-            $normalizedFileId,
-            rawurlencode($this->resolvePublicAppDomain($mainDomain))
+            $appDomain,
+            $normalizedFileId
         );
     }
 }
