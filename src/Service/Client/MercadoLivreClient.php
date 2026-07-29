@@ -49,6 +49,63 @@ class MercadoLivreClient
         return $this->requestApi('GET', '/items/' . rawurlencode($itemId), [], $provider);
     }
 
+    public function getItemDescription(string $itemId, ?People $provider = null): ?array
+    {
+        return $this->requestApi('GET', '/items/' . rawurlencode($itemId) . '/description', [], $provider);
+    }
+
+    public function getCategory(string $categoryId, ?People $provider = null): ?array
+    {
+        return $this->requestApi('GET', '/categories/' . rawurlencode($categoryId), [], $provider);
+    }
+
+    public function downloadPublicFile(string $url): ?array
+    {
+        $url = trim($url);
+        if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+            return null;
+        }
+
+        try {
+            $response = $this->httpClient->request('GET', $url, [
+                'headers' => [
+                    'Accept' => 'image/*,*/*;q=0.8',
+                ],
+                'timeout' => 20,
+                'max_duration' => 35,
+            ]);
+
+            $status = $response->getStatusCode();
+            if ($status < 200 || $status >= 300) {
+                $this->logger?->warning('Mercado Livre file download failed', [
+                    'url' => $url,
+                    'status' => $status,
+                ]);
+
+                return null;
+            }
+
+            $headers = $response->getHeaders(false);
+            $contentType = strtolower(trim((string) ($headers['content-type'][0] ?? 'application/octet-stream')));
+            $content = $response->getContent(false);
+            if ($content === '') {
+                return null;
+            }
+
+            return [
+                'content' => $content,
+                'content_type' => $contentType,
+            ];
+        } catch (\Throwable $exception) {
+            $this->logger?->error('Mercado Livre file download exception', [
+                'url' => $url,
+                'exception' => $exception,
+            ]);
+
+            return null;
+        }
+    }
+
     public function getOrder(string $orderId, ?People $provider = null): ?array
     {
         return $this->requestApi('GET', '/orders/' . rawurlencode($orderId), [], $provider);

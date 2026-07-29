@@ -4,6 +4,7 @@ namespace ControleOnline\Service;
 
 use ControleOnline\Entity\Category;
 use ControleOnline\Entity\Config;
+use ControleOnline\Entity\File;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Module;
 use ControleOnline\Entity\Order;
@@ -11,6 +12,7 @@ use ControleOnline\Entity\OrderProduct;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductCategory;
+use ControleOnline\Entity\ProductFile;
 use ControleOnline\Entity\ProductShowcase;
 use ControleOnline\Entity\ProductShowcaseItem;
 use ControleOnline\Entity\ProductUnity;
@@ -38,6 +40,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         private readonly MercadoLivreClient $mercadoLivreClient,
         private readonly ConfigService $configService,
         private readonly ExtraDataService $extraDataService,
+        private readonly FileService $fileService,
         private readonly PeopleService $peopleService,
         private readonly PeopleRoleService $peopleRoleService,
         private readonly StatusService $statusService,
@@ -553,14 +556,16 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         $price = (float) ($item['price'] ?? 0);
         $status = strtolower(trim((string) ($item['status'] ?? '')));
         $permalink = trim((string) ($item['permalink'] ?? ''));
+        $description = $this->resolveItemDescription($remoteId, $provider);
+        $category = $this->resolveMercadoLivreCategory($provider, $item);
 
         $product->setProduct($title !== '' ? $this->limitText($title, 255) : $remoteId);
-        $product->setDescription($permalink !== '' ? $permalink : 'Produto importado do Mercado Livre.');
+        $product->setDescription($description !== '' ? $description : 'Produto importado do Mercado Livre.');
         $product->setPrice($price);
         $product->setActive(!in_array($status, ['closed', 'inactive', 'under_review'], true));
 
-        $category = $this->discoverCategory($provider, 'Mercado Livre');
         $this->linkProductCategory($product, $category);
+        $this->unlinkGenericMercadoLivreCategory($product, $provider, $category);
         $this->entityManager->flush();
 
         $sellerId = trim((string) ($item['seller_id'] ?? ''));
@@ -572,17 +577,34 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'code', $remoteId, 'text', 'mercadolivre');
         $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'permalink', $permalink, 'text', 'mercadolivre');
         $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'seller_id', $sellerId, 'text', 'mercadolivre');
+        $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'category_id', $item['category_id'] ?? '', 'text', 'mercadolivre');
+        $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'listing_type_id', $item['listing_type_id'] ?? '', 'text', 'mercadolivre');
+        $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Product', (int) $product->getId(), 'catalog_product_id', $item['catalog_product_id'] ?? '', 'text', 'mercadolivre');
 
         $settings = [
             'source' => 'mercadolivre',
             'remote_id' => $remoteId,
             'status' => $status,
             'currency_id' => $item['currency_id'] ?? null,
+            'base_price' => $item['base_price'] ?? null,
+            'original_price' => $item['original_price'] ?? null,
             'available_quantity' => $item['available_quantity'] ?? null,
+            'sold_quantity' => $item['sold_quantity'] ?? null,
             'thumbnail' => $item['thumbnail'] ?? null,
+            'secure_thumbnail' => $item['secure_thumbnail'] ?? null,
             'permalink' => $permalink !== '' ? $permalink : null,
             'category_id' => $item['category_id'] ?? null,
+            'category_name' => $category->getName(),
+            'condition' => $item['condition'] ?? null,
+            'listing_type_id' => $item['listing_type_id'] ?? null,
+            'buying_mode' => $item['buying_mode'] ?? null,
+            'shipping' => is_array($item['shipping'] ?? null) ? $item['shipping'] : null,
+            'attributes' => $this->normalizeMercadoLivreAttributes($item['attributes'] ?? []),
+            'sale_terms' => $this->normalizeMercadoLivreAttributes($item['sale_terms'] ?? []),
+            'pictures' => $this->normalizeMercadoLivrePictures($item['pictures'] ?? []),
         ];
+
+        $this->syncProductPictures($product, $provider, $item['pictures'] ?? []);
 
         if ($targetShowcase instanceof ProductShowcase) {
             $this->upsertShowcaseItem($targetShowcase, $product, $remoteId, $price, $settings, $product->isActive());
@@ -837,6 +859,78 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         return $category;
     }
 
+    private function resolveMercadoLivreCategory(People $provider, array $item): Category
+    {
+        $categoryId = trim((string) ($item['category_id'] ?? ''));
+        if ($categoryId === '') {
+            return $this->discoverCategory($provider, 'Mercado Livre');
+        }
+
+        $categoryPayload = $this->mercadoLivreClient->getCategory($categoryId, $provider);
+        if (!is_array($categoryPayload)) {
+            return $this->discoverCategory($provider, 'Mercado Livre');
+        }
+
+        $path = is_array($categoryPayload['path_from_root'] ?? null) ? $categoryPayload['path_from_root'] : [];
+        if ($path === []) {
+            $path[] = [
+                'id' => $categoryPayload['id'] ?? $categoryId,
+                'name' => $categoryPayload['name'] ?? 'Mercado Livre',
+            ];
+        }
+
+        $parent = null;
+        $leaf = null;
+        foreach ($path as $pathCategory) {
+            if (!is_array($pathCategory)) {
+                continue;
+            }
+
+            $name = trim((string) ($pathCategory['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $leaf = $this->discoverCategoryNode(
+                $provider,
+                $name,
+                $parent,
+                trim((string) ($pathCategory['id'] ?? ''))
+            );
+            $parent = $leaf;
+        }
+
+        return $leaf instanceof Category ? $leaf : $this->discoverCategory($provider, 'Mercado Livre');
+    }
+
+    private function discoverCategoryNode(People $provider, string $name, ?Category $parent, string $remoteId): Category
+    {
+        $category = $this->entityManager->getRepository(Category::class)->findOneBy([
+            'company' => $provider,
+            'context' => 'products',
+            'name' => $this->limitText($name, 100),
+            'parent' => $parent,
+        ]);
+
+        if (!$category instanceof Category) {
+            $category = new Category();
+            $category->setCompany($provider);
+            $category->setContext('products');
+            $category->setName($this->limitText($name, 100));
+            $category->setParent($parent);
+            $category->setIcon('tag');
+            $category->setColor('#FFE600');
+            $this->entityManager->persist($category);
+            $this->entityManager->flush();
+        }
+
+        if ($remoteId !== '') {
+            $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'Category', (int) $category->getId(), 'id', $remoteId, 'text', 'mercadolivre');
+        }
+
+        return $category;
+    }
+
     private function linkProductCategory(Product $product, Category $category): void
     {
         $link = $this->entityManager->getRepository(ProductCategory::class)->findOneBy([
@@ -852,6 +946,189 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         $link->setProduct($product);
         $link->setCategory($category);
         $this->entityManager->persist($link);
+    }
+
+    private function unlinkGenericMercadoLivreCategory(Product $product, People $provider, Category $linkedCategory): void
+    {
+        $genericCategory = $this->entityManager->getRepository(Category::class)->findOneBy([
+            'company' => $provider,
+            'context' => 'products',
+            'name' => 'Mercado Livre',
+        ]);
+
+        if (!$genericCategory instanceof Category || $genericCategory->getId() === $linkedCategory->getId()) {
+            return;
+        }
+
+        $link = $this->entityManager->getRepository(ProductCategory::class)->findOneBy([
+            'product' => $product,
+            'category' => $genericCategory,
+        ]);
+
+        if ($link instanceof ProductCategory) {
+            $this->entityManager->remove($link);
+        }
+    }
+
+    private function resolveItemDescription(string $remoteId, People $provider): string
+    {
+        $description = $this->mercadoLivreClient->getItemDescription($remoteId, $provider);
+        if (!is_array($description)) {
+            return '';
+        }
+
+        foreach (['plain_text', 'text'] as $field) {
+            $value = trim((string) ($description[$field] ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private function syncProductPictures(Product $product, People $provider, mixed $pictures): void
+    {
+        if (!$product->getId() || !is_array($pictures)) {
+            return;
+        }
+
+        foreach ($pictures as $picture) {
+            if (!is_array($picture)) {
+                continue;
+            }
+
+            $url = trim((string) ($picture['secure_url'] ?? $picture['url'] ?? ''));
+            if ($url === '') {
+                continue;
+            }
+
+            $file = $this->resolvePictureFile($provider, $url, trim((string) ($picture['id'] ?? '')));
+            if (!$file instanceof File) {
+                continue;
+            }
+
+            $this->linkProductFile($product, $file);
+        }
+    }
+
+    private function resolvePictureFile(People $provider, string $url, string $pictureId): ?File
+    {
+        $file = $this->extraDataService->getEntityByExtraData(self::APP_CONTEXT, 'source_url', $url, File::class);
+        if ($file instanceof File) {
+            return $file;
+        }
+
+        $download = $this->mercadoLivreClient->downloadPublicFile($url);
+        if (!is_array($download)) {
+            return null;
+        }
+
+        $contentType = strtolower(trim((string) ($download['content_type'] ?? 'application/octet-stream')));
+        if (!str_starts_with($contentType, 'image/')) {
+            return null;
+        }
+
+        $extension = $this->extensionFromContentType($contentType);
+        $fileName = $this->limitText(($pictureId !== '' ? $pictureId : hash('sha256', $url)) . '.' . $extension, 255);
+        $file = $this->fileService->addFile(
+            $provider,
+            (string) $download['content'],
+            'product',
+            $fileName,
+            'image',
+            $extension,
+            true
+        );
+
+        $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'File', (int) $file->getId(), 'source_url', $url, 'text', 'mercadolivre');
+        if ($pictureId !== '') {
+            $this->extraDataService->upsertExtraDataValue(self::APP_CONTEXT, 'File', (int) $file->getId(), 'id', $pictureId, 'text', 'mercadolivre');
+        }
+
+        return $file;
+    }
+
+    private function linkProductFile(Product $product, File $file): void
+    {
+        $link = $this->entityManager->getRepository(ProductFile::class)->findOneBy([
+            'product' => $product,
+            'file' => $file,
+        ]);
+
+        if ($link instanceof ProductFile) {
+            return;
+        }
+
+        $link = new ProductFile();
+        $link->setProduct($product);
+        $link->setFile($file);
+        $this->entityManager->persist($link);
+    }
+
+    private function extensionFromContentType(string $contentType): string
+    {
+        $type = strtolower(trim(explode(';', $contentType)[0]));
+
+        return match ($type) {
+            'image/jpeg', 'image/jpg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+            default => 'jpg',
+        };
+    }
+
+    private function normalizeMercadoLivreAttributes(mixed $attributes): array
+    {
+        if (!is_array($attributes)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(static function (mixed $attribute): ?array {
+            if (!is_array($attribute)) {
+                return null;
+            }
+
+            $id = trim((string) ($attribute['id'] ?? ''));
+            $name = trim((string) ($attribute['name'] ?? ''));
+            $value = trim((string) ($attribute['value_name'] ?? $attribute['value_id'] ?? ''));
+
+            if ($id === '' && $name === '' && $value === '') {
+                return null;
+            }
+
+            return array_filter([
+                'id' => $id !== '' ? $id : null,
+                'name' => $name !== '' ? $name : null,
+                'value' => $value !== '' ? $value : null,
+            ], static fn(mixed $field): bool => $field !== null && $field !== '');
+        }, $attributes)));
+    }
+
+    private function normalizeMercadoLivrePictures(mixed $pictures): array
+    {
+        if (!is_array($pictures)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(static function (mixed $picture): ?array {
+            if (!is_array($picture)) {
+                return null;
+            }
+
+            $url = trim((string) ($picture['secure_url'] ?? $picture['url'] ?? ''));
+            if ($url === '') {
+                return null;
+            }
+
+            return array_filter([
+                'id' => trim((string) ($picture['id'] ?? '')) ?: null,
+                'url' => $url,
+                'size' => trim((string) ($picture['size'] ?? '')) ?: null,
+                'max_size' => trim((string) ($picture['max_size'] ?? '')) ?: null,
+            ], static fn(mixed $field): bool => $field !== null && $field !== '');
+        }, $pictures)));
     }
 
     private function findShopShowcase(People $provider): ?ProductShowcase
