@@ -1027,15 +1027,12 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
 
     private function resolveConfigModule(): Module
     {
-        $module = $this->entityManager->getRepository(Module::class)->findOneBy([
-            'name' => self::CONFIG_MODULE_NAME,
-        ]);
-
-        if (!$module instanceof Module) {
-            throw new \RuntimeException(sprintf('Modulo "%s" nao encontrado para salvar configuracao.', self::CONFIG_MODULE_NAME));
-        }
-
-        return $module;
+        return $this->configService->discoveryModule(
+            self::CONFIG_MODULE_NAME,
+            '$primary',
+            'link',
+            'Integracoes'
+        );
     }
 
     private function buildOAuthCallbackUrl(string $apiBaseUrl): string
