@@ -1365,7 +1365,8 @@ class IntegrationController extends AbstractController
 
         return new JsonResponse($this->mercadoLivreService->buildIntegrationDetail(
             $provider,
-            $request->getSchemeAndHttpHost()
+            $request->getSchemeAndHttpHost(),
+            trim((string) $request->headers->get('app-domain', ''))
         ));
     }
 

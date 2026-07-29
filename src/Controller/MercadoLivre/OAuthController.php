@@ -3,6 +3,7 @@
 namespace ControleOnline\Controller\MercadoLivre;
 
 use ControleOnline\Entity\People;
+use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\MercadoLivreService;
 use ControleOnline\Service\PeopleService;
 use ControleOnline\Service\RequestPayloadService;
@@ -24,6 +25,7 @@ class OAuthController extends AbstractController
         private readonly PeopleService $peopleService,
         private readonly RequestPayloadService $requestPayloadService,
         private readonly MercadoLivreService $mercadoLivreService,
+        private readonly DatabaseSwitchService $databaseSwitchService,
     ) {}
 
     #[Route('/marketplace/integrations/mercadolivre/authorization-page', name: 'marketplace_integrations_mercadolivre_authorization_page', methods: ['POST'])]
@@ -44,14 +46,15 @@ class OAuthController extends AbstractController
         $result = $this->mercadoLivreService->buildAuthorizationPage(
             $provider,
             $request->getSchemeAndHttpHost(),
-            $this->resolveReturnUrl($request, $payload)
+            $this->resolveReturnUrl($request, $payload),
+            $this->resolveAppDomain($request, $payload)
         );
 
         return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
     }
 
-    #[Route('/oauth/mercadolivre/callback', name: 'marketplace_integrations_mercadolivre_oauth_callback', methods: ['GET'])]
-    public function callback(Request $request): RedirectResponse
+    #[Route('/{appDomain}/mercadolivre/oauth/return', name: 'marketplace_integrations_mercadolivre_oauth_tenant_callback', requirements: ['appDomain' => '[^/]+'], methods: ['GET'])]
+    public function callback(Request $request, string $appDomain): RedirectResponse
     {
         $state = trim((string) $request->query->get('state', ''));
         $code = trim((string) $request->query->get('code', ''));
@@ -61,10 +64,18 @@ class OAuthController extends AbstractController
             return $this->redirectWithOAuthStatus('/integrations-page', false, $error !== '' ? $error : 'missing_code');
         }
 
+        try {
+            $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state, $appDomain);
+            $this->databaseSwitchService->switchDatabaseByDomain($resolvedAppDomain);
+        } catch (\Throwable $exception) {
+            return $this->redirectWithOAuthStatus('/integrations-page', false, 'invalid_app_domain');
+        }
+
         $result = $this->mercadoLivreService->connectViaOAuthCode(
             $code,
             $state,
-            $request->getSchemeAndHttpHost() . $request->getPathInfo()
+            $request->getSchemeAndHttpHost() . $request->getPathInfo(),
+            $appDomain
         );
 
         return $this->redirectWithOAuthStatus(
@@ -72,37 +83,6 @@ class OAuthController extends AbstractController
             !empty($result['success']),
             !empty($result['success']) ? null : (string) ($result['error'] ?? 'oauth_failed')
         );
-    }
-
-    #[Route('/marketplace/integrations/mercadolivre/oauth/callback', name: 'marketplace_integrations_mercadolivre_front_oauth_callback', methods: ['POST'])]
-    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
-    public function frontCallback(Request $request): JsonResponse
-    {
-        try {
-            $payload = $this->parseJsonBody($request);
-        } catch (\InvalidArgumentException) {
-            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
-        }
-
-        $state = trim((string) ($payload['state'] ?? ''));
-        $code = trim((string) ($payload['code'] ?? ''));
-        $redirectUri = trim((string) ($payload['redirect_uri'] ?? ''));
-        $error = trim((string) ($payload['error'] ?? ''));
-
-        if ($error !== '' || $code === '' || $state === '' || $redirectUri === '') {
-            return new JsonResponse([
-                'success' => false,
-                'error' => $error !== '' ? $error : 'missing_oauth_payload',
-            ], Response::HTTP_BAD_REQUEST);
-        }
-
-        $result = $this->mercadoLivreService->connectViaOAuthCode(
-            $code,
-            $state,
-            $redirectUri
-        );
-
-        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
     }
 
     private function parseJsonBody(Request $request): array
@@ -169,6 +149,50 @@ class OAuthController extends AbstractController
         $origin = trim((string) $request->headers->get('origin', ''));
 
         return $origin !== '' ? rtrim($origin, '/') . '/integrations-page' : '/integrations-page';
+    }
+
+    private function resolveAppDomain(Request $request, array $payload): string
+    {
+        $candidates = [
+            $request->headers->get('app-domain'),
+            $payload['app_domain'] ?? null,
+            $payload['appDomain'] ?? null,
+            $payload['domain'] ?? null,
+            $payload['return_url'] ?? null,
+            $request->headers->get('origin'),
+            $request->headers->get('referer'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            $domain = $this->normalizeDomainCandidate($candidate);
+            if ($domain !== '') {
+                return $domain;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeDomainCandidate(mixed $candidate): string
+    {
+        if (!is_string($candidate)) {
+            return '';
+        }
+
+        $candidate = strtolower(trim($candidate));
+        if ($candidate === '' || in_array($candidate, ['undefined', 'null', 'false'], true)) {
+            return '';
+        }
+
+        if (preg_match('/^[a-z][a-z0-9+.-]*:\/\//i', $candidate)) {
+            $host = parse_url($candidate, PHP_URL_HOST);
+            $candidate = is_string($host) ? $host : '';
+        }
+
+        $candidate = preg_replace('/[\/?#].*$/', '', $candidate) ?? '';
+        $candidate = preg_replace('/[^a-z0-9.:-]/', '', $candidate) ?? '';
+
+        return $candidate;
     }
 
     private function redirectWithOAuthStatus(string $returnUrl, bool $success, ?string $error = null): RedirectResponse

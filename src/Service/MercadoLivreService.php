@@ -84,11 +84,11 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         ];
     }
 
-    public function buildIntegrationDetail(People $provider, string $apiBaseUrl): array
+    public function buildIntegrationDetail(People $provider, string $apiBaseUrl, string $appDomain): array
     {
         $state = $this->getStoredIntegrationState($provider);
         $shopShowcase = $this->findShopShowcase($provider);
-        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl);
+        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
 
         return [
             'provider' => [
@@ -122,7 +122,12 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         ];
     }
 
-    public function buildAuthorizationPage(People $provider, string $apiBaseUrl, ?string $returnUrl = null): array
+    public function buildAuthorizationPage(
+        People $provider,
+        string $apiBaseUrl,
+        ?string $returnUrl = null,
+        ?string $appDomain = null,
+    ): array
     {
         $clientId = $this->resolveClientId($provider);
         if ($clientId === '') {
@@ -133,9 +138,19 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ];
         }
 
-        $redirectUri = $this->resolveOAuthRedirectUri($apiBaseUrl);
+        $appDomain = $this->normalizeOAuthDomain($appDomain);
+        if ($appDomain === '') {
+            return [
+                'success' => false,
+                'error' => 'missing_app_domain',
+                'message' => 'Dominio da aplicacao nao informado para autorizacao Mercado Livre.',
+            ];
+        }
+
+        $redirectUri = $this->resolveOAuthRedirectUri($apiBaseUrl, $appDomain);
         $state = $this->encodeOAuthState([
             'provider_id' => $provider->getId(),
+            'app_domain' => $appDomain,
             'redirect_uri' => $redirectUri,
             'return_url' => $returnUrl,
             'issued_at' => time(),
@@ -147,7 +162,32 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         ], $this->mercadoLivreClient->buildAuthorizationUrl($clientId, $redirectUri, $state));
     }
 
-    public function connectViaOAuthCode(string $code, string $state, string $redirectUri): array
+    public function resolveOAuthAppDomain(string $state, ?string $callbackAppDomain = null): string
+    {
+        $payload = $this->decodeOAuthState($state);
+        if ($payload === null) {
+            throw new \InvalidArgumentException('Estado OAuth invalido.');
+        }
+
+        $stateAppDomain = $this->normalizeOAuthDomain($payload['app_domain'] ?? null);
+        $callbackAppDomain = $this->normalizeOAuthDomain($callbackAppDomain);
+        if ($stateAppDomain === '') {
+            throw new \InvalidArgumentException('Dominio da aplicacao ausente no estado OAuth.');
+        }
+
+        if ($callbackAppDomain !== '' && $callbackAppDomain !== $stateAppDomain) {
+            throw new \InvalidArgumentException('Dominio do callback nao confere com o estado OAuth.');
+        }
+
+        return $stateAppDomain;
+    }
+
+    public function connectViaOAuthCode(
+        string $code,
+        string $state,
+        string $redirectUri,
+        ?string $callbackAppDomain = null,
+    ): array
     {
         $payload = $this->decodeOAuthState($state);
         if ($payload === null) {
@@ -155,6 +195,19 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
                 'success' => false,
                 'error' => 'invalid_state',
                 'message' => 'Estado OAuth invalido.',
+            ];
+        }
+
+        try {
+            $this->resolveOAuthAppDomain($state, $callbackAppDomain);
+        } catch (\InvalidArgumentException $exception) {
+            return [
+                'success' => false,
+                'error' => $this->normalizeOAuthDomain($payload['app_domain'] ?? null) === ''
+                    ? 'missing_app_domain'
+                    : 'app_domain_mismatch',
+                'message' => $exception->getMessage(),
+                'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
             ];
         }
 
@@ -932,14 +985,19 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         $this->entityManager->flush();
     }
 
-    private function buildOAuthCallbackUrl(string $apiBaseUrl): string
+    private function buildOAuthCallbackUrl(string $apiBaseUrl, ?string $appDomain = null): string
     {
-        return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/callback';
+        $appDomain = $this->normalizeOAuthDomain($appDomain);
+        if ($appDomain === '') {
+            throw new \InvalidArgumentException('Dominio da aplicacao nao informado para callback Mercado Livre.');
+        }
+
+        return rtrim($apiBaseUrl, '/') . '/' . rawurlencode($appDomain) . '/mercadolivre/oauth/return';
     }
 
-    private function resolveOAuthRedirectUri(string $apiBaseUrl): string
+    private function resolveOAuthRedirectUri(string $apiBaseUrl, string $appDomain): string
     {
-        return $this->buildOAuthCallbackUrl($apiBaseUrl);
+        return $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
     }
 
     private function resolveOAuthExchangeRedirectUri(string $redirectUri, array $payload): string
@@ -1009,6 +1067,28 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         return base64_decode(strtr($value, '-_', '+/'), true) ?: '';
+    }
+
+    private function normalizeOAuthDomain(mixed $domain): string
+    {
+        if (!is_string($domain)) {
+            return '';
+        }
+
+        $domain = strtolower(trim($domain));
+        if ($domain === '' || in_array($domain, ['undefined', 'null', 'false'], true)) {
+            return '';
+        }
+
+        if (preg_match('/^[a-z][a-z0-9+.-]*:\/\//i', $domain)) {
+            $host = parse_url($domain, PHP_URL_HOST);
+            $domain = is_string($host) ? $host : '';
+        }
+
+        $domain = preg_replace('/[\/?#].*$/', '', $domain) ?? '';
+        $domain = preg_replace('/[^a-z0-9.:-]/', '', $domain) ?? '';
+
+        return $domain;
     }
 
     private function resolveClientId(?People $provider = null): string
