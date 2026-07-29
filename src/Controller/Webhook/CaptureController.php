@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Controller\Webhook;
 
+use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\WebhookCaptureService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -13,13 +14,14 @@ class CaptureController extends AbstractController
 {
     public function __construct(
         private readonly WebhookCaptureService $webhookCaptureService,
+        private readonly DatabaseSwitchService $databaseSwitchService,
     ) {
     }
 
-    #[Route('/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications', methods: ['POST'])]
-    #[Route('/webhook/mercadolivre', name: 'webhook_mercadolivre_notifications', methods: ['POST'])]
-    public function mercadoLivre(Request $request): Response
+    #[Route('/{appDomain}/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications', methods: ['POST'])]
+    public function mercadoLivre(Request $request, string $appDomain): Response
     {
+        $this->databaseSwitchService->switchDatabaseByDomain($appDomain);
         $capture = $this->webhookCaptureService->capture($request, 'MercadoLivre');
 
         return new JsonResponse([

@@ -59,16 +59,22 @@ class OAuthController extends AbstractController
         $state = trim((string) $request->query->get('state', ''));
         $code = trim((string) $request->query->get('code', ''));
         $error = trim((string) $request->query->get('error', ''));
+        $errorDescription = trim((string) $request->query->get('error_description', ''));
 
-        if ($error !== '' || $code === '' || $state === '') {
-            return $this->redirectWithOAuthStatus('/integrations-page', false, $error !== '' ? $error : 'missing_code');
+        if ($state === '') {
+            return $this->redirectWithOAuthStatus('/integrations-page', false, $error !== '' ? $error : 'missing_state', $errorDescription);
         }
 
         try {
             $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state);
             $this->databaseSwitchService->switchDatabaseByDomain($resolvedAppDomain);
+            $returnUrl = $this->mercadoLivreService->resolveOAuthReturnUrl($state);
         } catch (\Throwable $exception) {
             return $this->redirectWithOAuthStatus('/integrations-page', false, 'invalid_app_domain');
+        }
+
+        if ($error !== '' || $code === '') {
+            return $this->redirectWithOAuthStatus($returnUrl, false, $error !== '' ? $error : 'missing_code', $errorDescription);
         }
 
         $result = $this->mercadoLivreService->connectViaOAuthCode(
@@ -81,7 +87,8 @@ class OAuthController extends AbstractController
         return $this->redirectWithOAuthStatus(
             (string) ($result['return_url'] ?? '/integrations-page'),
             !empty($result['success']),
-            !empty($result['success']) ? null : (string) ($result['error'] ?? 'oauth_failed')
+            !empty($result['success']) ? null : (string) ($result['error'] ?? 'oauth_failed'),
+            !empty($result['success']) ? null : (string) ($result['message'] ?? '')
         );
     }
 
@@ -195,14 +202,28 @@ class OAuthController extends AbstractController
         return $candidate;
     }
 
-    private function redirectWithOAuthStatus(string $returnUrl, bool $success, ?string $error = null): RedirectResponse
+    private function redirectWithOAuthStatus(string $returnUrl, bool $success, ?string $error = null, ?string $message = null): RedirectResponse
     {
         $separator = str_contains($returnUrl, '?') ? '&' : '?';
         $target = $returnUrl . $separator . http_build_query(array_filter([
             'mercadolivre_connected' => $success ? '1' : null,
             'mercadolivre_error' => !$success ? ($error ?: 'oauth_failed') : null,
+            'mercadolivre_message' => !$success ? $this->sanitizeOAuthMessage($message) : null,
         ]), '', '&', PHP_QUERY_RFC3986);
 
         return new RedirectResponse($target);
+    }
+
+    private function sanitizeOAuthMessage(?string $message): string
+    {
+        $message = trim((string) $message);
+        if ($message === '') {
+            return '';
+        }
+
+        $message = preg_replace('/[^\pL\pN\s.,:;!?_@\/-]/u', '', $message) ?? '';
+        $message = preg_replace('/\s+/', ' ', $message) ?? '';
+
+        return substr(trim($message), 0, 180);
     }
 }

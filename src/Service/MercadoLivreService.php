@@ -89,6 +89,7 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         $state = $this->getStoredIntegrationState($provider);
         $shopShowcase = $this->findShopShowcase($provider);
         $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl);
+        $notificationUrl = rtrim($apiBaseUrl, '/') . '/' . rawurlencode($appDomain) . '/oauth/mercadolivre/notifications';
 
         return [
             'provider' => [
@@ -97,8 +98,8 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
             ],
             'integration' => $state,
             'webhook' => [
-                'url' => rtrim($apiBaseUrl, '/') . '/webhook/mercadolivre',
-                'oauth_url' => rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/notifications',
+                'url' => $notificationUrl,
+                'oauth_url' => $notificationUrl,
             ],
             'oauth' => [
                 'callback_url' => $oauthCallbackUrl,
@@ -182,6 +183,16 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         return $stateAppDomain;
     }
 
+    public function resolveOAuthReturnUrl(string $state): string
+    {
+        $payload = $this->decodeOAuthState($state);
+        if ($payload === null) {
+            throw new \InvalidArgumentException('Estado OAuth invalido.');
+        }
+
+        return $this->normalizeReturnUrl($payload['return_url'] ?? null);
+    }
+
     public function connectViaOAuthCode(
         string $code,
         string $state,
@@ -234,10 +245,17 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         $exchangeRedirectUri = $this->resolveOAuthExchangeRedirectUri($redirectUri, $payload);
         $token = $this->mercadoLivreClient->exchangeAuthorizationCode($clientId, $clientSecret, trim($code), $exchangeRedirectUri);
         if (!is_array($token) || trim((string) ($token['access_token'] ?? '')) === '') {
+            $exchangeError = $this->formatOAuthExchangeError($token);
+            $this->storeProviderState($provider, [
+                'last_error_code' => $exchangeError['code'],
+                'last_error_message' => $exchangeError['message'],
+            ]);
+
             return [
                 'success' => false,
                 'error' => 'token_exchange_failed',
-                'message' => 'Nao foi possivel concluir a autorizacao no Mercado Livre.',
+                'message' => $exchangeError['message'],
+                'provider_error' => $exchangeError['code'],
                 'return_url' => $this->normalizeReturnUrl($payload['return_url'] ?? null),
             ];
         }
@@ -1004,6 +1022,46 @@ class MercadoLivreService implements MarketplaceIntegrationStateProviderInterfac
         }
 
         return trim($redirectUri);
+    }
+
+    private function formatOAuthExchangeError(?array $token): array
+    {
+        if (!is_array($token)) {
+            return [
+                'code' => 'empty_token_response',
+                'message' => 'Mercado Livre nao retornou o token de acesso.',
+            ];
+        }
+
+        $code = trim((string) (
+            $token['error']
+            ?? $token['code']
+            ?? $token['status']
+            ?? 'token_exchange_failed'
+        ));
+
+        $message = trim((string) (
+            $token['message']
+            ?? $token['error_description']
+            ?? $token['description']
+            ?? ''
+        ));
+
+        if ($message === '' && is_array($token['cause'] ?? null)) {
+            foreach ($token['cause'] as $cause) {
+                if (is_array($cause)) {
+                    $message = trim((string) ($cause['message'] ?? $cause['description'] ?? ''));
+                    if ($message !== '') {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return [
+            'code' => $code !== '' ? substr($code, 0, 80) : 'token_exchange_failed',
+            'message' => $message !== '' ? substr($message, 0, 180) : 'Nao foi possivel concluir a autorizacao no Mercado Livre.',
+        ];
     }
 
     private function encodeOAuthState(array $payload): string

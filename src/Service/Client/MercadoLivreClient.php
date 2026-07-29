@@ -101,7 +101,10 @@ class MercadoLivreClient
                     'body' => $body,
                 ]);
 
-                return null;
+                return array_merge($body, [
+                    'status' => $status,
+                    '_request_failed' => true,
+                ]);
             }
 
             return $body;
@@ -110,7 +113,11 @@ class MercadoLivreClient
                 'exception' => $exception,
             ]);
 
-            return null;
+            return [
+                'error' => 'request_exception',
+                'message' => $exception->getMessage(),
+                '_request_failed' => true,
+            ];
         }
     }
 
