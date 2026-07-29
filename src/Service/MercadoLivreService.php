@@ -366,8 +366,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             ];
         }
 
-        $search = $this->mercadoLivreClient->searchUserItems($userId, $provider, 0, $limit);
-        $itemIds = is_array($search['results'] ?? null) ? $search['results'] : [];
+        $itemIds = $this->listUserItemIds($userId, $provider, $limit);
         $imported = 0;
         $updated = 0;
         $skipped = 0;
@@ -416,6 +415,49 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             'skipped_count' => $skipped,
             'products' => $products,
         ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private function listUserItemIds(string $userId, People $provider, int $limit): array
+    {
+        $targetLimit = max(1, $limit);
+        $itemIds = [];
+        $offset = 0;
+        $pageSize = min(100, $targetLimit);
+
+        while (count($itemIds) < $targetLimit) {
+            $remaining = $targetLimit - count($itemIds);
+            $search = $this->mercadoLivreClient->searchUserItems(
+                $userId,
+                $provider,
+                $offset,
+                min($pageSize, $remaining)
+            );
+
+            $pageIds = is_array($search['results'] ?? null) ? $search['results'] : [];
+            if ($pageIds === []) {
+                break;
+            }
+
+            foreach ($pageIds as $itemId) {
+                $itemId = trim((string) $itemId);
+                if ($itemId !== '') {
+                    $itemIds[$itemId] = $itemId;
+                }
+            }
+
+            $paging = is_array($search['paging'] ?? null) ? $search['paging'] : [];
+            $total = (int) ($paging['total'] ?? 0);
+            $offset += count($pageIds);
+
+            if (($total > 0 && $offset >= $total) || count($pageIds) < $pageSize) {
+                break;
+            }
+        }
+
+        return array_values($itemIds);
     }
 
     private function handleQueuedProductImport(Integration $integration, array $payload): void
