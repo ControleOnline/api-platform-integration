@@ -53,7 +53,6 @@ class OAuthController extends AbstractController
         return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
     }
 
-    #[Route('/{appDomain}/oauth/mercadolivre/return', name: 'marketplace_integrations_mercadolivre_oauth_callback_domain', methods: ['GET'])]
     #[Route('/oauth/mercadolivre/return', name: 'marketplace_integrations_mercadolivre_oauth_callback', methods: ['GET'])]
     public function callback(Request $request, ?string $appDomain = null): RedirectResponse
     {
