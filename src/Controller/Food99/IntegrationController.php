@@ -1397,7 +1397,7 @@ class IntegrationController extends AbstractController
             ], Response::HTTP_BAD_REQUEST);
         }
 
-        $limit = max(1, min((int) $limit, 200));
+        $limit = max(1, min((int) $limit, 100));
         $user = $this->security->getToken()?->getUser();
         $integration = $this->integrationService->addIntegration(
             json_encode([

@@ -404,6 +404,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             'last_sync_at' => date('Y-m-d H:i:s'),
             'last_product_import_count' => $imported + $updated,
             'last_product_import_skipped_count' => $skipped,
+            'last_product_remote_count' => count($itemIds),
             'last_error_code' => null,
             'last_error_message' => null,
         ]);
@@ -413,6 +414,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             'imported_count' => $imported,
             'updated_count' => $updated,
             'skipped_count' => $skipped,
+            'remote_count' => count($itemIds),
             'products' => $products,
         ];
     }
@@ -422,18 +424,16 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
      */
     private function listUserItemIds(string $userId, People $provider, int $limit): array
     {
-        $targetLimit = max(1, $limit);
+        $pageSize = max(1, min(100, $limit));
         $itemIds = [];
         $offset = 0;
-        $pageSize = min(100, $targetLimit);
 
-        while (count($itemIds) < $targetLimit) {
-            $remaining = $targetLimit - count($itemIds);
+        while (true) {
             $search = $this->mercadoLivreClient->searchUserItems(
                 $userId,
                 $provider,
                 $offset,
-                min($pageSize, $remaining)
+                $pageSize
             );
 
             $pageIds = is_array($search['results'] ?? null) ? $search['results'] : [];
@@ -627,6 +627,9 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             'source' => 'mercadolivre',
             'remote_id' => $remoteId,
             'status' => $status,
+            'sub_status' => is_array($item['sub_status'] ?? null) ? array_values($item['sub_status']) : null,
+            'tags' => is_array($item['tags'] ?? null) ? array_values($item['tags']) : null,
+            'health' => $item['health'] ?? null,
             'currency_id' => $item['currency_id'] ?? null,
             'base_price' => $item['base_price'] ?? null,
             'original_price' => $item['original_price'] ?? null,
@@ -640,6 +643,15 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             'condition' => $item['condition'] ?? null,
             'listing_type_id' => $item['listing_type_id'] ?? null,
             'buying_mode' => $item['buying_mode'] ?? null,
+            'catalog_product_id' => $item['catalog_product_id'] ?? null,
+            'seller_id' => $sellerId !== '' ? $sellerId : null,
+            'seller_custom_field' => $item['seller_custom_field'] ?? null,
+            'date_created' => $item['date_created'] ?? null,
+            'last_updated' => $item['last_updated'] ?? null,
+            'start_time' => $item['start_time'] ?? null,
+            'stop_time' => $item['stop_time'] ?? null,
+            'official_store_id' => $item['official_store_id'] ?? null,
+            'accepts_mercadopago' => $item['accepts_mercadopago'] ?? null,
             'shipping' => is_array($item['shipping'] ?? null) ? $item['shipping'] : null,
             'attributes' => $this->normalizeMercadoLivreAttributes($item['attributes'] ?? []),
             'sale_terms' => $this->normalizeMercadoLivreAttributes($item['sale_terms'] ?? []),
