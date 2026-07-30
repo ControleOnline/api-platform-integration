@@ -13,7 +13,45 @@ class WebhookCaptureService
         private readonly IntegrationService $integrationService,
         private readonly LoggerService $loggerService,
         private readonly ?MercadoLivreService $mercadoLivreService = null,
+        private readonly ?DatabaseSwitchService $databaseSwitchService = null,
     ) {
+    }
+
+    public function captureMercadoLivre(Request $request): ?Integration
+    {
+        if (!$this->mercadoLivreService instanceof MercadoLivreService || !$this->databaseSwitchService instanceof DatabaseSwitchService) {
+            return $this->capture($request, 'MercadoLivre');
+        }
+
+        $payload = $this->decodePayload($request->getContent());
+
+        foreach ($this->databaseSwitchService->getAllDomains() as $domain) {
+            $domain = trim((string) $domain);
+            if ($domain === '') {
+                continue;
+            }
+
+            try {
+                $this->databaseSwitchService->switchDatabaseByDomain($domain);
+                if ($this->mercadoLivreService->canHandleWebhookPayload($payload)) {
+                    return $this->capture($request, 'MercadoLivre');
+                }
+            } catch (\Throwable $exception) {
+                $this->loggerService->getLogger('MercadoLivre')->warning('Mercado Livre webhook tenancy candidate failed', [
+                    'domain' => $domain,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        $this->databaseSwitchService->switchBackToOriginalDatabase();
+        $this->loggerService->getLogger('MercadoLivre')->warning('Mercado Livre webhook ignored because seller was not configured in any tenant', [
+            'payload_user_id' => $payload['user_id'] ?? null,
+            'payload_seller_id' => $payload['seller_id'] ?? null,
+            'resource' => $payload['resource'] ?? null,
+        ]);
+
+        return null;
     }
 
     public function capture(Request $request, string $provider): Integration

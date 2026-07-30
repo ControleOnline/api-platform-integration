@@ -18,15 +18,20 @@ class CaptureController extends AbstractController
     ) {
     }
 
-    #[Route('/{appDomain}/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications', methods: ['POST'])]
-    public function mercadoLivre(Request $request, string $appDomain): Response
+    #[Route('/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications', methods: ['POST'])]
+    #[Route('/{appDomain}/oauth/mercadolivre/notifications', name: 'oauth_mercadolivre_notifications_tenant', methods: ['POST'])]
+    public function mercadoLivre(Request $request, ?string $appDomain = null): Response
     {
-        $this->databaseSwitchService->switchDatabaseByDomain($appDomain);
-        $capture = $this->webhookCaptureService->capture($request, 'MercadoLivre');
+        if ($appDomain !== null && trim($appDomain) !== '') {
+            $this->databaseSwitchService->switchDatabaseByDomain($appDomain);
+            $capture = $this->webhookCaptureService->capture($request, 'MercadoLivre');
+        } else {
+            $capture = $this->webhookCaptureService->captureMercadoLivre($request);
+        }
 
         return new JsonResponse([
             'accepted' => true,
-            'id' => $capture->getId(),
+            'id' => $capture?->getId(),
         ], Response::HTTP_OK);
     }
 
