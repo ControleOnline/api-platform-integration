@@ -54,7 +54,7 @@ class OAuthController extends AbstractController
     }
 
     #[Route('/oauth/mercadolivre/return', name: 'marketplace_integrations_mercadolivre_oauth_callback', methods: ['GET'])]
-    public function callback(Request $request): RedirectResponse
+    public function callback(Request $request, ?string $appDomain = null): RedirectResponse
     {
         $state = trim((string) $request->query->get('state', ''));
         $code = trim((string) $request->query->get('code', ''));
@@ -66,7 +66,7 @@ class OAuthController extends AbstractController
         }
 
         try {
-            $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state);
+            $resolvedAppDomain = $this->mercadoLivreService->resolveOAuthAppDomain($state, $appDomain);
             $this->databaseSwitchService->switchDatabaseByDomain($resolvedAppDomain);
             $returnUrl = $this->mercadoLivreService->resolveOAuthReturnUrl($state);
         } catch (\Throwable $exception) {

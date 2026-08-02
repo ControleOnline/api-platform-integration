@@ -184,6 +184,52 @@ class MercadoLivreClient
         }
     }
 
+    public function refreshAccessToken(string $clientId, string $clientSecret, string $refreshToken): ?array
+    {
+        try {
+            $response = $this->httpClient->request('POST', self::TOKEN_URL, [
+                'headers' => [
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                ],
+                'body' => http_build_query([
+                    'grant_type' => 'refresh_token',
+                    'client_id' => $clientId,
+                    'client_secret' => $clientSecret,
+                    'refresh_token' => $refreshToken,
+                ], '', '&', PHP_QUERY_RFC3986),
+                'timeout' => 20,
+                'max_duration' => 30,
+            ]);
+
+            $status = $response->getStatusCode();
+            $body = $this->decodeResponseBody((string) $response->getContent(false));
+            if ($status < 200 || $status >= 300) {
+                $this->logger?->warning('Mercado Livre OAuth refresh request failed', [
+                    'status' => $status,
+                    'body' => $body,
+                ]);
+
+                return array_merge($body, [
+                    'status' => $status,
+                    '_request_failed' => true,
+                ]);
+            }
+
+            return $body;
+        } catch (\Throwable $exception) {
+            $this->logger?->error('Mercado Livre OAuth refresh request exception', [
+                'exception' => $exception,
+            ]);
+
+            return [
+                'error' => 'request_exception',
+                'message' => $exception->getMessage(),
+                '_request_failed' => true,
+            ];
+        }
+    }
+
     public function requestApi(string $method, string $path, array $options = [], ?People $provider = null): ?array
     {
         $headers = array_merge([

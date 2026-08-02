@@ -108,8 +108,8 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
     {
         $state = $this->getStoredIntegrationState($provider);
         $shopShowcase = $this->findShopShowcase($provider);
-        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl);
-        $notificationUrl = rtrim($apiBaseUrl, '/') . '/' . rawurlencode($appDomain) . '/oauth/mercadolivre/notifications';
+        $oauthCallbackUrl = $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
+        $notificationUrl = rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/notifications';
 
         return [
             'provider' => [
@@ -366,6 +366,8 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             ];
         }
 
+        $this->refreshProviderAccessToken($provider);
+
         $itemIds = $this->listUserItemIds($userId, $provider, $limit);
         $imported = 0;
         $updated = 0;
@@ -495,6 +497,59 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         };
     }
 
+    private function refreshProviderAccessToken(People $provider): void
+    {
+        $refreshToken = $this->readConfigValue($provider, self::CONFIG_REFRESH_TOKEN);
+        if ($refreshToken === '') {
+            return;
+        }
+
+        $clientId = $this->resolveClientId($provider);
+        $clientSecret = $this->resolveClientSecret($provider);
+        if ($clientId === '' || $clientSecret === '') {
+            return;
+        }
+
+        $token = $this->mercadoLivreClient->refreshAccessToken($clientId, $clientSecret, $refreshToken);
+        if (!is_array($token)) {
+            $this->storeProviderState($provider, [
+                'last_error_code' => 'token_refresh_failed',
+                'last_error_message' => 'Nao foi possivel renovar a conexao com o Mercado Livre.',
+            ]);
+
+            return;
+        }
+
+        $accessToken = trim((string) ($token['access_token'] ?? ''));
+        if ($accessToken === '') {
+            $this->storeProviderState($provider, [
+                'last_error_code' => trim((string) ($token['error'] ?? 'token_refresh_failed')),
+                'last_error_message' => $this->formatOAuthExchangeError($token)['message'],
+            ]);
+
+            return;
+        }
+
+        $this->persistProviderConfig($provider, self::CONFIG_ACCESS_TOKEN, $accessToken);
+
+        $nextRefreshToken = trim((string) ($token['refresh_token'] ?? ''));
+        if ($nextRefreshToken !== '') {
+            $this->persistProviderConfig($provider, self::CONFIG_REFRESH_TOKEN, $nextRefreshToken);
+        }
+
+        $userId = trim((string) ($token['user_id'] ?? $token['seller_id'] ?? ''));
+        if ($userId !== '') {
+            $this->persistProviderConfig($provider, self::CONFIG_USER_ID, $userId);
+            $this->materializeProviderSellerId($provider, $userId);
+        }
+
+        $this->storeProviderState($provider, [
+            'expires_in' => $token['expires_in'] ?? null,
+            'last_error_code' => null,
+            'last_error_message' => null,
+        ]);
+    }
+
     public function handleWebhookCapture(Integration $integration): ?Order
     {
         $body = $this->decodeJson($integration->getBody());
@@ -576,6 +631,11 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         return null;
     }
 
+    public function canHandleWebhookPayload(array $payload): bool
+    {
+        return $this->resolveProviderFromPayload($payload) instanceof People;
+    }
+
     public function importItemPayload(array $item, People $provider, ?ProductShowcase $targetShowcase = null): ?Product
     {
         $remoteId = trim((string) ($item['id'] ?? ''));
@@ -583,26 +643,33 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             return null;
         }
 
-        $product = $this->findProductByRemoteId($remoteId);
-        if (!$product instanceof Product) {
-            $product = new Product();
-            $product->setCompany($provider);
-            $product->setSku($this->buildSku($remoteId));
-            $product->setType('product');
-            $product->setProductCondition('new');
-            $product->setProductUnit($this->discoverProductUnity());
-            $this->entityManager->persist($product);
-        }
-
         $title = trim((string) ($item['title'] ?? $remoteId));
+        $productName = $title !== '' ? $this->limitText($title, 255) : $remoteId;
         $price = (float) ($item['price'] ?? 0);
         $status = strtolower(trim((string) ($item['status'] ?? '')));
         $permalink = trim((string) ($item['permalink'] ?? ''));
         $description = $this->resolveItemDescription($remoteId, $provider);
+        $productDescription = $description !== '' ? $description : 'Produto importado do Mercado Livre.';
+
+        $product = $this->findProductByRemoteId($remoteId);
+        if (!$product instanceof Product) {
+            $product = new Product();
+            $product->setCompany($provider);
+            $product->setProduct($productName);
+            $product->setDescription($productDescription);
+            $product->setPrice($price);
+            $product->setSku($this->buildSku($remoteId));
+            $product->setType('product');
+            $product->setProductCondition('new');
+            $product->setActive(!in_array($status, ['closed', 'inactive', 'under_review'], true));
+            $product->setProductUnit($this->discoverProductUnity());
+            $this->entityManager->persist($product);
+        }
+
         $category = $this->resolveMercadoLivreCategory($provider, $item);
 
-        $product->setProduct($title !== '' ? $this->limitText($title, 255) : $remoteId);
-        $product->setDescription($description !== '' ? $description : 'Produto importado do Mercado Livre.');
+        $product->setProduct($productName);
+        $product->setDescription($productDescription);
         $product->setPrice($price);
         $product->setActive(!in_array($status, ['closed', 'inactive', 'under_review'], true));
 
@@ -1416,14 +1483,14 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         );
     }
 
-    private function buildOAuthCallbackUrl(string $apiBaseUrl): string
+    private function buildOAuthCallbackUrl(string $apiBaseUrl, string $appDomain): string
     {
         return rtrim($apiBaseUrl, '/') . '/oauth/mercadolivre/return';
     }
 
     private function resolveOAuthRedirectUri(string $apiBaseUrl, string $appDomain): string
     {
-        return $this->buildOAuthCallbackUrl($apiBaseUrl);
+        return $this->buildOAuthCallbackUrl($apiBaseUrl, $appDomain);
     }
 
     private function resolveOAuthExchangeRedirectUri(string $redirectUri, array $payload): string
