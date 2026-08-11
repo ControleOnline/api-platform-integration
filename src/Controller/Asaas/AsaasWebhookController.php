@@ -34,7 +34,9 @@ class AsaasWebhookController extends AbstractController
         IntegrationService $integrationService
     ): JsonResponse {
         try {
-            $token = $request->headers->get('asaas-access-token');
+            // Official header is asaas-access-token; some docs mention underscore variant
+            $token = $request->headers->get('asaas-access-token')
+                ?: $request->headers->get('asaas_access_token');
             if (!$token) {
                 return new JsonResponse(['error' => 'You should not pass!!!'], 401);
             }
@@ -44,17 +46,18 @@ class AsaasWebhookController extends AbstractController
                 return new JsonResponse(['error' => 'People not found'], 404);
             }
 
-            // Token configured on Asaas webhook is md5(asaas-key from Config), not User.apiKey
-            $asaasKeyConfig = $manager->getRepository(Config::class)->findOneBy([
+            // Webhook auth token is independent from API key (asaas-key).
+            // Must match the "Token de autenticação" configured on Asaas webhook.
+            $webhookTokenConfig = $manager->getRepository(Config::class)->findOneBy([
                 'people' => $people,
-                'configKey' => 'asaas-key',
+                'configKey' => 'asaas-webhook-token',
             ]);
-            if (!$asaasKeyConfig || !$asaasKeyConfig->getConfigValue()) {
-                self::$logger->warning('Asaas webhook: asaas-key config missing', ['peopleId' => $id]);
+            $expectedToken = trim((string) ($webhookTokenConfig?->getConfigValue() ?? ''));
+            if ($expectedToken === '') {
+                self::$logger->warning('Asaas webhook: asaas-webhook-token config missing', ['peopleId' => $id]);
                 return new JsonResponse(['error' => 'You should not pass!!!'], 401);
             }
 
-            $expectedToken = md5($asaasKeyConfig->getConfigValue());
             if (!hash_equals($expectedToken, $token)) {
                 self::$logger->warning('Asaas webhook: invalid access token', ['peopleId' => $id]);
                 return new JsonResponse(['error' => 'You should not pass!!!'], 401);
@@ -62,11 +65,7 @@ class AsaasWebhookController extends AbstractController
 
             $json = $this->requestPayloadService->decodeJsonContent($request->getContent());
 
-            // Optional user for audit trail (legacy User.apiKey lookup removed)
             $user = $manager->getRepository(User::class)->findOneBy(['apiKey' => $token]);
-            if (!$user) {
-                $user = null;
-            }
 
             $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user, $people);
 
