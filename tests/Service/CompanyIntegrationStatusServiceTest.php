@@ -36,7 +36,7 @@ class CompanyIntegrationStatusServiceTest extends TestCase
         }
 
         self::assertSame(['OAUTH_UBER_STORE_ID'], $indexed['uber']['required_config_keys']);
-        self::assertSame(['asaas-key', 'asaas-receiver-pix-key'], $indexed['asaas']['required_config_keys']);
+        self::assertSame(['asaas-key', 'asaas-receiver-pix-key', 'asaas-webhook-token'], $indexed['asaas']['required_config_keys']);
         self::assertSame(['clicksign-key'], $indexed['clicksign']['required_config_keys']);
         self::assertTrue($indexed['uber']['connected']);
         self::assertFalse($indexed['asaas']['connected']);

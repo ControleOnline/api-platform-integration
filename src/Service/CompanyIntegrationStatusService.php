@@ -28,6 +28,7 @@ class CompanyIntegrationStatusService
                 [
                     'asaas-key',
                     'asaas-receiver-pix-key',
+                    'asaas-webhook-token',
                 ],
                 $provider
             ),
