@@ -268,7 +268,16 @@ class AsaasService
 
     private function getWebhookApiKey(People $people)
     {
-        return md5($this->getApiKey($people));
+        // Dedicated webhook auth token (Asaas panel), not the API key.
+        $webhookToken = $this->manager->getRepository(Config::class)->findOneBy([
+            'people' => $people,
+            'configKey' => 'asaas-webhook-token',
+        ]);
+        $value = trim((string) ($webhookToken?->getConfigValue() ?? ''));
+        if ($value === '') {
+            throw new \Exception('Asaas webhook token (asaas-webhook-token) not found');
+        }
+        return $value;
     }
 
 
