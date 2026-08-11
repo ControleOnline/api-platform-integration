@@ -2,14 +2,13 @@
 
 namespace ControleOnline\Controller\Asaas;
 
+use ControleOnline\Entity\Config;
 use ControleOnline\Entity\People;
 use ControleOnline\Entity\User;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Attribute\Route;
-use ControleOnline\Message\Asaas\WebhookMessage;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\RequestPayloadService;
@@ -35,19 +34,39 @@ class AsaasWebhookController extends AbstractController
         IntegrationService $integrationService
     ): JsonResponse {
         try {
-
             $token = $request->headers->get('asaas-access-token');
-            if (!$token)
+            if (!$token) {
                 return new JsonResponse(['error' => 'You should not pass!!!'], 401);
-            $user = $manager->getRepository(User::class)->findOneBy(['apiKey' =>  $token]);
-
-            if (!$user)
-                return new JsonResponse(['error' => 'You should not pass!!!'], 301);
+            }
 
             $people = $this->manager->getRepository(People::class)->find($id);
-            if (!$people)
+            if (!$people) {
                 return new JsonResponse(['error' => 'People not found'], 404);
+            }
+
+            // Token configured on Asaas webhook is md5(asaas-key from Config), not User.apiKey
+            $asaasKeyConfig = $manager->getRepository(Config::class)->findOneBy([
+                'people' => $people,
+                'configKey' => 'asaas-key',
+            ]);
+            if (!$asaasKeyConfig || !$asaasKeyConfig->getConfigValue()) {
+                self::$logger->warning('Asaas webhook: asaas-key config missing', ['peopleId' => $id]);
+                return new JsonResponse(['error' => 'You should not pass!!!'], 401);
+            }
+
+            $expectedToken = md5($asaasKeyConfig->getConfigValue());
+            if (!hash_equals($expectedToken, $token)) {
+                self::$logger->warning('Asaas webhook: invalid access token', ['peopleId' => $id]);
+                return new JsonResponse(['error' => 'You should not pass!!!'], 401);
+            }
+
             $json = $this->requestPayloadService->decodeJsonContent($request->getContent());
+
+            // Optional user for audit trail (legacy User.apiKey lookup removed)
+            $user = $manager->getRepository(User::class)->findOneBy(['apiKey' => $token]);
+            if (!$user) {
+                $user = null;
+            }
 
             $integrationService->addIntegration($request->getContent(), 'Asaas', null, $user, $people);
 
