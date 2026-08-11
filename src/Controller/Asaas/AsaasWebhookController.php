@@ -53,6 +53,13 @@ class AsaasWebhookController extends AbstractController
                 'configKey' => 'asaas-webhook-token',
             ]);
             $expectedToken = trim((string) ($webhookTokenConfig?->getConfigValue() ?? ''));
+            // Tolerate values previously saved with surrounding quotes (UI double-encode bug)
+            if (
+                (str_starts_with($expectedToken, '"') && str_ends_with($expectedToken, '"'))
+                || (str_starts_with($expectedToken, "'") && str_ends_with($expectedToken, "'"))
+            ) {
+                $expectedToken = trim(substr($expectedToken, 1, -1));
+            }
             if ($expectedToken === '') {
                 self::$logger->warning('Asaas webhook: asaas-webhook-token config missing', ['peopleId' => $id]);
                 return new JsonResponse(['error' => 'You should not pass!!!'], 401);
