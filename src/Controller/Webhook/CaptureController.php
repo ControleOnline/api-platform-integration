@@ -37,6 +37,7 @@ class CaptureController extends AbstractController
 
     #[Route('/oauth/github/notifications', name: 'oauth_github_notifications', methods: ['POST'])]
     #[Route('/webhook/github', name: 'webhook_github_notifications', methods: ['POST'])]
+    #[Route('/github/webhook', name: 'github_webhook_notifications_legacy', methods: ['POST'])]
     public function github(Request $request): Response
     {
         $capture = $this->webhookCaptureService->capture($request, 'GitHub');
