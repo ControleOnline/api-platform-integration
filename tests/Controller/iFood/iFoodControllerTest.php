@@ -109,6 +109,31 @@ final class iFoodControllerTest extends TestCase
         self::assertSame(['accepted' => true, 'queued' => 0], json_decode((string) $response->getContent(), true));
     }
 
+    public function testConstructorSignatureMatchesContainerWiringContract(): void
+    {
+        $constructor = new \ReflectionMethod(iFoodController::class, '__construct');
+
+        self::assertSame([
+            'loggerService' => LoggerService::class,
+            'requestPayloadService' => RequestPayloadService::class,
+            'configService' => ConfigService::class,
+            'extraDataService' => ExtraDataService::class,
+            'entityManager' => EntityManagerInterface::class,
+        ], $this->extractConstructorTypes($constructor));
+    }
+
+    public function testServiceConfigPinsCurrentConstructorDependencies(): void
+    {
+        $servicesConfig = (string) file_get_contents(__DIR__ . '/../../../config/services/services.yaml');
+
+        self::assertStringContainsString('ControleOnline\Controller\iFood\iFoodController:', $servicesConfig);
+        self::assertStringContainsString('$loggerService: \'@ControleOnline\Service\LoggerService\'', $servicesConfig);
+        self::assertStringContainsString('$requestPayloadService: \'@ControleOnline\Service\RequestPayloadService\'', $servicesConfig);
+        self::assertStringContainsString('$configService: \'@ControleOnline\Service\ConfigService\'', $servicesConfig);
+        self::assertStringContainsString('$extraDataService: \'@ControleOnline\Service\ExtraDataService\'', $servicesConfig);
+        self::assertStringContainsString('$entityManager: \'@doctrine.orm.entity_manager\'', $servicesConfig);
+    }
+
     private function createController(
         ConfigService $configService,
         ExtraDataService $extraDataService,
@@ -147,5 +172,17 @@ final class iFoodControllerTest extends TestCase
             ],
             $rawInput,
         );
+    }
+
+    private function extractConstructorTypes(\ReflectionMethod $constructor): array
+    {
+        $types = [];
+
+        foreach ($constructor->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            $types[$parameter->getName()] = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+        }
+
+        return $types;
     }
 }
