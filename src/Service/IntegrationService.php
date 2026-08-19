@@ -11,6 +11,7 @@ use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceProviderRegistry;
+use Doctrine\DBAL\Exception\ConnectionLost;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
@@ -59,6 +60,40 @@ class IntegrationService
         $this->manager = $manager;
 
         return $this->manager;
+    }
+
+    /**
+     * Persist + flush with a single reconnect retry on MySQL ConnectionLost
+     * (e.g. PHP-FPM idle connection exceeded MySQL wait_timeout).
+     */
+    private function persistAndFlushWithRetry(object $entity): EntityManagerInterface
+    {
+        $manager = $this->getManager();
+        try {
+            $manager->persist($entity);
+            $manager->flush();
+        } catch (ConnectionLost $e) {
+            if ($this->loggerService instanceof LoggerService) {
+                $this->loggerService
+                    ->getLogger('integration')
+                    ->warning('Doctrine ConnectionLost on persist/flush — reconnecting and retrying once', [
+                        'entity' => $entity::class,
+                        'message' => $e->getMessage(),
+                    ]);
+            }
+
+            $this->managerRegistry->resetManager();
+            $manager = $this->managerRegistry->getManagerForClass(Integration::class);
+            if (!$manager instanceof EntityManagerInterface) {
+                throw new \RuntimeException('Doctrine entity manager unavailable after ConnectionLost reset.');
+            }
+            $this->manager = $manager;
+
+            $manager->persist($entity);
+            $manager->flush();
+        }
+
+        return $manager;
     }
 
     private function reloadIntegration(int $integrationId): ?Integration
@@ -499,9 +534,7 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $manager = $this->getManager();
-        $manager->persist($integration);
-        $manager->flush();
+        $this->persistAndFlushWithRetry($integration);
 
         if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
             try {
@@ -600,9 +633,7 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $manager = $this->getManager();
-        $manager->persist($integration);
-        $manager->flush();
+        $this->persistAndFlushWithRetry($integration);
 
         if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
             $this->bus->dispatch(
