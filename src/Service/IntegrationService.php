@@ -11,7 +11,7 @@ use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceProviderRegistry;
-use Doctrine\DBAL\Exception\ConnectionLost;
+use ControleOnline\Service\Doctrine\ConnectionLostRetryHelper;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
@@ -40,59 +40,28 @@ class IntegrationService
         private MessageBusInterface $bus,
         private ?LoggerService $loggerService = null,
         private ?MarketplaceProviderRegistry $marketplaceProviderRegistry = null,
+        private ?ConnectionLostRetryHelper $connectionLostRetryHelper = null,
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
+        if ($this->connectionLostRetryHelper === null) {
+            $this->connectionLostRetryHelper = new ConnectionLostRetryHelper(
+                $this->managerRegistry,
+                $this->loggerService
+            );
+        }
     }
 
     private function getManager(): EntityManagerInterface
     {
-        if (method_exists($this->manager, 'isOpen') && $this->manager->isOpen()) {
-            return $this->manager;
-        }
-
-        $this->managerRegistry->resetManager();
-        $manager = $this->managerRegistry->getManagerForClass(Integration::class);
-
-        if (!$manager instanceof EntityManagerInterface) {
-            throw new \RuntimeException('Doctrine entity manager unavailable for IntegrationService.');
-        }
-
+        $manager = $this->connectionLostRetryHelper->getManagerFor(Integration::class);
         $this->manager = $manager;
-
-        return $this->manager;
+        return $manager;
     }
 
-    /**
-     * Persist + flush with a single reconnect retry on MySQL ConnectionLost
-     * (e.g. PHP-FPM idle connection exceeded MySQL wait_timeout).
-     */
     private function persistAndFlushWithRetry(object $entity): EntityManagerInterface
     {
-        $manager = $this->getManager();
-        try {
-            $manager->persist($entity);
-            $manager->flush();
-        } catch (ConnectionLost $e) {
-            if ($this->loggerService instanceof LoggerService) {
-                $this->loggerService
-                    ->getLogger('integration')
-                    ->warning('Doctrine ConnectionLost on persist/flush — reconnecting and retrying once', [
-                        'entity' => $entity::class,
-                        'message' => $e->getMessage(),
-                    ]);
-            }
-
-            $this->managerRegistry->resetManager();
-            $manager = $this->managerRegistry->getManagerForClass(Integration::class);
-            if (!$manager instanceof EntityManagerInterface) {
-                throw new \RuntimeException('Doctrine entity manager unavailable after ConnectionLost reset.');
-            }
-            $this->manager = $manager;
-
-            $manager->persist($entity);
-            $manager->flush();
-        }
-
+        $manager = $this->connectionLostRetryHelper->persistAndFlushWithRetry($entity, Integration::class);
+        $this->manager = $manager;
         return $manager;
     }
 
