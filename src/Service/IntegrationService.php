@@ -11,7 +11,7 @@ use ControleOnline\Entity\User;
 use ControleOnline\Message\SendIntegrationMessage;
 use ControleOnline\Service\Marketplace\MarketplaceIntegrationHandlerInterface;
 use ControleOnline\Service\Marketplace\MarketplaceProviderRegistry;
-use ControleOnline\Service\Doctrine\ConnectionLostRetryHelper;
+use ControleOnline\Service\Doctrine\DoctrinePersistRetryHelper;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
@@ -22,14 +22,17 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Throwable;
 
-
 class IntegrationService
 {
     private const MAX_RETRIES = 3;
     private const RETRY_DELAY_MS = 60000;
-    private const EPHEMERAL_QUEUE_NAMES = ['Websocket', 'PushNotification'];
 
     private $lock;
+    private DoctrinePersistRetryHelper $persistRetryHelper;
+    private IntegrationExecutionLock $executionLock;
+    private IntegrationLogSupport $logSupport;
+    private IntegrationMarketplaceFinancialGuard $marketplaceFinancialGuard;
+
     public function __construct(
         private EntityManagerInterface $manager,
         private ManagerRegistry $managerRegistry,
@@ -40,28 +43,31 @@ class IntegrationService
         private MessageBusInterface $bus,
         private ?LoggerService $loggerService = null,
         private ?MarketplaceProviderRegistry $marketplaceProviderRegistry = null,
-        private ?ConnectionLostRetryHelper $connectionLostRetryHelper = null,
     ) {
         $this->lock = $this->lockFactory->createLock('integration:start');
-        if ($this->connectionLostRetryHelper === null) {
-            $this->connectionLostRetryHelper = new ConnectionLostRetryHelper(
-                $this->managerRegistry,
-                $this->loggerService
-            );
-        }
+        $this->persistRetryHelper = new DoctrinePersistRetryHelper(
+            $this->manager,
+            $this->managerRegistry,
+            $this->loggerService,
+        );
+        $this->executionLock = new IntegrationExecutionLock($this->manager);
+        $this->logSupport = new IntegrationLogSupport($this->loggerService);
+        $this->marketplaceFinancialGuard = new IntegrationMarketplaceFinancialGuard();
     }
 
     private function getManager(): EntityManagerInterface
     {
-        $manager = $this->connectionLostRetryHelper->getManagerFor(Integration::class);
+        $manager = $this->persistRetryHelper->getManager();
         $this->manager = $manager;
+        $this->executionLock->setManager($manager);
         return $manager;
     }
 
     private function persistAndFlushWithRetry(object $entity): EntityManagerInterface
     {
-        $manager = $this->connectionLostRetryHelper->persistAndFlushWithRetry($entity, Integration::class);
+        $manager = $this->persistRetryHelper->persistAndFlushWithRetry($entity);
         $this->manager = $manager;
+        $this->executionLock->setManager($manager);
         return $manager;
     }
 
@@ -73,51 +79,17 @@ class IntegrationService
         return $integration instanceof Integration ? $integration : null;
     }
 
-    private function resolveMarketplaceIntegrationHandler(Integration $integration): ?MarketplaceIntegrationHandlerInterface
-    {
-        if (!$this->marketplaceProviderRegistry instanceof MarketplaceProviderRegistry) {
-            return null;
-        }
-
-        return $this->marketplaceProviderRegistry->resolveIntegrationHandler((string) $integration->getQueueName());
-    }
-
-    private function buildIntegrationExecutionLockKey(int $integrationId): string
-    {
-        return sprintf('integration:execute:%d', $integrationId);
-    }
 
     private function acquireIntegrationExecutionLock(int $integrationId): bool
     {
-        if ($integrationId <= 0) {
-            return false;
-        }
-
-        try {
-            $result = $this->getManager()->getConnection()->fetchOne(
-                'SELECT GET_LOCK(:lockKey, 0)',
-                ['lockKey' => $this->buildIntegrationExecutionLockKey($integrationId)]
-            );
-        } catch (Throwable) {
-            return false;
-        }
-
-        return (int) $result === 1;
+        $this->getManager();
+        return $this->executionLock->acquire($integrationId);
     }
 
     private function releaseIntegrationExecutionLock(int $integrationId): void
     {
-        if ($integrationId <= 0) {
-            return;
-        }
-
-        try {
-            $this->getManager()->getConnection()->executeQuery(
-                'SELECT RELEASE_LOCK(:lockKey)',
-                ['lockKey' => $this->buildIntegrationExecutionLockKey($integrationId)]
-            );
-        } catch (Throwable) {
-        }
+        $this->getManager();
+        $this->executionLock->release($integrationId);
     }
 
     private function claimIntegrationForProcessing(int $integrationId): ?Integration
@@ -141,7 +113,6 @@ class IntegrationService
 
         return $integration;
     }
-
 
     public function getAllOpenIntegrations($limit = 100): array
     {
@@ -172,12 +143,15 @@ class IntegrationService
                 return;
             }
 
-            $this->logIntegrationProcessingStart($integration);
+            $this->logSupport->logIntegrationProcessingStart($integration);
 
             $method = 'integrate';
             $handled = false;
             $result = null;
-            $service = $this->resolveMarketplaceIntegrationHandler($integration);
+            $service = null;
+            if ($this->marketplaceProviderRegistry instanceof MarketplaceProviderRegistry) {
+                $service = $this->marketplaceProviderRegistry->resolveIntegrationHandler((string) $integration->getQueueName());
+            }
             if ($service instanceof MarketplaceIntegrationHandlerInterface) {
                 $handled = true;
                 $result = $service->$method($integration);
@@ -194,7 +168,7 @@ class IntegrationService
                 }
             }
 
-            if ($handled && $this->shouldGenerateMarketplaceFinancial($integration, $result)) {
+            if ($handled && $this->marketplaceFinancialGuard->shouldGenerateMarketplaceFinancial($integration, $result)) {
                 try {
                     $this->container
                         ->get(MarketplaceOrderFinancialGenerationService::class)
@@ -222,7 +196,7 @@ class IntegrationService
                 return;
             }
 
-            if ($handled && $this->isEphemeralQueue($managedIntegration)) {
+            if ($handled && IntegrationPureHelpers::isEphemeralQueue($managedIntegration)) {
                 $manager = $this->getManager();
                 $manager->remove($managedIntegration);
                 $manager->flush();
@@ -259,7 +233,7 @@ class IntegrationService
         }
 
         $managedIntegration->incrementRetry();
-        $this->logIntegrationFailure($managedIntegration, $exception);
+        $this->logSupport->logIntegrationFailure($managedIntegration, $exception);
 
         if ($managedIntegration->getRetry() <= self::MAX_RETRIES) {
             $managedIntegration->setStatus($this->statusService->discoveryStatus('open', 'open', 'integration'));
@@ -281,130 +255,6 @@ class IntegrationService
         $manager->flush();
     }
 
-    private function logIntegrationFailure(Integration $integration, ?Throwable $exception): void
-    {
-        if (!$exception instanceof Throwable || !$this->loggerService instanceof LoggerService) {
-            return;
-        }
-
-        $previous = $exception->getPrevious();
-        $context = $this->buildIntegrationLogContext($integration, [
-            'class' => $exception::class,
-            'message' => $exception->getMessage(),
-            'previousClass' => $previous ? $previous::class : null,
-            'previousMessage' => $previous?->getMessage(),
-        ]);
-
-        $this->loggerService
-            ->getLogger('integration')
-            ->error('Integration queue execution failed', $context);
-    }
-
-    private function logIntegrationProcessingStart(Integration $integration): void
-    {
-        if (!$this->loggerService instanceof LoggerService) {
-            return;
-        }
-
-        $this->loggerService
-            ->getLogger('integration')
-            ->info('Integration queue execution started', $this->buildIntegrationLogContext($integration));
-    }
-
-    private function buildIntegrationLogContext(Integration $integration, array $extra = []): array
-    {
-        $body = $this->decodeIntegrationJson($integration->getBody());
-        $headers = $this->decodeIntegrationJson($integration->getHeaders() ?? '');
-        $data = is_array($body['data'] ?? null) ? $body['data'] : [];
-        $orderInfo = is_array($data['order_info'] ?? null) ? $data['order_info'] : [];
-        $shop = is_array($orderInfo['shop'] ?? null)
-            ? $orderInfo['shop']
-            : (is_array($data['shop'] ?? null) ? $data['shop'] : []);
-        $webhook = is_array($headers['webhook'] ?? null) ? $headers['webhook'] : [];
-        $eventType = trim((string) ($body['type'] ?? $body['eventType'] ?? $body['fullCode'] ?? $body['code'] ?? ''));
-
-        return array_filter(array_merge([
-            'logEntity' => $integration,
-            'integrationId' => $integration->getId(),
-            'queueName' => $integration->getQueueName(),
-            'queueStatusId' => $integration->getStatus()?->getId(),
-            'queueStatus' => $integration->getStatus()?->getStatus(),
-            'queueRealStatus' => $integration->getStatus()?->getRealStatus(),
-            'retry' => $integration->getRetry(),
-            'deviceId' => $integration->getDevice()?->getId(),
-            'peopleId' => $integration->getPeople()?->getId(),
-            'userId' => $integration->getUser()?->getId(),
-            'eventType' => $eventType !== '' ? $eventType : null,
-            'bodyEventId' => isset($body['event_id']) ? (string) $body['event_id'] : null,
-            'headerEventId' => isset($webhook['event_id']) ? (string) $webhook['event_id'] : null,
-            'appShopId' => isset($body['app_shop_id']) ? (string) $body['app_shop_id'] : null,
-            'orderId' => isset($data['order_id']) ? (string) $data['order_id'] : null,
-            'orderIndex' => isset($orderInfo['order_index']) ? (string) $orderInfo['order_index'] : null,
-            'shopId' => isset($shop['shop_id']) ? (string) $shop['shop_id'] : null,
-            'shopName' => $shop['shop_name'] ?? null,
-            'bodyPreview' => substr((string) $integration->getBody(), 0, 2000),
-            'headersPreview' => substr((string) ($integration->getHeaders() ?? ''), 0, 2000),
-        ], $extra), static fn($value) => $value !== null && $value !== '');
-    }
-
-    private function decodeIntegrationJson(?string $json): array
-    {
-        if (!is_string($json) || trim($json) === '') {
-            return [];
-        }
-
-        $decoded = json_decode($json, true);
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    private function shouldGenerateMarketplaceFinancial(Integration $integration, mixed $result): bool
-    {
-        if (!$result instanceof Order) {
-            return false;
-        }
-
-        $app = strtolower(trim((string) $result->getApp()));
-        $queueName = strtolower(trim((string) $integration->getQueueName()));
-
-        if ($app === strtolower(Order::APP_FOOD99) && $queueName === strtolower(Order::APP_FOOD99)) {
-            $body = json_decode((string) $integration->getBody(), true);
-            if (!is_array($body)) {
-                return false;
-            }
-
-            return strtolower(trim((string) ($body['type'] ?? ''))) === 'ordernew';
-        }
-
-        if ($app === strtolower(Order::APP_IFOOD) && $queueName === strtolower(Order::APP_IFOOD)) {
-            return $this->isIfoodFinancialGenerationEvent($integration);
-        }
-
-        return false;
-    }
-
-    private function isIfoodFinancialGenerationEvent(Integration $integration): bool
-    {
-        $body = json_decode((string) $integration->getBody(), true);
-        if (!is_array($body)) {
-            return false;
-        }
-
-        $eventCode = strtoupper(trim((string) (
-            $body['fullCode']
-                ?? $body['code']
-                ?? $body['type']
-                ?? $body['eventType']
-                ?? ''
-        )));
-
-        return in_array($eventCode, [
-            'CONCLUDED',
-            'ORDER_CONCLUDED',
-            'ORDER_FINISHED',
-            'DELIVERY_CONCLUDED',
-        ], true);
-    }
-
     public function getWebsocketOpen(array $devices = [], $limit = 100): array
     {
         $manager = $this->getManager();
@@ -422,7 +272,7 @@ class IntegrationService
     public function setDelivered(Integration $integration)
     {
         $manager = $this->getManager();
-        if ($this->isEphemeralQueue($integration)) {
+        if (IntegrationPureHelpers::isEphemeralQueue($integration)) {
             $manager->remove($integration);
             $manager->flush();
 
@@ -449,7 +299,7 @@ class IntegrationService
              WHERE queue_name IN (:queueNames)
                AND created_at < :cutoff',
             [
-                'queueNames' => self::EPHEMERAL_QUEUE_NAMES,
+                'queueNames' => IntegrationPureHelpers::EPHEMERAL_QUEUE_NAMES,
                 'cutoff' => $cutoff->format('Y-m-d H:i:s'),
             ],
             [
@@ -459,24 +309,10 @@ class IntegrationService
 
         return [
             'deletedTotal' => $deleted,
-            'queueNames' => self::EPHEMERAL_QUEUE_NAMES,
+            'queueNames' => IntegrationPureHelpers::EPHEMERAL_QUEUE_NAMES,
             'cutoff' => $cutoff->format(\DateTimeInterface::ATOM),
         ];
     }
-
-    private function isEphemeralQueue(Integration $integration): bool
-    {
-        foreach (self::EPHEMERAL_QUEUE_NAMES as $queueName) {
-            if (strcasecmp((string) $integration->getQueueName(), $queueName) === 0) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-
-
 
     public function setError(Integration $integration)
     {
@@ -560,7 +396,7 @@ class IntegrationService
             }
 
             $device = $deviceConfig->getDevice();
-            $token = $this->extractManagerAndroidPushToken($device);
+            $token = IntegrationPureHelpers::extractManagerAndroidPushToken($device);
             if ($token === '') {
                 continue;
             }
@@ -569,15 +405,6 @@ class IntegrationService
         }
 
         return array_values($devices);
-    }
-
-    private function extractManagerAndroidPushToken(Device $device): string
-    {
-        $metadata = $device->getMetadata();
-
-        return trim((string) (
-            $metadata['pushTokens']['manager']['android']['deviceToken'] ?? ''
-        ));
     }
 
     public function addIntegrationWithHeaders(

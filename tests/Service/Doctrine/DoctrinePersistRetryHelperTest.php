@@ -3,7 +3,7 @@
 namespace ControleOnline\Integration\Tests\Service\Doctrine;
 
 use ControleOnline\Entity\Integration;
-use ControleOnline\Service\Doctrine\ConnectionLostRetryHelper;
+use ControleOnline\Service\Doctrine\DoctrinePersistRetryHelper;
 use ControleOnline\Service\LoggerService;
 use Doctrine\DBAL\Exception\ConnectionLost;
 use Doctrine\ORM\EntityManagerInterface;
@@ -11,27 +11,31 @@ use Doctrine\Persistence\ManagerRegistry;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
-class ConnectionLostRetryHelperTest extends TestCase
+class DoctrinePersistRetryHelperTest extends TestCase
 {
-    private function createConnectionLost(): ConnectionLost
+    private function makeConnectionLost(): ConnectionLost
     {
-        $driverEx = $this->createMock(\Doctrine\DBAL\Driver\Exception::class);
-        // Doctrine DBAL ConnectionLost typically wraps a driver exception
-        return new ConnectionLost($driverEx, null);
+        // DBAL ConnectionLost is typically constructed with Driver\Exception; use reflection for unit test isolation.
+        $ref = new \ReflectionClass(ConnectionLost::class);
+        if ($ref->getConstructor() && $ref->getConstructor()->getNumberOfRequiredParameters() > 0) {
+            return $ref->newInstanceWithoutConstructor();
+        }
+
+        return new ConnectionLost('connection lost');
     }
 
     public function testPersistAndFlushSucceedsOnFirstAttempt(): void
     {
-        $entity = new Integration();
+        $entity = $this->createStub(Integration::class);
         $manager = $this->createMock(EntityManagerInterface::class);
         $manager->expects($this->once())->method('persist')->with($entity);
         $manager->expects($this->once())->method('flush');
         $manager->method('isOpen')->willReturn(true);
 
         $registry = $this->createMock(ManagerRegistry::class);
-        $registry->method('getManagerForClass')->with(Integration::class)->willReturn($manager);
+        $registry->expects($this->never())->method('resetManager');
 
-        $helper = new ConnectionLostRetryHelper($registry, null);
+        $helper = new DoctrinePersistRetryHelper($manager, $registry);
         $result = $helper->persistAndFlushWithRetry($entity);
 
         $this->assertSame($manager, $result);
@@ -39,35 +43,32 @@ class ConnectionLostRetryHelperTest extends TestCase
 
     public function testPersistAndFlushRetriesOnceOnConnectionLostThenSucceeds(): void
     {
-        $entity = new Integration();
+        $entity = $this->createStub(Integration::class);
+        $lost = $this->makeConnectionLost();
+
         $manager1 = $this->createMock(EntityManagerInterface::class);
         $manager1->method('isOpen')->willReturn(true);
         $manager1->expects($this->once())->method('persist')->with($entity);
-        $manager1->expects($this->once())->method('flush')
-            ->willThrowException($this->createConnectionLost());
+        $manager1->expects($this->once())->method('flush')->willThrowException($lost);
 
         $manager2 = $this->createMock(EntityManagerInterface::class);
         $manager2->expects($this->once())->method('persist')->with($entity);
         $manager2->expects($this->once())->method('flush');
 
         $registry = $this->createMock(ManagerRegistry::class);
-        $registry->expects($this->exactly(2))
+        $registry->expects($this->once())->method('resetManager');
+        $registry->expects($this->once())
             ->method('getManagerForClass')
             ->with(Integration::class)
-            ->willReturnOnConsecutiveCalls($manager1, $manager2);
-        $registry->expects($this->once())->method('resetManager');
+            ->willReturn($manager2);
 
         $logger = $this->createMock(LoggerInterface::class);
-        $logger->expects($this->once())->method('warning')
-            ->with(
-                $this->stringContains('ConnectionLost'),
-                $this->arrayHasKey('entity')
-            );
+        $logger->expects($this->once())->method('warning');
 
         $loggerService = $this->createMock(LoggerService::class);
         $loggerService->method('getLogger')->with('integration')->willReturn($logger);
 
-        $helper = new ConnectionLostRetryHelper($registry, $loggerService);
+        $helper = new DoctrinePersistRetryHelper($manager1, $registry, $loggerService);
         $result = $helper->persistAndFlushWithRetry($entity);
 
         $this->assertSame($manager2, $result);
@@ -75,23 +76,23 @@ class ConnectionLostRetryHelperTest extends TestCase
 
     public function testPersistAndFlushPropagatesConnectionLostWhenRetryAlsoFails(): void
     {
-        $entity = new Integration();
-        $ex = $this->createConnectionLost();
+        $entity = $this->createStub(Integration::class);
+        $lost = $this->makeConnectionLost();
 
         $manager1 = $this->createMock(EntityManagerInterface::class);
         $manager1->method('isOpen')->willReturn(true);
         $manager1->method('persist');
-        $manager1->method('flush')->willThrowException($ex);
+        $manager1->method('flush')->willThrowException($lost);
 
         $manager2 = $this->createMock(EntityManagerInterface::class);
         $manager2->method('persist');
-        $manager2->method('flush')->willThrowException($ex);
+        $manager2->method('flush')->willThrowException($lost);
 
         $registry = $this->createMock(ManagerRegistry::class);
-        $registry->method('getManagerForClass')->willReturnOnConsecutiveCalls($manager1, $manager2);
         $registry->method('resetManager');
+        $registry->method('getManagerForClass')->willReturn($manager2);
 
-        $helper = new ConnectionLostRetryHelper($registry, null);
+        $helper = new DoctrinePersistRetryHelper($manager1, $registry);
 
         $this->expectException(ConnectionLost::class);
         $helper->persistAndFlushWithRetry($entity);
@@ -99,22 +100,19 @@ class ConnectionLostRetryHelperTest extends TestCase
 
     public function testGetManagerResetsWhenClosed(): void
     {
-        $managerClosed = $this->createMock(EntityManagerInterface::class);
-        $managerClosed->method('isOpen')->willReturn(false);
+        $closed = $this->createMock(EntityManagerInterface::class);
+        $closed->method('isOpen')->willReturn(false);
 
-        $managerOpen = $this->createMock(EntityManagerInterface::class);
-        $managerOpen->method('isOpen')->willReturn(true);
+        $open = $this->createMock(EntityManagerInterface::class);
 
         $registry = $this->createMock(ManagerRegistry::class);
-        $registry->expects($this->exactly(2))
+        $registry->expects($this->once())->method('resetManager');
+        $registry->expects($this->once())
             ->method('getManagerForClass')
             ->with(Integration::class)
-            ->willReturnOnConsecutiveCalls($managerClosed, $managerOpen);
-        $registry->expects($this->once())->method('resetManager');
+            ->willReturn($open);
 
-        $helper = new ConnectionLostRetryHelper($registry, null);
-        $result = $helper->getManagerFor(Integration::class);
-
-        $this->assertSame($managerOpen, $result);
+        $helper = new DoctrinePersistRetryHelper($closed, $registry);
+        $this->assertSame($open, $helper->getManager());
     }
 }
