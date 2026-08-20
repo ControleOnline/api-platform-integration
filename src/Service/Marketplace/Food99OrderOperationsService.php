@@ -2,6 +2,8 @@
 
 namespace ControleOnline\Service\Marketplace;
 
+use ControleOnline\Service\Marketplace\ExternalOrderContract;
+
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Address;
 use ControleOnline\Entity\ExtraData;
@@ -775,6 +777,13 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
         $deliveryOrder->setComments($order->getComments());
         $deliveryOrder->setOrderType(Order::ORDER_TYPE_DELIVERY);
         $deliveryOrder->setApp(self::APP_CONTEXT);
+        // Logistics run stays orderType=delivery; commercial sale is external channel.
+        if (method_exists($deliveryOrder, 'setChannel')) {
+            $deliveryOrder->setChannel(ExternalOrderContract::CHANNEL_EXTERNAL);
+        }
+        if (method_exists($deliveryOrder, 'setFulfillmentType')) {
+            $deliveryOrder->setFulfillmentType(ExternalOrderContract::FULFILLMENT_DELIVERY);
+        }
 
         $shouldRefreshStatus = !$deliveryOrderExists
             || $remoteState !== null
@@ -2082,7 +2091,12 @@ class Food99OrderOperationsService extends AbstractMarketplaceService
             $status = $this->statusService->discoveryStatus('open', 'open', 'order');
             $orderPrice = isset($price['order_price']) ? ((float) $price['order_price']) / 100 : 0.0;
 
-            $order = $this->createOrder($client, $provider, $orderPrice, $status, $json);
+            $deliveryStateForContract = $this->extractOrderDeliveryStateFields($json);
+            $order = $this->createOrder($client, $provider, $orderPrice, $status, $json, [
+                'fulfillment_mode' => $deliveryStateForContract['fulfillment_mode'] ?? null,
+                'delivery_type' => $deliveryStateForContract['delivery_type'] ?? null,
+                'has_delivery_address' => !empty($receiveAddress),
+            ]);
             $this->applyMarketplaceOrderDate($order, $this->extractOrderEventTimestamp($json));
             $this->syncOrderComments($order, $this->extractOrderRemark($json));
             $this->entityManager->persist($order);
