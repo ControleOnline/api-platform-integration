@@ -1833,9 +1833,19 @@ class IfoodStoreOperationsService extends AbstractMarketplaceService
             $orderAmount = isset($orderDetails['total']['orderAmount']) ? (float) $orderDetails['total']['orderAmount'] : 0.0;
             $eventCode = $this->resolveEventCode($json);
             $snapshotKey = $eventCode !== '' ? $eventCode : 'PLACED';
+            $orderTypeToken = strtoupper(trim((string) ($orderDetails['orderType'] ?? '')));
             $order = $this->createOrder($client, $provider, $orderAmount, $status, [
                 $snapshotKey => $json,
                 'latest_event_type' => $snapshotKey,
+            ], [
+                'order_type' => $orderTypeToken,
+                'has_delivery_address' => is_array($orderDetails['delivery'] ?? null),
+                'takeout_mode' => is_array($orderDetails['takeout'] ?? null)
+                    ? ($orderDetails['takeout']['mode'] ?? null)
+                    : null,
+                'delivered_by' => is_array($orderDetails['delivery'] ?? null)
+                    ? ($orderDetails['delivery']['deliveredBy'] ?? null)
+                    : null,
             ]);
             $this->applyMarketplaceOrderDate($order, $this->extractEventTimestamp($json));
             $this->syncOrderComments($order, $this->extractOrderRemarkFromPayload($orderDetails));

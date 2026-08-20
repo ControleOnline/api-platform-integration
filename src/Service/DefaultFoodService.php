@@ -20,6 +20,7 @@ use ControleOnline\Entity\User;
 use ControleOnline\Service\Client\Food99Client;
 use ControleOnline\Service\Client\WebsocketClient;
 use ControleOnline\Service\Client\IfoodClient;
+use ControleOnline\Service\Marketplace\ExternalOrderContract;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use ControleOnline\Service\LoggerService;
@@ -679,7 +680,8 @@ class DefaultFoodService
         People $provider,
         float $price,
         Status $status,
-        array $otherInformations
+        array $otherInformations,
+        array $fulfillmentContext = []
     ): Order {
         $order = new Order();
         $order->setClient($client);
@@ -688,6 +690,15 @@ class DefaultFoodService
         $order->setStatus($status);
         $order->setApp(self::$app);
         $order->setOrderType('sale');
+        // Commercial core T13: external platforms always use channel=external.
+        if (method_exists($order, 'setChannel')) {
+            $order->setChannel(ExternalOrderContract::CHANNEL_EXTERNAL);
+        }
+        if (method_exists($order, 'setFulfillmentType')) {
+            $order->setFulfillmentType(
+                ExternalOrderContract::resolveFulfillmentType($fulfillmentContext)
+            );
+        }
         $order->addOtherInformations(self::$app, $otherInformations);
 
         $order->setPrice($price);
