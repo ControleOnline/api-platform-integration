@@ -2,7 +2,7 @@ services:
     _defaults:
         autowire: true
         autoconfigure: true
-        public: true 
+        public: true
     ControleOnline\:
         resource: '../../src/*'
         exclude: '../../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,Tests,Kernel.php}'
@@ -11,6 +11,14 @@ services:
         tags: ['doctrine.repository_service']
     ControleOnline\Controller\:
         resource: '../../src/Controller'
+        tags: ['controller.service_arguments']
+    ControleOnline\Controller\iFood\iFoodController:
+        arguments:
+            $loggerService: '@ControleOnline\Service\LoggerService'
+            $requestPayloadService: '@ControleOnline\Service\RequestPayloadService'
+            $configService: '@ControleOnline\Service\ConfigService'
+            $extraDataService: '@ControleOnline\Service\ExtraDataService'
+            $entityManager: '@doctrine.orm.entity_manager'
         tags: ['controller.service_arguments']
     ControleOnline\Command\:
         resource: '../../src/Command'

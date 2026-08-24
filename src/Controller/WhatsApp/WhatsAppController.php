@@ -3,6 +3,7 @@
 namespace ControleOnline\Controller\WhatsApp;
 
 use ControleOnline\Service\IntegrationService;
+use Doctrine\DBAL\Exception\ConnectionLost;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\Security\Http\Attribute\Security;
 use Symfony\Component\HttpFoundation\Request;
@@ -39,7 +40,18 @@ class WhatsAppController extends AbstractController
             return new Response('Invalid JSON', Response::HTTP_BAD_REQUEST);
         }
 
-        $integrationService->addIntegration($rawInput, 'WhatsApp');
+        try {
+            $integrationService->addIntegration($rawInput, 'WhatsApp');
+        } catch (ConnectionLost $e) {
+            // Retry inside IntegrationService already failed — signal WhatsApp to retry delivery
+            self::$logger->error('ConnectionLost ao gravar webhook WhatsApp', [
+                'error' => $e->getMessage(),
+            ]);
+            return new JsonResponse(
+                ['error' => 'database_unavailable', 'message' => 'Temporary database connection loss'],
+                Response::HTTP_SERVICE_UNAVAILABLE
+            );
+        }
         self::$logger->info('Evento enviado para a fila', ['event' => $event]);
 
         return new JsonResponse(['accepted'], Response::HTTP_ACCEPTED);
