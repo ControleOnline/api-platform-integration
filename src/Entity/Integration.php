@@ -10,9 +10,12 @@ use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\Metadata\Put;
 use ApiPlatform\Metadata\Delete;
+use ApiPlatform\Doctrine\Orm\Filter\SearchFilter;
+use ApiPlatform\Metadata\ApiFilter;
 use ControleOnline\Repository\IntegrationRepository;
 
 #[ORM\Table(name: 'integration')]
+#[ApiFilter(filterClass: SearchFilter::class, properties: ['queueName' => 'exact', 'status' => 'exact', 'status.realStatus' => 'exact', 'retry' => 'exact'])]
 #[ApiResource(
     operations: [
         new Get(security: 'is_granted(\'ROLE_HUMAN\')'),
