@@ -150,7 +150,7 @@ class Client
       throw new ClientRequestException($e->getMessage());
     }
   }
-  
+
   private function fixCountryName(string $originalName): string
   {
     return strtolower($originalName) == 'brazil' ? 'Brasil' : $originalName;
