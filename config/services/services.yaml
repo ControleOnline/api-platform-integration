@@ -5,7 +5,7 @@ services:
         public: true
     ControleOnline\:
         resource: '../../src/*'
-        exclude: '../../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,Tests,Kernel.php}'
+        exclude: '../../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,EventSubscriber,Tests,Kernel.php}'
     ControleOnline\Repository\:
         resource: '../../src/Repository'
         tags: ['doctrine.repository_service']
@@ -25,6 +25,9 @@ services:
         tags: ['console.command']
     ControleOnline\Filter\:
         resource: '../../src/Filter'
+    ControleOnline\EventSubscriber\MessengerDoctrineConnectionSubscriber:
+        class: ControleOnline\EventSubscriber\MessengerDoctrineConnectionSubscriber
+        file: '../../src/EventSubscriber/MessengerDoctrineConnectionSubscriber.php'
     ControleOnline\Service\N8NService:
         arguments:
             $n8nClient: '@http_client.n8n'
