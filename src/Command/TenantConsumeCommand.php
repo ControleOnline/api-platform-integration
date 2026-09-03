@@ -65,7 +65,8 @@ class TenantConsumeCommand extends DefaultCommand
         $this->input = $input;
         $this->output = $output;
 
-        if (!$this->lock->acquire()) {
+        $rotationLock = $this->lockFactory->createLock('tenant:messenger:consume');
+        if (!$rotationLock->acquire()) {
             $this->addLog('Outro processo ainda está em execução. Ignorando...');
             return Command::SUCCESS;
         }
@@ -100,8 +101,8 @@ class TenantConsumeCommand extends DefaultCommand
                 }
             }
         } finally {
-            if ($this->lock->isAcquired()) {
-                $this->lock->release();
+            if ($rotationLock->isAcquired()) {
+                $rotationLock->release();
             }
         }
     }
@@ -109,10 +110,6 @@ class TenantConsumeCommand extends DefaultCommand
 
     protected function runCommand(): int
     {
-        if (!$this->lock->acquire()) {
-            $this->addLog('Outro processo ainda está em execução. Ignorando...');
-            return Command::SUCCESS;
-        }
         $domain = $this->input->getOption('domain');
 
         if (!$domain) {
@@ -124,6 +121,10 @@ class TenantConsumeCommand extends DefaultCommand
         $this->lock = $this->lockFactory->createLock(
             'tenant:messenger:consume:' . trim((string) $domain)
         );
+        if (!$this->lock->acquire()) {
+            $this->addLog('Outro processo ainda está em execução. Ignorando...');
+            return Command::SUCCESS;
+        }
 
         $receivers = $this->input->getArgument('receivers') ?: ['async'];
 
@@ -143,8 +144,11 @@ class TenantConsumeCommand extends DefaultCommand
             '--limit'            => $this->input->getOption('limit'),
             '--failure-limit'    => $this->input->getOption('failure-limit'),
             '--memory-limit'     => $this->input->getOption('memory-limit'),
-            '--time-limit'       => $this->input->getOption('time-limit')
-                ?: (!$this->input->getOption('domain') ? 2 : null),
+            // The rotating worker must yield quickly even when the legacy
+            // cron row still contains a long-lived time limit.
+            '--time-limit'       => !$this->input->getOption('domain')
+                ? 2
+                : $this->input->getOption('time-limit'),
             '--sleep'            => $this->input->getOption('sleep'),
             '--bus'              => $this->input->getOption('bus'),
             '--queues'           => $this->input->getOption('queues'),
@@ -162,6 +166,12 @@ class TenantConsumeCommand extends DefaultCommand
         $newInput->setInteractive(false);
 
         // Executa o consumeCommand diretamente (mantém o mesmo Output)
-        return $consumeCommand->run($newInput, $this->output);
+        try {
+            return $consumeCommand->run($newInput, $this->output);
+        } finally {
+            if ($this->lock->isAcquired()) {
+                $this->lock->release();
+            }
+        }
     }
 }
