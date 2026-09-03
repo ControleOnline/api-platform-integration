@@ -88,15 +88,26 @@ class TenantConsumeCommand extends DefaultCommand
                         continue;
                     }
 
-                    $_ENV['APP_DOMAIN'] = $domain;
-                    $_SERVER['APP_DOMAIN'] = $domain;
-                    putenv('APP_DOMAIN=' . $domain);
-                    $this->databaseSwitchService->switchDatabaseByDomain($domain);
-                    $this->runCommand($domain);
-                    $this->entityManager->clear();
-                    $connection = $this->entityManager->getConnection();
-                    if (!$connection->isTransactionActive() && $connection->isConnected()) {
-                        $connection->close();
+                    try {
+                        $_ENV['APP_DOMAIN'] = $domain;
+                        $_SERVER['APP_DOMAIN'] = $domain;
+                        putenv('APP_DOMAIN=' . $domain);
+                        $this->databaseSwitchService->switchDatabaseByDomain($domain);
+                        $this->runCommand($domain);
+                    } catch (\Throwable $exception) {
+                        // One tenant with invalid credentials or an unavailable
+                        // database must not stop every other tenant's queue.
+                        $this->addLog(sprintf(
+                            '[tenant:messenger:consume] Falha no tenant %s: %s',
+                            $domain,
+                            $exception->getMessage()
+                        ));
+                    } finally {
+                        $this->entityManager->clear();
+                        $connection = $this->entityManager->getConnection();
+                        if (!$connection->isTransactionActive() && $connection->isConnected()) {
+                            $connection->close();
+                        }
                     }
                 }
             }
