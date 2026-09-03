@@ -75,14 +75,14 @@ class TenantConsumeCommand extends DefaultCommand
             // slice per tenant keeps the worker responsive without opening
             // one long-lived process (and DB connection) per tenant.
             while (true) {
-                $domains = $this->databaseSwitchService->getAllDomains();
-                if (!$domains) {
+                $tenants = $this->databaseSwitchService->getAllTenantDomains();
+                if (!$tenants) {
                     usleep(250000);
                     continue;
                 }
 
-                foreach ($domains as $domain) {
-                    $domain = trim((string) $domain);
+                foreach ($tenants as $tenant) {
+                    $domain = trim((string) ($tenant['app_host'] ?? ''));
                     if ($domain === '') {
                         continue;
                     }
