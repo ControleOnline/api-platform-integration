@@ -27,7 +27,6 @@ services:
         resource: '../../src/Filter'
     ControleOnline\EventSubscriber\MessengerDoctrineConnectionSubscriber:
         class: ControleOnline\EventSubscriber\MessengerDoctrineConnectionSubscriber
-        file: '../../src/EventSubscriber/MessengerDoctrineConnectionSubscriber.php'
     ControleOnline\Service\N8NService:
         arguments:
             $n8nClient: '@http_client.n8n'
