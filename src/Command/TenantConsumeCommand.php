@@ -6,7 +6,9 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Lock\LockFactory;
 use ControleOnline\Service\DatabaseSwitchService;
 use ControleOnline\Service\DomainService;
@@ -54,6 +56,56 @@ class TenantConsumeCommand extends DefaultCommand
             ->addOption('keepalive', null, InputOption::VALUE_OPTIONAL);
     }
 
+    public function execute(InputInterface $input, OutputInterface $output): int
+    {
+        if ($input->getOption('domain')) {
+            return parent::execute($input, $output);
+        }
+
+        $this->input = $input;
+        $this->output = $output;
+
+        if (!$this->lock->acquire()) {
+            $this->addLog('Outro processo ainda está em execução. Ignorando...');
+            return Command::SUCCESS;
+        }
+
+        try {
+            // One process rotates through all tenants. A short Messenger
+            // slice per tenant keeps the worker responsive without opening
+            // one long-lived process (and DB connection) per tenant.
+            while (true) {
+                $domains = $this->databaseSwitchService->getAllDomains();
+                if (!$domains) {
+                    usleep(250000);
+                    continue;
+                }
+
+                foreach ($domains as $domain) {
+                    $domain = trim((string) $domain);
+                    if ($domain === '') {
+                        continue;
+                    }
+
+                    $_ENV['APP_DOMAIN'] = $domain;
+                    $_SERVER['APP_DOMAIN'] = $domain;
+                    putenv('APP_DOMAIN=' . $domain);
+                    $this->databaseSwitchService->switchDatabaseByDomain($domain);
+                    $this->runCommand();
+                    $this->entityManager->clear();
+                    $connection = $this->entityManager->getConnection();
+                    if (!$connection->isTransactionActive() && $connection->isConnected()) {
+                        $connection->close();
+                    }
+                }
+            }
+        } finally {
+            if ($this->lock->isAcquired()) {
+                $this->lock->release();
+            }
+        }
+    }
+
 
     protected function runCommand(): int
     {
@@ -91,7 +143,8 @@ class TenantConsumeCommand extends DefaultCommand
             '--limit'            => $this->input->getOption('limit'),
             '--failure-limit'    => $this->input->getOption('failure-limit'),
             '--memory-limit'     => $this->input->getOption('memory-limit'),
-            '--time-limit'       => $this->input->getOption('time-limit'),
+            '--time-limit'       => $this->input->getOption('time-limit')
+                ?: (!$this->input->getOption('domain') ? 2 : null),
             '--sleep'            => $this->input->getOption('sleep'),
             '--bus'              => $this->input->getOption('bus'),
             '--queues'           => $this->input->getOption('queues'),
