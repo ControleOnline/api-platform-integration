@@ -67,6 +67,12 @@ class TenantConsumeCommand extends DefaultCommand
             throw new \RuntimeException('Você deve informar --domain para consumir filas.');
         }
 
+        // The central cron starts one worker per tenant. The lock must follow
+        // that tenant, otherwise the first domain blocks all other consumers.
+        $this->lock = $this->lockFactory->createLock(
+            'tenant:messenger:consume:' . trim((string) $domain)
+        );
+
         $receivers = $this->input->getArgument('receivers') ?: ['async'];
 
         $this->addLog(sprintf(
