@@ -71,6 +71,37 @@ class IntegrationService
         return $manager;
     }
 
+    /**
+     * Persist the integration and its Messenger envelope atomically.
+     * The Doctrine transport uses this same connection, so a failed dispatch
+     * rolls back the integration as well.
+     */
+    private function persistAndDispatch(Integration $integration): void
+    {
+        $manager = $this->getManager();
+        $connection = $manager->getConnection();
+        $connection->beginTransaction();
+
+        try {
+            $manager->persist($integration);
+            $manager->flush();
+
+            $integrationId = $integration->getId();
+            if ($integrationId === null) {
+                throw new \RuntimeException('Integration ID was not generated before Messenger dispatch.');
+            }
+
+            $this->bus->dispatch(new SendIntegrationMessage($integrationId));
+            $connection->commit();
+        } catch (Throwable $exception) {
+            if ($connection->isTransactionActive()) {
+                $connection->rollBack();
+            }
+
+            throw $exception;
+        }
+    }
+
     private function reloadIntegration(int $integrationId): ?Integration
     {
         $manager = $this->getManager();
@@ -339,32 +370,7 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $this->persistAndFlushWithRetry($integration);
-
-        if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
-            try {
-                $this->bus->dispatch(
-                    new SendIntegrationMessage(
-                        integrationId: $integration->getId()
-                    )
-                );
-            } catch (Throwable $exception) {
-                if (strcasecmp((string) $queueNane, 'PushNotification') !== 0) {
-                    throw $exception;
-                }
-
-                if ($this->loggerService instanceof LoggerService) {
-                    $this->loggerService
-                        ->getLogger('integration')
-                        ->warning('Ephemeral integration queue dispatch skipped', [
-                            'integrationId' => $integration->getId(),
-                            'queueName' => $queueNane,
-                            'class' => $exception::class,
-                            'message' => $exception->getMessage(),
-                        ]);
-                }
-            }
-        }
+        $this->persistAndDispatch($integration);
 
         return $integration;
     }
@@ -429,15 +435,7 @@ class IntegrationService
         $integration->setUser($user);
         $integration->setPeople($people);
 
-        $this->persistAndFlushWithRetry($integration);
-
-        if (strcasecmp((string) $queueNane, 'Websocket') !== 0) {
-            $this->bus->dispatch(
-                new SendIntegrationMessage(
-                    integrationId: $integration->getId()
-                )
-            );
-        }
+        $this->persistAndDispatch($integration);
 
         return $integration;
     }

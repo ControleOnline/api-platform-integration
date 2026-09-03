@@ -107,6 +107,10 @@ class IntegrationServiceTest extends TestCase
         $persistedIntegrations = [];
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->method('isOpen')->willReturn(true);
+        $connection = $this->createMock(Connection::class);
+        $connection->expects(self::once())->method('beginTransaction');
+        $connection->expects(self::once())->method('commit');
+        $entityManager->method('getConnection')->willReturn($connection);
         $entityManager
             ->expects(self::once())
             ->method('getRepository')
@@ -140,7 +144,7 @@ class IntegrationServiceTest extends TestCase
         self::assertSame($company, $persistedIntegrations[0]->getPeople());
     }
 
-    public function testAddManagerPushIntegrationsIgnoresDispatchFailuresForEphemeralQueues(): void
+    public function testAddManagerPushIntegrationsRollsBackWhenMessengerDispatchFails(): void
     {
         $company = $this->createStub(People::class);
         $targetDevice = new Device();
@@ -181,6 +185,11 @@ class IntegrationServiceTest extends TestCase
         $persistedIntegrations = [];
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->method('isOpen')->willReturn(true);
+        $connection = $this->createMock(Connection::class);
+        $connection->expects(self::once())->method('beginTransaction');
+        $connection->expects(self::once())->method('isTransactionActive')->willReturn(true);
+        $connection->expects(self::once())->method('rollBack');
+        $entityManager->method('getConnection')->willReturn($connection);
         $entityManager
             ->expects(self::once())
             ->method('getRepository')
@@ -205,13 +214,10 @@ class IntegrationServiceTest extends TestCase
 
         $service = $this->buildService($entityManager, $statusService, $bus);
 
-        $count = $service->addManagerPushIntegrations('{"event":"order.created"}', $company);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('messenger transport unavailable');
 
-        self::assertSame(1, $count);
-        self::assertCount(1, $persistedIntegrations);
-        self::assertSame('PushNotification', $persistedIntegrations[0]->getQueueName());
-        self::assertSame($targetDevice, $persistedIntegrations[0]->getDevice());
-        self::assertSame($company, $persistedIntegrations[0]->getPeople());
+        $service->addManagerPushIntegrations('{"event":"order.created"}', $company);
     }
 
     public function testExecuteIntegrationRetriesIfoodWebhookFailuresBeforeMarkingError(): void

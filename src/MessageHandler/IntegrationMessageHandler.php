@@ -49,6 +49,12 @@ class IntegrationMessageHandler
         if (!$integration)
             return;
 
+        // WebSocket delivery belongs to the process that owns live client connections.
+        // The envelope is still queued atomically; websocket:start consumes this special queue.
+        if (strcasecmp($integration->getQueueName(), 'Websocket') === 0) {
+            return;
+        }
+
         // Bloqueia ate obter o lock para evitar consumir e descartar mensagens
         // quando outro webhook estiver em processamento.
         if (!$this->lock->acquire(true)) {
