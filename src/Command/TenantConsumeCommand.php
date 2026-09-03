@@ -92,7 +92,7 @@ class TenantConsumeCommand extends DefaultCommand
                     $_SERVER['APP_DOMAIN'] = $domain;
                     putenv('APP_DOMAIN=' . $domain);
                     $this->databaseSwitchService->switchDatabaseByDomain($domain);
-                    $this->runCommand();
+                    $this->runCommand($domain);
                     $this->entityManager->clear();
                     $connection = $this->entityManager->getConnection();
                     if (!$connection->isTransactionActive() && $connection->isConnected()) {
@@ -108,9 +108,9 @@ class TenantConsumeCommand extends DefaultCommand
     }
 
 
-    protected function runCommand(): int
+    protected function runCommand(?string $tenantDomain = null): int
     {
-        $domain = $this->input->getOption('domain');
+        $domain = $tenantDomain ?: $this->input->getOption('domain');
 
         if (!$domain) {
             throw new \RuntimeException('Você deve informar --domain para consumir filas.');
@@ -146,7 +146,7 @@ class TenantConsumeCommand extends DefaultCommand
             '--memory-limit'     => $this->input->getOption('memory-limit'),
             // The rotating worker must yield quickly even when the legacy
             // cron row still contains a long-lived time limit.
-            '--time-limit'       => !$this->input->getOption('domain')
+            '--time-limit'       => $tenantDomain !== null
                 ? 2
                 : $this->input->getOption('time-limit'),
             '--sleep'            => $this->input->getOption('sleep'),
