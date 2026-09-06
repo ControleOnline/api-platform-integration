@@ -46,8 +46,8 @@ class UberServiceTest extends TestCase
 
         $payload = $this->invokePrivateMethod($service, 'buildAddressPayload', $address);
 
-        self::assertSame('RUA TESTE, 123 - CENTRO - SAO PAULO - SP - 01234567', $payload['formatted_address']);
-        self::assertSame('APTO 10', $payload['apt_floor_suite']);
+        self::assertSame('Rua Teste, 123 - Centro - Sao Paulo - SP - 01234567', $payload['formatted_address']);
+        self::assertSame('Apto 10', $payload['apt_floor_suite']);
         self::assertSame(-23.55, $payload['location']['latitude']);
         self::assertSame(-46.63, $payload['location']['longitude']);
     }

@@ -228,7 +228,7 @@ final class Food99CatalogOperationsServiceTest extends TestCase
         self::assertSame(0, $result['store']['errno']);
         self::assertCount(1, $service->capturedEvents);
         self::assertSame('store.closed', $service->capturedEvents[0][1][0]['event']);
-        self::assertSame('MERCADO CENTRAL foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
+        self::assertSame('Mercado Central foi fechada', $service->capturedEvents[0][1][0]['notificationHeader']);
         self::assertSame('Fechada', $service->capturedEvents[0][1][0]['notificationStatusLabel']);
     }
 

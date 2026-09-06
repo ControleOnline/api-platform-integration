@@ -64,7 +64,8 @@ class IfoodStoreOperationsServiceTest extends TestCase
             ' ' => 'ignored',
         ]);
 
-        $decoded = json_decode((string) $order->getOtherInformations(), true);
+        $decoded = $order->getOtherInformations(true);
+        $decoded = is_object($decoded) ? json_decode(json_encode($decoded), true) : $decoded;
 
         self::assertIsArray($decoded);
         self::assertArrayHasKey('iFood', $decoded);

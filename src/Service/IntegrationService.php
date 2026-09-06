@@ -55,6 +55,11 @@ class IntegrationService
         $this->marketplaceFinancialGuard = new IntegrationMarketplaceFinancialGuard();
     }
 
+    private function shouldGenerateMarketplaceFinancial(Integration $integration, mixed $result): bool
+    {
+        return $this->marketplaceFinancialGuard->shouldGenerateMarketplaceFinancial($integration, $result);
+    }
+
     private function getManager(): EntityManagerInterface
     {
         $manager = $this->persistRetryHelper->getManager();
