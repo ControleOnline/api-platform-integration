@@ -1,32 +1,32 @@
 {
-  "name": "controleonline/integration",
-  "license": "MIT",
-  "autoload": {
-    "psr-4": {
-      "ControleOnline\\": "src/",
-      "ControleOnline\\Repository\\": "src/Repository/",
-      "ControleOnline\\Entity\\": "src/Entity/",
-      "ControleOnline\\Controller\\": "src/Controller/"
+    "name": "controleonline/integration",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "ControleOnline\\": "src/",
+            "ControleOnline\\Repository\\": "src/Repository/",
+            "ControleOnline\\Entity\\": "src/Entity/",
+            "ControleOnline\\Controller\\": "src/Controller/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ControleOnline\\Integration\\Tests\\": "tests/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Controle Online",
+            "email": "luiz.kim@controleonline.com"
+        }
+    ],
+    "require": {
+        "controleonline/common": "1.0.2",
+        "google/auth": "^1.45",
+        "guzzlehttp/guzzle": "^7.9",
+        "symfony/lock": "^7.4 || ^8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.1"
     }
-  },
-  "autoload-dev": {
-    "psr-4": {
-      "ControleOnline\\Integration\\Tests\\": "tests/"
-    }
-  },
-  "authors": [
-    {
-      "name": "Controle Online",
-      "email": "luiz.kim@controleonline.com"
-    }
-  ],
-  "require": {
-    "controleonline/common": "*",
-    "google/auth": "^1.45",
-    "guzzlehttp/guzzle": "^7.9",
-    "symfony/lock": "^7.4 || ^8.1"
-  },
-  "require-dev": {
-    "phpunit/phpunit": "^12.1"
-  }
 }
