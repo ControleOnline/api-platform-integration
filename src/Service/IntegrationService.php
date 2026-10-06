@@ -110,7 +110,6 @@ class IntegrationService
         return $integration instanceof Integration ? $integration : null;
     }
 
-
     private function acquireIntegrationExecutionLock(int $integrationId): bool
     {
         $this->getManager();
@@ -375,6 +374,10 @@ class IntegrationService
         return $integration;
     }
 
+    public function addDeviceIntegrations(string $message, string $queueName, array $devices): array
+    {
+        return (new IntegrationBatchDispatcher($this->getManager(), $this->bus))->queueDevices($message, $queueName, $devices, $this->statusService);
+    }
     public function addManagerPushIntegrations(string $message, People $people, ?User $user = null): int
     {
         $count = 0;
