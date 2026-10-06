@@ -5,4 +5,4 @@ api_platform:
                 "%kernel.project_dir%/vendor/controleonline/integration/src/Entity",
                 "%kernel.project_dir%/vendor/controleonline/integration/src/Resource",
             ]
-    
+
