@@ -1,11 +1,11 @@
 {
-  "branch": "rc/1.0.5-rc.1",
-  "version": "1.0.5",
+  "branch": "rc/1.0.6-rc.1",
+  "version": "1.0.6",
   "rc": 1,
   "frozen": true,
-  "baseMaster": "9ba89a9e1513225b9b55b1fee494f034d68c4afc",
+  "baseMaster": "a16280962a6888af292917c757796bdb1b42ff52",
   "tasks": [1199],
   "repositories": {
-    "ControleOnline/api-platform-integration": "834e76e266cc6c8e7566d9c7c0f2f0fae03dc8ba"
+    "ControleOnline/api-platform-integration": "db6c5c3725727ce3ea88656589fc04afce3aea0c"
   }
 }
