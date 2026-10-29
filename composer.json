@@ -24,7 +24,8 @@
     "controleonline/common": "*",
     "google/auth": "^1.45",
     "guzzlehttp/guzzle": "^7.9",
-    "symfony/lock": "^7.4 || ^8.1"
+    "symfony/lock": "^7.4 || ^8.1",
+    "controleonline/mcp": "*"
   },
   "require-dev": {
     "phpunit/phpunit": "^12.1"
