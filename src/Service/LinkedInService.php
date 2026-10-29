@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\Config;
 use ControleOnline\Entity\Module;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\LinkedInClient;
@@ -372,11 +373,30 @@ class LinkedInService
     {
         try {
             $value = $this->configService->getConfig($provider, $key);
+            $trimmed = trim((string) ($value ?? ''));
+            if ($trimmed !== '') {
+                return $trimmed;
+            }
+        } catch (\Throwable) {
+            // fall through to direct lookup
+        }
 
-            return trim((string) ($value ?? ''));
+        // Fallback: read Config by people+key without request/app-domain scoping.
+        // getConfig() can return empty under some app-domain contexts while the
+        // row exists (e.g. admin domain true, app domain false for same provider).
+        try {
+            $config = $this->entityManager->getRepository(Config::class)->findOneBy([
+                'people' => $provider,
+                'configKey' => $key,
+            ]);
+            if ($config && method_exists($config, 'getConfigValue')) {
+                return trim((string) ($config->getConfigValue() ?? ''));
+            }
         } catch (\Throwable) {
             return '';
         }
+
+        return '';
     }
 
     private function writeConfigValue(People $provider, string $key, string $value): void
