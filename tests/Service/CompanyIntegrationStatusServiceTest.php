@@ -27,7 +27,14 @@ class CompanyIntegrationStatusServiceTest extends TestCase
             }
         );
 
-        $service = new CompanyIntegrationStatusService($configService);
+        $linkedInService = $this->createMock(LinkedInService::class);
+        $linkedInService->method('getConnectionStatus')->willReturn([
+            'connected' => true,
+            'member_id' => 'x',
+            'member_name' => 'Test',
+            'client_configured' => true,
+        ]);
+        $service = new CompanyIntegrationStatusService($configService, $linkedInService);
         $items = $service->listCompanyIntegrations($provider);
         $indexed = [];
 

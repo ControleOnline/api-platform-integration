@@ -8,6 +8,7 @@ class CompanyIntegrationStatusService
 {
     public function __construct(
         private readonly ConfigService $configService,
+        private readonly LinkedInService $linkedInService,
     ) {
     }
 
@@ -40,6 +41,22 @@ class CompanyIntegrationStatusService
                 ],
                 $provider
             ),
+            $this->buildLinkedInStatus($provider),
+        ];
+    }
+
+    private function buildLinkedInStatus(People $provider): array
+    {
+        $status = $this->linkedInService->getConnectionStatus($provider);
+
+        return [
+            'key' => 'linkedin',
+            'label' => 'LinkedIn',
+            'connected' => !empty($status['connected']),
+            'member_id' => $status['member_id'] ?? null,
+            'member_name' => $status['member_name'] ?? null,
+            'client_configured' => !empty($status['client_configured']),
+            'required_config_keys' => [],
         ];
     }
 
