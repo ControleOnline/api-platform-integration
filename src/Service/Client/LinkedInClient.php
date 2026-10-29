@@ -129,6 +129,52 @@ class LinkedInClient
      * @param array<string, string> $body
      * @return array<string, mixed>
      */
+
+    /**
+     * Create a personal text share (UGC Posts API).
+     * Requires scope w_member_social and member URN person:{id}.
+     *
+     * @return array{id?: string, error?: string, status?: int}
+     */
+    public function createTextPost(string $accessToken, string $authorUrn, string $text): array
+    {
+        $payload = [
+            'author' => $authorUrn,
+            'lifecycleState' => 'PUBLISHED',
+            'specificContent' => [
+                'com.linkedin.ugc.ShareContent' => [
+                    'shareCommentary' => [
+                        'text' => $text,
+                    ],
+                    'shareMediaCategory' => 'NONE',
+                ],
+            ],
+            'visibility' => [
+                'com.linkedin.ugc.MemberNetworkVisibility' => 'PUBLIC',
+            ],
+        ];
+
+        $response = $this->httpClient->request('POST', 'https://api.linkedin.com/v2/ugcPosts', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $accessToken,
+                'Content-Type' => 'application/json',
+                'X-Restli-Protocol-Version' => '2.0.0',
+            ],
+            'json' => $payload,
+        ]);
+
+        $status = $response->getStatusCode();
+        $body = $this->decodeJson($response->getContent(false));
+        if ($status >= 200 && $status < 300) {
+            return ['id' => (string) ($body['id'] ?? ''), 'status' => $status];
+        }
+
+        return [
+            'error' => (string) ($body['message'] ?? $body['error'] ?? ('LinkedIn HTTP ' . $status)),
+            'status' => $status,
+        ];
+    }
+
     private function postToken(array $body): array
     {
         try {
