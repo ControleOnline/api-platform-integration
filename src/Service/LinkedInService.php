@@ -2,6 +2,7 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\Module;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\Client\LinkedInClient;
 use Doctrine\ORM\EntityManagerInterface;
@@ -382,7 +383,14 @@ class LinkedInService
     {
         try {
             $config = $this->configService->discoveryConfig($provider, $key);
+            if (!$config) {
+                throw new \RuntimeException(sprintf('Unable to discovery config key %s', $key));
+            }
+            if (!$config->getModule() instanceof Module) {
+                $config->setModule($this->resolveConfigModule());
+            }
             $config->setConfigValue($value);
+            $config->setVisibility('private');
             $this->entityManager->persist($config);
             $this->entityManager->flush();
         } catch (\Throwable $exception) {
@@ -393,6 +401,16 @@ class LinkedInService
             ]);
             throw $exception;
         }
+    }
+
+    private function resolveConfigModule(): Module
+    {
+        return $this->configService->discoveryModule(
+            'LinkedIn',
+            '$primary',
+            'link',
+            'Integracoes'
+        );
     }
 
     /**
@@ -452,8 +470,14 @@ class LinkedInService
 
     private function stateSigningKey(): string
     {
-        // Prefer APP_SECRET-like config; fall back to a deterministic module key (still HMAC-bound).
-        $secret = trim((string) ($this->configService->getConfig('APP_SECRET') ?? ''));
+        // Prefer env APP_SECRET; fall back to a deterministic module key (still HMAC-bound).
+        // ConfigService::getConfig requires People — do not call it with a string key.
+        $secret = '';
+        try {
+            $secret = trim((string) ($_ENV['APP_SECRET'] ?? $_SERVER['APP_SECRET'] ?? getenv('APP_SECRET') ?: ''));
+        } catch (\Throwable) {
+            $secret = '';
+        }
         if ($secret === '') {
             $secret = 'linkedin-oauth-state-v1';
         }
