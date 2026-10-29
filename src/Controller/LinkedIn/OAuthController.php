@@ -1,0 +1,295 @@
+<?php
+
+namespace ControleOnline\Controller\LinkedIn;
+
+use ControleOnline\Entity\People;
+use ControleOnline\Service\DatabaseSwitchService;
+use ControleOnline\Service\LinkedInService;
+use ControleOnline\Service\PeopleService;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\RedirectResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface as Security;
+use Symfony\Component\Security\Http\Attribute\Security as SecurityAttribute;
+
+class OAuthController extends AbstractController
+{
+    public function __construct(
+        private readonly EntityManagerInterface $entityManager,
+        private readonly Security $security,
+        private readonly PeopleService $peopleService,
+        private readonly LinkedInService $linkedInService,
+        private readonly DatabaseSwitchService $databaseSwitchService,
+    ) {
+    }
+
+    #[Route('/integrations/linkedin/authorization-page', name: 'integrations_linkedin_authorization_page', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function getAuthorizationPage(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $result = $this->linkedInService->buildAuthorizationPage(
+            $provider,
+            $request->getSchemeAndHttpHost(),
+            $this->resolveReturnUrl($request, $payload),
+            $this->resolveAppDomain($request, $payload)
+        );
+
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
+    #[Route('/integrations/linkedin/status', name: 'integrations_linkedin_status', methods: ['GET', 'POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function status(Request $request): JsonResponse
+    {
+        try {
+            $payload = $request->getMethod() === 'POST' ? $this->parseJsonBody($request) : [];
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        return new JsonResponse($this->linkedInService->getConnectionStatus($provider));
+    }
+
+    #[Route('/integrations/linkedin/disconnect', name: 'integrations_linkedin_disconnect', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function disconnect(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        return new JsonResponse($this->linkedInService->disconnect($provider));
+    }
+
+    #[Route('/oauth/linkedin/return', name: 'integrations_linkedin_oauth_callback', methods: ['GET'])]
+    public function callback(Request $request): RedirectResponse
+    {
+        $state = trim((string) $request->query->get('state', ''));
+        $code = trim((string) $request->query->get('code', ''));
+        $error = trim((string) $request->query->get('error', ''));
+        $errorDescription = trim((string) $request->query->get('error_description', ''));
+
+        if ($state === '') {
+            return $this->redirectWithOAuthStatus('/integrations-page', false, $error !== '' ? $error : 'missing_state', $errorDescription);
+        }
+
+        try {
+            $resolvedAppDomain = $this->linkedInService->resolveOAuthAppDomain($state, null);
+            $this->databaseSwitchService->switchDatabaseByDomain($resolvedAppDomain);
+            $returnUrl = $this->linkedInService->resolveOAuthReturnUrl($state);
+        } catch (\Throwable) {
+            return $this->redirectWithOAuthStatus('/integrations-page', false, 'invalid_app_domain');
+        }
+
+        if ($error !== '' || $code === '') {
+            return $this->redirectWithOAuthStatus($returnUrl, false, $error !== '' ? $error : 'missing_code', $errorDescription);
+        }
+
+        try {
+            $result = $this->linkedInService->connectViaOAuthCode(
+                $code,
+                $state,
+                $request->getSchemeAndHttpHost() . $request->getPathInfo(),
+                $resolvedAppDomain
+            );
+        } catch (\Throwable $exception) {
+            return $this->redirectWithOAuthStatus(
+                $returnUrl,
+                false,
+                'oauth_callback_failed',
+                $exception->getMessage()
+            );
+        }
+
+        return $this->redirectWithOAuthStatus(
+            (string) ($result['return_url'] ?? '/integrations-page'),
+            !empty($result['success']),
+            !empty($result['success']) ? null : (string) ($result['error'] ?? 'oauth_failed'),
+            !empty($result['success']) ? null : (string) ($result['message'] ?? '')
+        );
+    }
+
+    private function parseJsonBody(Request $request): array
+    {
+        $content = trim((string) $request->getContent());
+        if ($content === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            throw new \InvalidArgumentException('Invalid JSON');
+        }
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function resolveProvider(Request $request, array $payload): ?People
+    {
+        $providerId = (int) (
+            $payload['provider_id']
+            ?? $payload['providerId']
+            ?? $payload['people_id']
+            ?? $payload['company_id']
+            ?? $request->query->get('provider_id')
+            ?? 0
+        );
+
+        if ($providerId <= 0) {
+            $userPeople = $this->getAuthenticatedPeople();
+            if ($userPeople instanceof People) {
+                // Prefer current company from header when present.
+                $headerCompany = (int) $request->headers->get('current-company', 0);
+                if ($headerCompany > 0) {
+                    $providerId = $headerCompany;
+                } else {
+                    return $userPeople;
+                }
+            }
+        }
+
+        if ($providerId <= 0) {
+            return null;
+        }
+
+        $provider = $this->entityManager->getRepository(People::class)->find($providerId);
+        $userPeople = $this->getAuthenticatedPeople();
+        if (!$provider instanceof People || !$userPeople instanceof People) {
+            return null;
+        }
+
+        return $this->canAccessProvider($userPeople, $provider) ? $provider : null;
+    }
+
+    private function getAuthenticatedPeople(): ?People
+    {
+        $user = $this->security->getToken()?->getUser();
+        if (!is_object($user) || !method_exists($user, 'getPeople')) {
+            return null;
+        }
+
+        $people = $user->getPeople();
+
+        return $people instanceof People ? $people : null;
+    }
+
+    private function canAccessProvider(People $userPeople, People $provider): bool
+    {
+        return $userPeople->getId() === $provider->getId()
+            || $this->peopleService->canAccessCompany($provider, $userPeople);
+    }
+
+    private function resolveReturnUrl(Request $request, array $payload): string
+    {
+        $returnUrl = trim((string) ($payload['return_url'] ?? ''));
+        if ($returnUrl !== '') {
+            return $returnUrl;
+        }
+
+        $referer = trim((string) $request->headers->get('referer', ''));
+        if ($referer !== '') {
+            return $referer;
+        }
+
+        $origin = trim((string) $request->headers->get('origin', ''));
+
+        return $origin !== '' ? rtrim($origin, '/') . '/integrations-page' : '/integrations-page';
+    }
+
+    private function resolveAppDomain(Request $request, array $payload): string
+    {
+        $candidates = [
+            $request->headers->get('app-domain'),
+            $payload['app_domain'] ?? null,
+            $payload['appDomain'] ?? null,
+            $payload['domain'] ?? null,
+            $payload['return_url'] ?? null,
+            $request->headers->get('origin'),
+            $request->headers->get('referer'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            $domain = $this->normalizeDomainCandidate($candidate);
+            if ($domain !== '') {
+                return $domain;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeDomainCandidate(mixed $candidate): string
+    {
+        if (!is_string($candidate)) {
+            return '';
+        }
+
+        $candidate = strtolower(trim($candidate));
+        if ($candidate === '' || in_array($candidate, ['undefined', 'null', 'false'], true)) {
+            return '';
+        }
+
+        if (preg_match('/^[a-z][a-z0-9+.-]*:\/\//i', $candidate)) {
+            $host = parse_url($candidate, PHP_URL_HOST);
+            $candidate = is_string($host) ? $host : '';
+        }
+
+        $candidate = preg_replace('/[\/?#].*$/', '', $candidate) ?? '';
+        $candidate = preg_replace('/[^a-z0-9.:-]/', '', $candidate) ?? '';
+
+        return $candidate;
+    }
+
+    private function redirectWithOAuthStatus(string $returnUrl, bool $success, ?string $error = null, ?string $message = null): RedirectResponse
+    {
+        $separator = str_contains($returnUrl, '?') ? '&' : '?';
+        $target = $returnUrl . $separator . http_build_query(array_filter([
+            'linkedin_connected' => $success ? '1' : null,
+            'linkedin_error' => !$success ? ($error ?: 'oauth_failed') : null,
+            'linkedin_message' => !$success ? $this->sanitizeOAuthMessage($message) : null,
+        ]), '', '&', PHP_QUERY_RFC3986);
+
+        return new RedirectResponse($target);
+    }
+
+    private function sanitizeOAuthMessage(?string $message): string
+    {
+        $message = trim((string) $message);
+        if ($message === '') {
+            return '';
+        }
+
+        $message = preg_replace('/[^\pL\pN\s.,:;!?_@\/-]/u', '', $message) ?? '';
+        $message = preg_replace('/\s+/', ' ', $message) ?? '';
+
+        return substr(trim($message), 0, 180);
+    }
+}
