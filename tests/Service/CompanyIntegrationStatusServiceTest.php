@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\CompanyIntegrationStatusService;
 use ControleOnline\Service\ConfigService;
+use ControleOnline\Service\LinkedInService;
 use PHPUnit\Framework\TestCase;
 
 class CompanyIntegrationStatusServiceTest extends TestCase
@@ -27,7 +28,14 @@ class CompanyIntegrationStatusServiceTest extends TestCase
             }
         );
 
-        $service = new CompanyIntegrationStatusService($configService);
+        $linkedInService = $this->createMock(LinkedInService::class);
+        $linkedInService->method('getConnectionStatus')->willReturn([
+            'connected' => true,
+            'member_id' => 'x',
+            'member_name' => 'Test',
+            'client_configured' => true,
+        ]);
+        $service = new CompanyIntegrationStatusService($configService, $linkedInService);
         $items = $service->listCompanyIntegrations($provider);
         $indexed = [];
 
