@@ -345,6 +345,53 @@ class LinkedInService
         return rtrim($apiBaseUrl, '/') . self::OAUTH_CALLBACK_PATH;
     }
 
+
+    /**
+     * Publish a text post as the connected member (provider company scope).
+     *
+     * @return array{success: bool, post_id?: string, error?: string, message?: string}
+     */
+    public function createMemberPost(People $provider, string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return ['success' => false, 'error' => 'empty_text', 'message' => 'Texto do post vazio.'];
+        }
+
+        $accessToken = $this->getValidAccessToken($provider);
+        if ($accessToken === null || $accessToken === '') {
+            return ['success' => false, 'error' => 'not_connected', 'message' => 'LinkedIn nao conectado ou token expirado.'];
+        }
+
+        $memberId = $this->readConfigValue($provider, self::CONFIG_MEMBER_ID);
+        if ($memberId === '') {
+            $info = $this->linkedInClient->getUserInfo($accessToken);
+            $memberId = is_array($info) ? (string) ($info['sub'] ?? '') : '';
+            if ($memberId !== '') {
+                $this->writeConfigValue($provider, self::CONFIG_MEMBER_ID, $memberId);
+            }
+        }
+        if ($memberId === '') {
+            return ['success' => false, 'error' => 'missing_member', 'message' => 'Member ID LinkedIn ausente.'];
+        }
+
+        $authorUrn = str_starts_with($memberId, 'urn:') ? $memberId : ('urn:li:person:' . $memberId);
+        $result = $this->linkedInClient->createTextPost($accessToken, $authorUrn, $text);
+        if (!empty($result['id'])) {
+            $this->loggerService->getLogger(self::APP_CONTEXT)->info('LinkedIn post created', [
+                'provider_id' => $provider->getId(),
+                'post_id' => $result['id'],
+            ]);
+            return ['success' => true, 'post_id' => $result['id']];
+        }
+
+        return [
+            'success' => false,
+            'error' => 'post_failed',
+            'message' => (string) ($result['error'] ?? 'Falha ao publicar no LinkedIn'),
+        ];
+    }
+
     private function resolveClientId(People $provider): string
     {
         foreach (self::CONFIG_CLIENT_ID_KEYS as $key) {

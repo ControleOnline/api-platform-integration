@@ -88,6 +88,28 @@ class OAuthController extends AbstractController
         return new JsonResponse($this->linkedInService->disconnect($provider));
     }
 
+
+    #[Route('/integrations/linkedin/posts', name: 'integrations_linkedin_posts', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function createPost(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $text = trim((string) ($payload['text'] ?? $payload['commentary'] ?? ''));
+        $result = $this->linkedInService->createMemberPost($provider, $text);
+
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
     #[Route('/oauth/linkedin/return', name: 'integrations_linkedin_oauth_callback', methods: ['GET'])]
     public function callback(Request $request): RedirectResponse
     {
