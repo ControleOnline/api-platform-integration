@@ -17,7 +17,7 @@ class LinkedInClient
     private const USERINFO_URL = 'https://api.linkedin.com/v2/userinfo';
     private const INTROSPECT_URL = 'https://www.linkedin.com/oauth/v2/introspectToken';
 
-    public const DEFAULT_SCOPES = 'openid profile email w_member_social';
+    public const DEFAULT_SCOPES = 'openid profile email w_member_social r_organization_social w_organization_social rw_organization_admin';
 
     private ?LoggerInterface $logger = null;
 
@@ -172,6 +172,146 @@ class LinkedInClient
         return [
             'error' => (string) ($body['message'] ?? $body['error'] ?? ('LinkedIn HTTP ' . $status)),
             'status' => $status,
+        ];
+    }
+
+
+    /**
+     * OpenID userinfo + lite person fields when available.
+     *
+     * @return array<string, mixed>
+     */
+    public function getProfile(string $accessToken): array
+    {
+        $userInfo = $this->getUserInfo($accessToken) ?? [];
+        $profile = [
+            'sub' => (string) ($userInfo['sub'] ?? ''),
+            'name' => (string) ($userInfo['name'] ?? ''),
+            'given_name' => (string) ($userInfo['given_name'] ?? ''),
+            'family_name' => (string) ($userInfo['family_name'] ?? ''),
+            'email' => (string) ($userInfo['email'] ?? ''),
+            'picture' => (string) ($userInfo['picture'] ?? ''),
+            'locale' => $userInfo['locale'] ?? null,
+            'email_verified' => $userInfo['email_verified'] ?? null,
+        ];
+
+        // Best-effort /v2/me (may 403 depending on product access)
+        try {
+            $response = $this->httpClient->request('GET', 'https://api.linkedin.com/v2/me', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $accessToken,
+                    'X-Restli-Protocol-Version' => '2.0.0',
+                ],
+                'query' => [
+                    'projection' => '(id,localizedFirstName,localizedLastName,localizedHeadline,vanityName,profilePicture(displayImage~:playableStreams))',
+                ],
+            ]);
+            if ($response->getStatusCode() < 300) {
+                $profile['me'] = $this->decodeJson($response->getContent(false));
+            } else {
+                $profile['me_error'] = 'HTTP ' . $response->getStatusCode();
+            }
+        } catch (\Throwable $e) {
+            $profile['me_error'] = $e->getMessage();
+        }
+
+        return $profile;
+    }
+
+    /**
+     * Organizations the member can administer (requires rw_organization_admin).
+     *
+     * @return array{organizations: list<array<string, mixed>>, error?: string}
+     */
+    public function listAdministeredOrganizations(string $accessToken): array
+    {
+        try {
+            $response = $this->httpClient->request('GET', 'https://api.linkedin.com/v2/organizationalEntityAcls', [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $accessToken,
+                    'X-Restli-Protocol-Version' => '2.0.0',
+                ],
+                'query' => [
+                    'q' => 'roleAssignee',
+                    'role' => 'ADMINISTRATOR',
+                    'state' => 'APPROVED',
+                ],
+            ]);
+            $status = $response->getStatusCode();
+            $body = $this->decodeJson($response->getContent(false));
+            if ($status >= 300) {
+                return [
+                    'organizations' => [],
+                    'error' => (string) ($body['message'] ?? ('HTTP ' . $status)),
+                    'hint' => 'Requires Community Management API product and rw_organization_admin scope. Re-authorize after enabling the product on LinkedIn Developers.',
+                ];
+            }
+
+            $elements = is_array($body['elements'] ?? null) ? $body['elements'] : [];
+            $orgs = [];
+            foreach ($elements as $el) {
+                if (!is_array($el)) {
+                    continue;
+                }
+                $orgs[] = [
+                    'organization' => (string) ($el['organizationalTarget'] ?? $el['organization'] ?? ''),
+                    'role' => (string) ($el['role'] ?? ''),
+                    'state' => (string) ($el['state'] ?? ''),
+                ];
+            }
+
+            return ['organizations' => $orgs];
+        } catch (\Throwable $e) {
+            return [
+                'organizations' => [],
+                'error' => $e->getMessage(),
+                'hint' => 'Requires Community Management API + rw_organization_admin.',
+            ];
+        }
+    }
+
+    /**
+     * Modern Posts API (member or organization author URN).
+     *
+     * @return array{id?: string, error?: string, status?: int}
+     */
+    public function createRestPost(string $accessToken, string $authorUrn, string $text): array
+    {
+        $payload = [
+            'author' => $authorUrn,
+            'commentary' => $text,
+            'visibility' => 'PUBLIC',
+            'distribution' => [
+                'feedDistribution' => 'MAIN_FEED',
+                'targetEntities' => [],
+                'thirdPartyDistributionChannels' => [],
+            ],
+            'lifecycleState' => 'PUBLISHED',
+            'isReshareDisabledByAuthor' => false,
+        ];
+
+        $response = $this->httpClient->request('POST', 'https://api.linkedin.com/rest/posts', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $accessToken,
+                'Content-Type' => 'application/json',
+                'X-Restli-Protocol-Version' => '2.0.0',
+                'LinkedIn-Version' => '202503',
+            ],
+            'json' => $payload,
+        ]);
+
+        $status = $response->getStatusCode();
+        $raw = $response->getContent(false);
+        $body = $this->decodeJson($raw);
+        if ($status >= 200 && $status < 300) {
+            $id = (string) ($body['id'] ?? $response->getHeaders(false)['x-restli-id'][0] ?? $response->getHeaders(false)['x-linkedin-id'][0] ?? '');
+            return ['id' => $id !== '' ? $id : 'created', 'status' => $status];
+        }
+
+        return [
+            'error' => (string) ($body['message'] ?? $body['error'] ?? ('LinkedIn HTTP ' . $status)),
+            'status' => $status,
+            'raw' => is_array($body) ? $body : ['body' => substr($raw, 0, 500)],
         ];
     }
 
