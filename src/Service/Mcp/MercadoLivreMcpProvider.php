@@ -85,7 +85,7 @@ final class MercadoLivreMcpProvider implements McpMercadoLivreProviderInterface
         $company = $this->resolveAccessibleCompany($companyId);
         $state = $this->mercadoLivreService->getStoredIntegrationState($company);
         if (empty($state['connected'])) {
-            throw new \\InvalidArgumentException('Mercado Livre is not connected for this company');
+            throw new \InvalidArgumentException('Mercado Livre is not connected for this company');
         }
         return $company;
     }
@@ -94,7 +94,7 @@ final class MercadoLivreMcpProvider implements McpMercadoLivreProviderInterface
     {
         $company = $this->entityManager->getRepository(People::class)->find($companyId);
         if (!$company instanceof People) {
-            throw new \\InvalidArgumentException('Company not found');
+            throw new \InvalidArgumentException('Company not found');
         }
 
         foreach ($this->peopleRoleService->getAccessibleCompaniesForPeople() as $accessibleCompany) {
@@ -103,6 +103,6 @@ final class MercadoLivreMcpProvider implements McpMercadoLivreProviderInterface
             }
         }
 
-        throw new \\InvalidArgumentException('Company is not accessible to the current user');
+        throw new \InvalidArgumentException('Company is not accessible to the current user');
     }
 }
