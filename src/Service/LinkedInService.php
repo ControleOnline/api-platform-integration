@@ -475,7 +475,8 @@ class LinkedInService
      */
     public function getCapabilities(People $provider): array
     {
-        $scopes = preg_split('/\s+/', trim($this->readConfigValue($provider, self::CONFIG_SCOPES))) ?: [];
+        $rawScopes = trim($this->readConfigValue($provider, self::CONFIG_SCOPES));
+        $scopes = preg_split('/[\s,]+/', $rawScopes) ?: [];
         $scopes = array_values(array_filter($scopes));
         $has = static fn (string $s) => in_array($s, $scopes, true);
 
