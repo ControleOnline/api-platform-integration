@@ -327,6 +327,42 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         ];
     }
 
+    /** MCP wrappers reuse the existing seller configuration and API client. */
+    public function mcpGetCurrentUser(People $provider): array
+    {
+        return $this->mercadoLivreClient->getCurrentUser($provider) ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
+    public function mcpSearchItems(People $provider, int $offset = 0, int $limit = 50): array
+    {
+        $userId = $this->resolveProviderUserId($provider);
+        if ($userId === '') {
+            throw new \InvalidArgumentException('Mercado Livre seller id is not configured');
+        }
+        return $this->mercadoLivreClient->searchUserItems($userId, $provider, max(0, $offset), min(100, max(1, $limit)))
+            ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
+    public function mcpGetItem(People $provider, string $itemId): array
+    {
+        return $this->mercadoLivreClient->getItem($itemId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
+    public function mcpGetItemDescription(People $provider, string $itemId): array
+    {
+        return $this->mercadoLivreClient->getItemDescription($itemId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
+    public function mcpGetCategory(People $provider, string $categoryId): array
+    {
+        return $this->mercadoLivreClient->getCategory($categoryId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
+    public function mcpGetOrder(People $provider, string $orderId): array
+    {
+        return $this->mercadoLivreClient->getOrder($orderId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
+    }
+
     public function importProducts(People $provider, int $limit = 50, mixed $showcaseId = null): array
     {
         if ($showcaseId === null || trim((string) $showcaseId) === '') {
