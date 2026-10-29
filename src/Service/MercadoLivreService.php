@@ -335,7 +335,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
 
     public function mcpSearchItems(People $provider, int $offset = 0, int $limit = 50): array
     {
-        $userId = $this->resolveProviderUserId($provider);
+        $userId = trim((string) ($this->getStoredIntegrationState($provider)['user_id'] ?? ''));
         if ($userId === '') {
             throw new \InvalidArgumentException('Mercado Livre seller id is not configured');
         }
