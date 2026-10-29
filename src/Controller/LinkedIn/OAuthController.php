@@ -110,6 +110,76 @@ class OAuthController extends AbstractController
         return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
     }
 
+
+    #[Route('/integrations/linkedin/profile', name: 'integrations_linkedin_profile', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function profile(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+        $result = $this->linkedInService->getProfile($provider);
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
+    #[Route('/integrations/linkedin/organizations', name: 'integrations_linkedin_organizations', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function organizations(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+        $result = $this->linkedInService->listOrganizations($provider);
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
+    #[Route('/integrations/linkedin/capabilities', name: 'integrations_linkedin_capabilities', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function capabilities(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+        return new JsonResponse($this->linkedInService->getCapabilities($provider));
+    }
+
+    #[Route('/integrations/linkedin/organization-posts', name: 'integrations_linkedin_organization_posts', methods: ['POST'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function organizationPosts(Request $request): JsonResponse
+    {
+        try {
+            $payload = $this->parseJsonBody($request);
+        } catch (\InvalidArgumentException) {
+            return new JsonResponse(['error' => 'Invalid JSON'], Response::HTTP_BAD_REQUEST);
+        }
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+        $urn = trim((string) ($payload['organization_urn'] ?? $payload['organization_id'] ?? ''));
+        $text = trim((string) ($payload['text'] ?? ''));
+        $result = $this->linkedInService->createOrganizationPost($provider, $urn, $text);
+        return new JsonResponse($result, !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
+    }
+
     #[Route('/oauth/linkedin/return', name: 'integrations_linkedin_oauth_callback', methods: ['GET'])]
     public function callback(Request $request): RedirectResponse
     {

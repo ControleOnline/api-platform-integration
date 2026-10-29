@@ -38,6 +38,38 @@ final class LinkedInMcpProvider implements McpLinkedInProviderInterface
         return array_merge(['company_id' => $companyId], $result);
     }
 
+    public function getProfile(int $companyId): array
+    {
+        $provider = $this->resolveAccessibleCompany($companyId);
+        $result = $this->linkedInService->getProfile($provider);
+
+        return array_merge(['company_id' => $companyId], $result);
+    }
+
+    public function listOrganizations(int $companyId): array
+    {
+        $provider = $this->resolveAccessibleCompany($companyId);
+        $result = $this->linkedInService->listOrganizations($provider);
+
+        return array_merge(['company_id' => $companyId], $result);
+    }
+
+    public function createOrganizationPost(int $companyId, string $organizationUrn, string $text): array
+    {
+        $provider = $this->resolveAccessibleCompany($companyId);
+        $result = $this->linkedInService->createOrganizationPost($provider, $organizationUrn, $text);
+
+        return array_merge(['company_id' => $companyId], $result);
+    }
+
+    public function getCapabilities(int $companyId): array
+    {
+        $provider = $this->resolveAccessibleCompany($companyId);
+        $result = $this->linkedInService->getCapabilities($provider);
+
+        return array_merge(['company_id' => $companyId], $result);
+    }
+
     private function resolveAccessibleCompany(int $companyId): People
     {
         $provider = $this->entityManager->getRepository(People::class)->find($companyId);
