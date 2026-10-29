@@ -6,4 +6,4 @@ doctrine:
                 type: attribute
                 dir: "%kernel.project_dir%/vendor/controleonline/integration/src/Entity"
                 prefix: 'ControleOnline\Entity'
-                alias: ControleOnline
+                alias: ControleOnline
