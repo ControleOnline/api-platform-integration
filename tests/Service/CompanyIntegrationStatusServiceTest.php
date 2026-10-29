@@ -5,6 +5,7 @@ namespace ControleOnline\Integration\Tests\Service;
 use ControleOnline\Entity\People;
 use ControleOnline\Service\CompanyIntegrationStatusService;
 use ControleOnline\Service\ConfigService;
+use ControleOnline\Service\LinkedInService;
 use PHPUnit\Framework\TestCase;
 
 class CompanyIntegrationStatusServiceTest extends TestCase
