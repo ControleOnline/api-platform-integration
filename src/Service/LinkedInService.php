@@ -345,6 +345,159 @@ class LinkedInService
         return rtrim($apiBaseUrl, '/') . self::OAUTH_CALLBACK_PATH;
     }
 
+
+    /**
+     * Publish a text post as the connected member (provider company scope).
+     *
+     * @return array{success: bool, post_id?: string, error?: string, message?: string}
+     */
+    public function createMemberPost(People $provider, string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return ['success' => false, 'error' => 'empty_text', 'message' => 'Texto do post vazio.'];
+        }
+
+        $accessToken = $this->getValidAccessToken($provider);
+        if ($accessToken === null || $accessToken === '') {
+            return ['success' => false, 'error' => 'not_connected', 'message' => 'LinkedIn nao conectado ou token expirado.'];
+        }
+
+        $memberId = $this->readConfigValue($provider, self::CONFIG_MEMBER_ID);
+        if ($memberId === '') {
+            $info = $this->linkedInClient->getUserInfo($accessToken);
+            $memberId = is_array($info) ? (string) ($info['sub'] ?? '') : '';
+            if ($memberId !== '') {
+                $this->writeConfigValue($provider, self::CONFIG_MEMBER_ID, $memberId);
+            }
+        }
+        if ($memberId === '') {
+            return ['success' => false, 'error' => 'missing_member', 'message' => 'Member ID LinkedIn ausente.'];
+        }
+
+        $authorUrn = str_starts_with($memberId, 'urn:') ? $memberId : ('urn:li:person:' . $memberId);
+        $result = $this->linkedInClient->createTextPost($accessToken, $authorUrn, $text);
+        if (!empty($result['id'])) {
+            $this->loggerService->getLogger(self::APP_CONTEXT)->info('LinkedIn post created', [
+                'provider_id' => $provider->getId(),
+                'post_id' => $result['id'],
+            ]);
+            return ['success' => true, 'post_id' => $result['id']];
+        }
+
+        return [
+            'success' => false,
+            'error' => 'post_failed',
+            'message' => (string) ($result['error'] ?? 'Falha ao publicar no LinkedIn'),
+        ];
+    }
+
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getProfile(People $provider): array
+    {
+        $accessToken = $this->getValidAccessToken($provider);
+        if ($accessToken === null || $accessToken === '') {
+            return ['success' => false, 'error' => 'not_connected', 'message' => 'LinkedIn nao conectado.'];
+        }
+
+        $profile = $this->linkedInClient->getProfile($accessToken);
+        $scopes = $this->readConfigValue($provider, self::CONFIG_SCOPES);
+
+        return [
+            'success' => true,
+            'profile' => $profile,
+            'scopes' => $scopes,
+            'api_limitations' => [
+                'profile_edit' => 'LinkedIn does not allow third-party apps to update headline, about, experience, education or profile photo via public API. Profile reformulation must be done in the LinkedIn UI (or with restricted partner APIs).',
+                'organization' => 'Company page listing/posting requires Community Management API product + scopes rw_organization_admin / w_organization_social and page admin role.',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function listOrganizations(People $provider): array
+    {
+        $accessToken = $this->getValidAccessToken($provider);
+        if ($accessToken === null || $accessToken === '') {
+            return ['success' => false, 'error' => 'not_connected', 'message' => 'LinkedIn nao conectado.'];
+        }
+
+        $result = $this->linkedInClient->listAdministeredOrganizations($accessToken);
+        $result['success'] = empty($result['error']);
+        $result['scopes'] = $this->readConfigValue($provider, self::CONFIG_SCOPES);
+
+        return $result;
+    }
+
+    /**
+     * @return array{success: bool, post_id?: string, error?: string, message?: string}
+     */
+    public function createOrganizationPost(People $provider, string $organizationUrn, string $text): array
+    {
+        $text = trim($text);
+        $organizationUrn = trim($organizationUrn);
+        if ($text === '' || $organizationUrn === '') {
+            return ['success' => false, 'error' => 'invalid_args', 'message' => 'organization_urn e text sao obrigatorios.'];
+        }
+        if (!str_starts_with($organizationUrn, 'urn:li:organization:')) {
+            if (ctype_digit($organizationUrn)) {
+                $organizationUrn = 'urn:li:organization:' . $organizationUrn;
+            } else {
+                return ['success' => false, 'error' => 'invalid_org', 'message' => 'Use urn:li:organization:{id} ou o id numerico.'];
+            }
+        }
+
+        $accessToken = $this->getValidAccessToken($provider);
+        if ($accessToken === null || $accessToken === '') {
+            return ['success' => false, 'error' => 'not_connected', 'message' => 'LinkedIn nao conectado.'];
+        }
+
+        $result = $this->linkedInClient->createRestPost($accessToken, $organizationUrn, $text);
+        if (!empty($result['id'])) {
+            return ['success' => true, 'post_id' => $result['id'], 'author' => $organizationUrn];
+        }
+
+        return [
+            'success' => false,
+            'error' => 'post_failed',
+            'message' => (string) ($result['error'] ?? 'Falha ao publicar como organizacao'),
+            'details' => $result['raw'] ?? null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getCapabilities(People $provider): array
+    {
+        $scopes = preg_split('/\s+/', trim($this->readConfigValue($provider, self::CONFIG_SCOPES))) ?: [];
+        $scopes = array_values(array_filter($scopes));
+        $has = static fn (string $s) => in_array($s, $scopes, true);
+
+        return [
+            'connected' => $this->readConfigValue($provider, self::CONFIG_ACCESS_TOKEN) !== '',
+            'scopes' => $scopes,
+            'capabilities' => [
+                'read_openid_profile' => $has('openid') || $has('profile'),
+                'create_member_post' => $has('w_member_social'),
+                'list_organizations' => $has('rw_organization_admin') || $has('r_organization_admin'),
+                'create_organization_post' => $has('w_organization_social'),
+                'read_organization_posts' => $has('r_organization_social'),
+                'edit_member_profile_fields' => false,
+            ],
+            'notes' => [
+                'edit_member_profile_fields' => 'Blocked by LinkedIn for third-party apps (headline, about, experience, photo).',
+                'organization' => 'Enable Community Management API on the LinkedIn app, then reconnect OAuth to grant org scopes.',
+                'reauthorize' => 'After scope changes, user must Connect LinkedIn again in Integrations.',
+            ],
+        ];
+    }
+
     private function resolveClientId(People $provider): string
     {
         foreach (self::CONFIG_CLIENT_ID_KEYS as $key) {

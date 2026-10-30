@@ -42,3 +42,11 @@ services:
         factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
         arguments:
             - { base_uri: '%env(N8N_WEBHOOK)%' }
+
+    ControleOnline\Service\McpLinkedInProviderInterface:
+        alias: ControleOnline\Service\Mcp\LinkedInMcpProvider
+
+    ControleOnline\Service\Mcp\LinkedInMcpProvider:
+        autowire: true
+        autoconfigure: true
+
