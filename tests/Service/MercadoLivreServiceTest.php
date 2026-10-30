@@ -71,10 +71,10 @@ final class MercadoLivreServiceTest extends TestCase
         );
     }
 
-    private function createService(?MercadoLivreClient $client = null): MercadoLivreService
+    private function createService(?MercadoLivreClient $client = null, ?ConfigService $configService = null): MercadoLivreService
     {
         $entityManager = $this->createStub(EntityManagerInterface::class);
-        $configService = $this->createStub(ConfigService::class);
+        $configService = $configService ?? $this->createStub(ConfigService::class);
         $extraDataService = $this->createStub(ExtraDataService::class);
         $fileService = $this->createStub(FileService::class);
         $peopleService = $this->createStub(PeopleService::class);
@@ -96,4 +96,38 @@ final class MercadoLivreServiceTest extends TestCase
             $loggerService,
         );
     }
+
+    public function testPushItemStockRequiresConnection(): void
+    {
+        $config = $this->createStub(ConfigService::class);
+        $config->method('getConfig')->willReturn(null);
+        $service = $this->createService(null, $config);
+        $provider = new class extends People {
+        };
+        $result = $service->pushItemStock($provider, 'MLB9', 3);
+        self::assertFalse($result['success']);
+        self::assertSame('not_connected', $result['error']);
+    }
+
+    public function testPushItemStockSuccess(): void
+    {
+        $client = $this->createMock(MercadoLivreClient::class);
+        $client->expects(self::once())
+            ->method('updateItemAvailableQuantity')
+            ->with('MLB9', 4, self::isInstanceOf(People::class))
+            ->willReturn(['id' => 'MLB9', 'available_quantity' => 4, 'status' => 'active']);
+
+        $config = $this->createStub(ConfigService::class);
+        $config->method('getConfig')->willReturnCallback(
+            static fn ($provider, $key) => $key === 'mercado-livre-access-token' ? 'tok' : null
+        );
+
+        $service = $this->createService($client, $config);
+        $provider = new class extends People {
+        };
+        $result = $service->pushItemStock($provider, 'MLB9', 4);
+        self::assertTrue($result['success']);
+        self::assertSame(4, $result['available_quantity']);
+    }
+
 }

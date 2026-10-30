@@ -111,6 +111,27 @@ class MercadoLivreClient
         return $this->requestApi('GET', '/orders/' . rawurlencode($orderId), [], $provider);
     }
 
+    /**
+     * Updates listing available_quantity on Mercado Livre.
+     * @see https://developers.mercadolivre.com.br/pt_br/estoque
+     */
+    public function updateItemAvailableQuantity(string $itemId, int $availableQuantity, ?People $provider = null): ?array
+    {
+        $itemId = trim($itemId);
+        if ($itemId === '') {
+            return null;
+        }
+        if ($availableQuantity < 0) {
+            return null;
+        }
+
+        return $this->requestApi('PUT', '/items/' . rawurlencode($itemId), [
+            'json' => [
+                'available_quantity' => $availableQuantity,
+            ],
+        ], $provider);
+    }
+
     public function buildAuthorizationUrl(string $clientId, string $redirectUri, string $state, array $extraParams = []): array
     {
         $authorizationBaseUrl = trim((string) ($_ENV['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? $_SERVER['OAUTH_MERCADO_LIVRE_AUTHORIZATION_URL'] ?? ''))

@@ -179,4 +179,24 @@ final class MercadoLivreEmptyChunk implements ChunkInterface
     {
         return null;
     }
+
+    public function testUpdateItemAvailableQuantitySendsPutWithJsonBody(): void
+    {
+        $httpClient = new MercadoLivreRecordingHttpClient(function (string $method, string $url, array $options) {
+            self::assertSame('PUT', $method);
+            self::assertSame('https://api.mercadolibre.com/items/MLB1', $url);
+            self::assertSame(['available_quantity' => 7], $options['json'] ?? null);
+
+            return MercadoLivreRecordedResponse::json([
+                'id' => 'MLB1',
+                'available_quantity' => 7,
+                'status' => 'active',
+            ]);
+        });
+
+        $client = new MercadoLivreClient($httpClient, $this->createStub(\ControleOnline\Service\ConfigService::class));
+        $result = $client->updateItemAvailableQuantity('MLB1', 7, null);
+        self::assertSame(7, $result['available_quantity'] ?? null);
+    }
+
 }
