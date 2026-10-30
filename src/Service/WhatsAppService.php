@@ -17,9 +17,9 @@ use ControleOnline\Entity\Phone;
 /**
  * WhatsApp integration transport.
  *
- * Keeps the Integration table as the queue. Transport is chosen per Connection:
- * - unofficial (default): WHATSAPP_SERVER / Baileys via WhatsAppClient
- * - official: Meta Cloud API called directly from PHP (no Node hop)
+ * Keeps the Integration table as the queue. Transport is chosen by Connection.channel:
+ * - whatsapp (default): WHATSAPP_SERVER / Baileys via WhatsAppClient
+ * - whatsapp_official: Meta Cloud API called directly from PHP (no Node hop)
  */
 class WhatsAppService
 {
@@ -46,18 +46,18 @@ class WhatsAppService
     }
 
     /**
-     * Resolve a client for a connection. Official uses Meta token + phone_number_id
-     * from provider_config; unofficial keeps WHATSAPP_SERVER.
+     * Resolve client from Connection.channel.
+     * Official uses Meta token + phone_number_id from channel_config.
      */
     private function getWhatsAppClient(?Connection $connection = null): WhatsAppClient
     {
-        $provider = $connection && method_exists($connection, 'getProvider')
-            ? $connection->getProvider()
-            : WhatsAppClient::PROVIDER_UNOFFICIAL;
+        $isOfficial = $connection
+            && method_exists($connection, 'isOfficialWhatsApp')
+            && $connection->isOfficialWhatsApp();
 
-        if ($provider === WhatsAppClient::PROVIDER_OFFICIAL && $connection) {
-            $config = method_exists($connection, 'getProviderConfigArray')
-                ? $connection->getProviderConfigArray()
+        if ($isOfficial) {
+            $config = method_exists($connection, 'getChannelConfigArray')
+                ? $connection->getChannelConfigArray()
                 : [];
             $token = (string) ($config['access_token'] ?? $config['accessToken'] ?? '');
             $phoneNumberId = (string) ($config['phone_number_id'] ?? $config['phoneNumberId'] ?? '');
@@ -66,7 +66,7 @@ class WhatsAppService
 
             if ($token === '' || $phoneNumberId === '') {
                 throw new \RuntimeException(
-                    'Official WhatsApp connection is missing access_token or phone_number_id in provider_config.'
+                    'Official WhatsApp connection is missing access_token or phone_number_id in channel_config.'
                 );
             }
 
@@ -161,8 +161,23 @@ class WhatsAppService
 
         $connection = $this->manager->getRepository(Connection::class)->findOneBy([
             'phone' => $phone,
-            'channel' => 'whatsapp',
+            'channel' => Connection::CHANNEL_WHATSAPP,
         ]);
+
+        if (!$connection) {
+            // also try official channel for same phone
+            $connection = $this->manager->getRepository(Connection::class)->findOneBy([
+                'phone' => $phone,
+                'channel' => Connection::CHANNEL_WHATSAPP_OFFICIAL,
+            ]);
+        }
+
+        if (!$connection) {
+            // fallback: any whatsapp* channel for phone
+            $connection = $this->manager->getRepository(Connection::class)->findOneBy([
+                'phone' => $phone,
+            ]);
+        }
 
         if (!$connection) {
             throw new \RuntimeException('WhatsApp connection not found for origin number');
