@@ -364,6 +364,141 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         return $this->mercadoLivreClient->getOrder($orderId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
     }
 
+    /**
+     * List recent remote order ids for the connected seller.
+     *
+     * @return array{success:bool,seller_id?:string,results?:list<array>,paging?:array,error?:string}
+     */
+    public function searchOrders(People $provider, int $offset = 0, int $limit = 50, ?string $status = null): array
+    {
+        $userId = $this->resolveProviderUserId($provider);
+        if ($userId === '') {
+            return ['success' => false, 'error' => 'missing_user_id'];
+        }
+
+        $query = [
+            'offset' => max(0, $offset),
+            'limit' => max(1, min(50, $limit)),
+        ];
+        if ($status !== null && trim($status) !== '') {
+            $query['order.status'] = trim($status);
+        }
+
+        $data = $this->mercadoLivreClient->searchOrders($userId, $query, $provider);
+        if (!is_array($data)) {
+            return ['success' => false, 'error' => 'api_error', 'seller_id' => $userId];
+        }
+
+        $results = [];
+        foreach (($data['results'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $results[] = [
+                'id' => $row['id'] ?? null,
+                'status' => $row['status'] ?? null,
+                'date_created' => $row['date_created'] ?? null,
+                'total_amount' => $row['total_amount'] ?? null,
+                'buyer_id' => $row['buyer']['id'] ?? null,
+            ];
+        }
+
+        return [
+            'success' => true,
+            'seller_id' => $userId,
+            'results' => $results,
+            'paging' => $data['paging'] ?? null,
+        ];
+    }
+
+    /**
+     * Fetch and import up to $limit recent orders into local Order entities.
+     *
+     * @return array{success:bool,imported:int,skipped:int,failed:int,orders:list<array>,error?:string}
+     */
+    public function importRecentOrders(People $provider, int $limit = 20, ?string $status = null): array
+    {
+        $limit = max(1, min(50, $limit));
+        $search = $this->searchOrders($provider, 0, $limit, $status);
+        if (empty($search['success'])) {
+            return [
+                'success' => false,
+                'imported' => 0,
+                'skipped' => 0,
+                'failed' => 0,
+                'orders' => [],
+                'error' => $search['error'] ?? 'search_failed',
+            ];
+        }
+
+        $imported = 0;
+        $skipped = 0;
+        $failed = 0;
+        $orders = [];
+
+        foreach (($search['results'] ?? []) as $row) {
+            $orderId = trim((string) ($row['id'] ?? ''));
+            if ($orderId === '') {
+                $skipped++;
+                continue;
+            }
+
+            $existing = $this->findOrderByRemoteId($orderId);
+            if ($existing instanceof \ControleOnline\Entity\Order) {
+                $skipped++;
+                $orders[] = [
+                    'remote_id' => $orderId,
+                    'local_id' => $existing->getId(),
+                    'status' => 'already_imported',
+                ];
+                continue;
+            }
+
+            $payload = $this->mercadoLivreClient->getOrder($orderId, $provider);
+            if (!is_array($payload)) {
+                $failed++;
+                $orders[] = ['remote_id' => $orderId, 'status' => 'fetch_failed'];
+                continue;
+            }
+
+            try {
+                $order = $this->importOrderPayload($payload, $provider);
+                if ($order instanceof \ControleOnline\Entity\Order) {
+                    $imported++;
+                    $orders[] = [
+                        'remote_id' => $orderId,
+                        'local_id' => $order->getId(),
+                        'status' => 'imported',
+                    ];
+                } else {
+                    $failed++;
+                    $orders[] = ['remote_id' => $orderId, 'status' => 'import_null'];
+                }
+            } catch (\Throwable $e) {
+                $failed++;
+                $orders[] = [
+                    'remote_id' => $orderId,
+                    'status' => 'import_error',
+                    'error' => $e::class,
+                ];
+            }
+        }
+
+        $this->storeProviderState($provider, [
+            'last_orders_import_at' => date('Y-m-d H:i:s'),
+            'last_orders_import_count' => $imported,
+        ]);
+
+        return [
+            'success' => $failed === 0,
+            'imported' => $imported,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'orders' => $orders,
+        ];
+    }
+
+
 
 
     /**

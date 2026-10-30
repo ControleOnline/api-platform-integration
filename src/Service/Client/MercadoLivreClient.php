@@ -112,6 +112,30 @@ class MercadoLivreClient
     }
 
     /**
+     * Search seller orders (Mercado Livre Orders API).
+     *
+     * @param array<string, scalar|null> $query
+     */
+    public function searchOrders(string $sellerId, array $query = [], ?People $provider = null): ?array
+    {
+        $sellerId = trim($sellerId);
+        if ($sellerId === '') {
+            return null;
+        }
+
+        $params = array_merge([
+            'seller' => $sellerId,
+            'sort' => 'date_desc',
+            'offset' => 0,
+            'limit' => 50,
+        ], $query);
+
+        return $this->requestApi('GET', '/orders/search', [
+            'query' => $params,
+        ], $provider);
+    }
+
+    /**
      * Updates listing available_quantity on Mercado Livre.
      * @see https://developers.mercadolivre.com.br/pt_br/estoque
      */

@@ -130,4 +130,17 @@ final class MercadoLivreServiceTest extends TestCase
         self::assertSame(4, $result['available_quantity']);
     }
 
+
+    public function testSearchOrdersRequiresSellerId(): void
+    {
+        $config = $this->createStub(ConfigService::class);
+        $config->method('getConfig')->willReturn(null);
+        $service = $this->createService(null, $config);
+        $provider = new class extends People {
+        };
+        $result = $service->searchOrders($provider, 0, 10);
+        self::assertFalse($result['success']);
+        self::assertSame('missing_user_id', $result['error']);
+    }
+
 }
