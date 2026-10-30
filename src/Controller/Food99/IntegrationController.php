@@ -1494,6 +1494,45 @@ class IntegrationController extends AbstractController
         return new JsonResponse($result, $status);
     }
 
+    #[Route('/marketplace/integrations/mercadolivre/orders/search', name: 'marketplace_integrations_mercadolivre_orders_search', methods: ['GET', 'POST'])]
+    public function searchMercadoLivreOrders(Request $request): JsonResponse
+    {
+        $payload = $request->getMethod() === 'POST' ? $this->parseJsonBody($request) : [];
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $offset = (int) ($payload['offset'] ?? $request->query->get('offset') ?? 0);
+        $limit = (int) ($payload['limit'] ?? $request->query->get('limit') ?? 50);
+        $status = $payload['status'] ?? $request->query->get('status');
+        $status = is_string($status) ? $status : null;
+
+        $result = $this->mercadoLivreService->searchOrders($provider, $offset, $limit, $status);
+        $code = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
+
+        return new JsonResponse($result, $code);
+    }
+
+    #[Route('/marketplace/integrations/mercadolivre/orders/import', name: 'marketplace_integrations_mercadolivre_orders_import', methods: ['POST'])]
+    public function importMercadoLivreOrders(Request $request): JsonResponse
+    {
+        $payload = $this->parseJsonBody($request);
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $limit = (int) ($payload['limit'] ?? 20);
+        $status = $payload['status'] ?? null;
+        $status = is_string($status) ? $status : null;
+
+        $result = $this->mercadoLivreService->importRecentOrders($provider, $limit, $status);
+        $code = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_MULTI_STATUS;
+
+        return new JsonResponse($result, $code);
+    }
+
     #[Route('/marketplace/integrations/99food/store', name: 'marketplace_integrations_food99_store', methods: ['GET'])]
     public function getStore(Request $request): JsonResponse
     {
