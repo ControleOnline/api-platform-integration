@@ -1438,7 +1438,16 @@ class IntegrationController extends AbstractController
         $quantity = is_numeric($quantityRaw) ? (int) $quantityRaw : null;
 
         if ($productId) {
-            $result = $this->mercadoLivreService->pushProductStock($provider, (int) $productId, $quantity);
+            $showcaseId = $payload['showcase_id']
+                ?? $payload['showcase']
+                ?? $request->query->get('showcase_id')
+                ?? null;
+            $result = $this->mercadoLivreService->pushProductStock(
+                $provider,
+                (int) $productId,
+                $quantity,
+                $showcaseId
+            );
             $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
 
             return new JsonResponse($result, $status);

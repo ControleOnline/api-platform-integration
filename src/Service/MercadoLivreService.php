@@ -14,6 +14,7 @@ use ControleOnline\Entity\Product;
 use ControleOnline\Entity\ProductCategory;
 use ControleOnline\Entity\ProductFile;
 use ControleOnline\Entity\ProductShowcase;
+use ControleOnline\Entity\ProductInventory;
 use ControleOnline\Entity\ProductShowcaseItem;
 use ControleOnline\Entity\ProductUnity;
 use ControleOnline\Service\Client\MercadoLivreClient;
@@ -462,7 +463,7 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
      *
      * @return array{success:bool,product_id:?int,item_id:?string,available_quantity:?int,error?:string}
      */
-    public function pushProductStock(People $provider, int $productId, ?int $availableQuantity = null): array
+    public function pushProductStock(People $provider, int $productId, ?int $availableQuantity = null, mixed $showcaseId = null): array
     {
         $product = $this->entityManager->find(Product::class, $productId);
         if (!$product instanceof Product) {
@@ -496,8 +497,24 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
             ];
         }
 
+        $showcase = null;
+        if ($showcaseId !== null && trim((string) $showcaseId) !== '') {
+            $showcase = $this->resolveShowcaseForImport($provider, $showcaseId);
+            if (!$showcase instanceof ProductShowcase) {
+                return [
+                    'success' => false,
+                    'product_id' => $productId,
+                    'item_id' => $itemId,
+                    'available_quantity' => null,
+                    'error' => 'invalid_showcase',
+                ];
+            }
+        } else {
+            $showcase = $this->findDefaultMercadoLivreShowcase($provider);
+        }
+
         if ($availableQuantity === null) {
-            $availableQuantity = $this->resolveLocalAvailableQuantity($product);
+            $availableQuantity = $this->resolveLocalAvailableQuantity($product, $showcase);
         }
         if ($availableQuantity === null) {
             return [
@@ -511,6 +528,10 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
 
         $result = $this->pushItemStock($provider, $itemId, $availableQuantity);
         $result['product_id'] = $productId;
+        if ($showcase instanceof ProductShowcase) {
+            $result['showcase_id'] = (int) $showcase->getId();
+            $result['showcase_name'] = $showcase->getName();
+        }
 
         return $result;
     }
@@ -604,8 +625,15 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         return $code;
     }
 
-    private function resolveLocalAvailableQuantity(Product $product): ?int
+    private function resolveLocalAvailableQuantity(Product $product, ?ProductShowcase $showcase = null): ?int
     {
+        if ($showcase instanceof ProductShowcase) {
+            $sum = $this->sumProductAvailableOnShowcase($product, $showcase);
+            if ($sum !== null) {
+                return $sum;
+            }
+        }
+
         if (method_exists($product, 'getDefaultOutInventory')) {
             try {
                 $inventory = $product->getDefaultOutInventory();
@@ -635,6 +663,54 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         }
 
         return null;
+    }
+
+    /**
+     * Sum ProductInventory.available across warehouses linked to the showcase.
+     */
+    private function sumProductAvailableOnShowcase(Product $product, ProductShowcase $showcase): ?int
+    {
+        if (!method_exists($showcase, 'getInventories')) {
+            return null;
+        }
+
+        $inventories = $showcase->getInventories();
+        if ($inventories === null || (method_exists($inventories, 'isEmpty') && $inventories->isEmpty())) {
+            return null;
+        }
+
+        $repo = $this->entityManager->getRepository(ProductInventory::class);
+        $total = 0;
+        $matched = false;
+
+        foreach ($inventories as $inventory) {
+            if ($inventory === null) {
+                continue;
+            }
+            $row = $repo->findOneBy([
+                'product' => $product,
+                'inventory' => $inventory,
+            ]);
+            if (!$row instanceof ProductInventory) {
+                continue;
+            }
+            $matched = true;
+            $total += max(0, (int) $row->getAvailable());
+        }
+
+        return $matched ? $total : null;
+    }
+
+    private function findDefaultMercadoLivreShowcase(People $provider): ?ProductShowcase
+    {
+        $repository = $this->entityManager->getRepository(ProductShowcase::class);
+        $showcase = $repository->findOneBy([
+            'company' => $provider,
+            'integrationKey' => 'mercadolivre',
+            'active' => true,
+        ], ['id' => 'ASC']);
+
+        return $showcase instanceof ProductShowcase ? $showcase : null;
     }
 
     public function importProducts(People $provider, int $limit = 50, mixed $showcaseId = null): array
