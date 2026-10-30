@@ -1421,6 +1421,70 @@ class IntegrationController extends AbstractController
         ], Response::HTTP_ACCEPTED);
     }
 
+    #[Route('/marketplace/integrations/mercadolivre/stock/push', name: 'marketplace_integrations_mercadolivre_stock_push', methods: ['POST'])]
+    public function pushMercadoLivreStock(Request $request): JsonResponse
+    {
+        $payload = $this->parseJsonBody($request);
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $productId = $this->requestPayloadService->normalizeOptionalNumericId(
+            $payload['product_id'] ?? $payload['product'] ?? null
+        );
+        $itemId = trim((string) ($payload['item_id'] ?? $payload['remote_id'] ?? ''));
+        $quantityRaw = $payload['available_quantity'] ?? $payload['quantity'] ?? null;
+        $quantity = is_numeric($quantityRaw) ? (int) $quantityRaw : null;
+
+        if ($productId) {
+            $result = $this->mercadoLivreService->pushProductStock($provider, (int) $productId, $quantity);
+            $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
+
+            return new JsonResponse($result, $status);
+        }
+
+        if ($itemId === '') {
+            return new JsonResponse([
+                'success' => false,
+                'error' => 'missing_target',
+                'message' => 'Informe product_id ou item_id.',
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        if ($quantity === null) {
+            return new JsonResponse([
+                'success' => false,
+                'error' => 'missing_quantity',
+                'message' => 'Informe available_quantity.',
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        $result = $this->mercadoLivreService->pushItemStock($provider, $itemId, $quantity);
+        $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST;
+
+        return new JsonResponse($result, $status);
+    }
+
+    #[Route('/marketplace/integrations/mercadolivre/stock/sync', name: 'marketplace_integrations_mercadolivre_stock_sync', methods: ['POST'])]
+    public function syncMercadoLivreStock(Request $request): JsonResponse
+    {
+        $payload = $this->parseJsonBody($request);
+        $provider = $this->resolveProvider($request, $payload);
+        if (!$provider) {
+            return $this->providerErrorResponse();
+        }
+
+        $limit = $this->requestPayloadService->normalizeOptionalNumericId(
+            $payload['limit'] ?? $request->query->get('limit') ?? 50
+        ) ?: 50;
+
+        $result = $this->mercadoLivreService->syncLinkedProductsStock($provider, max(1, (int) $limit));
+        $status = !empty($result['success']) ? Response::HTTP_OK : Response::HTTP_MULTI_STATUS;
+
+        return new JsonResponse($result, $status);
+    }
+
     #[Route('/marketplace/integrations/99food/store', name: 'marketplace_integrations_food99_store', methods: ['GET'])]
     public function getStore(Request $request): JsonResponse
     {
