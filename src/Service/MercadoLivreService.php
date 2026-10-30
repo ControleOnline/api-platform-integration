@@ -363,6 +363,280 @@ class MercadoLivreService implements MarketplaceIntegrationHandlerInterface, Mar
         return $this->mercadoLivreClient->getOrder($orderId, $provider) ?? ['success' => false, 'error' => 'empty_response'];
     }
 
+
+
+    /**
+     * Push available_quantity for a single ML item id (seller listing).
+     *
+     * @return array{success:bool,item_id:string,available_quantity:?int,error?:string,remote?:array}
+     */
+    public function pushItemStock(People $provider, string $itemId, int $availableQuantity): array
+    {
+        $itemId = trim($itemId);
+        if ($itemId === '') {
+            return [
+                'success' => false,
+                'item_id' => '',
+                'available_quantity' => null,
+                'error' => 'missing_item_id',
+            ];
+        }
+        if ($availableQuantity < 0) {
+            return [
+                'success' => false,
+                'item_id' => $itemId,
+                'available_quantity' => $availableQuantity,
+                'error' => 'invalid_quantity',
+            ];
+        }
+
+        if ($this->readConfigValue($provider, self::CONFIG_ACCESS_TOKEN) === '') {
+            return [
+                'success' => false,
+                'item_id' => $itemId,
+                'available_quantity' => $availableQuantity,
+                'error' => 'not_connected',
+            ];
+        }
+
+        $remote = $this->mercadoLivreClient->updateItemAvailableQuantity($itemId, $availableQuantity, $provider);
+        if (!is_array($remote)) {
+            $this->storeProviderState($provider, [
+                'last_error_code' => 'stock_push_failed',
+                'last_error_message' => 'Falha ao atualizar estoque no Mercado Livre para ' . $itemId,
+            ]);
+
+            return [
+                'success' => false,
+                'item_id' => $itemId,
+                'available_quantity' => $availableQuantity,
+                'error' => 'api_error',
+            ];
+        }
+
+        $product = $this->findProductByRemoteId($itemId);
+        if ($product instanceof Product) {
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Product',
+                (int) $product->getId(),
+                'available_quantity',
+                (string) $availableQuantity,
+                'text',
+                'mercadolivre'
+            );
+            $this->extraDataService->upsertExtraDataValue(
+                self::APP_CONTEXT,
+                'Product',
+                (int) $product->getId(),
+                'stock_pushed_at',
+                date('c'),
+                'text',
+                'mercadolivre'
+            );
+        }
+
+        $this->storeProviderState($provider, [
+            'last_stock_push_at' => date('Y-m-d H:i:s'),
+            'last_error_code' => null,
+            'last_error_message' => null,
+        ]);
+
+        return [
+            'success' => true,
+            'item_id' => $itemId,
+            'available_quantity' => isset($remote['available_quantity'])
+                ? (int) $remote['available_quantity']
+                : $availableQuantity,
+            'remote' => [
+                'id' => $remote['id'] ?? $itemId,
+                'status' => $remote['status'] ?? null,
+                'available_quantity' => $remote['available_quantity'] ?? $availableQuantity,
+            ],
+        ];
+    }
+
+    /**
+     * Push stock for a local product linked to Mercado Livre (ExtraData id).
+     * Quantity comes from argument or local inventory when available.
+     *
+     * @return array{success:bool,product_id:?int,item_id:?string,available_quantity:?int,error?:string}
+     */
+    public function pushProductStock(People $provider, int $productId, ?int $availableQuantity = null): array
+    {
+        $product = $this->entityManager->find(Product::class, $productId);
+        if (!$product instanceof Product) {
+            return [
+                'success' => false,
+                'product_id' => $productId,
+                'item_id' => null,
+                'available_quantity' => null,
+                'error' => 'product_not_found',
+            ];
+        }
+
+        if ((int) $product->getCompany()?->getId() !== (int) $provider->getId()) {
+            return [
+                'success' => false,
+                'product_id' => $productId,
+                'item_id' => null,
+                'available_quantity' => null,
+                'error' => 'product_company_mismatch',
+            ];
+        }
+
+        $itemId = $this->resolveRemoteItemIdForProduct($product);
+        if ($itemId === '') {
+            return [
+                'success' => false,
+                'product_id' => $productId,
+                'item_id' => null,
+                'available_quantity' => null,
+                'error' => 'missing_remote_item',
+            ];
+        }
+
+        if ($availableQuantity === null) {
+            $availableQuantity = $this->resolveLocalAvailableQuantity($product);
+        }
+        if ($availableQuantity === null) {
+            return [
+                'success' => false,
+                'product_id' => $productId,
+                'item_id' => $itemId,
+                'available_quantity' => null,
+                'error' => 'missing_quantity',
+            ];
+        }
+
+        $result = $this->pushItemStock($provider, $itemId, $availableQuantity);
+        $result['product_id'] = $productId;
+
+        return $result;
+    }
+
+    /**
+     * Push stock for up to $limit products of the provider that are linked to ML.
+     *
+     * @return array{success:bool,pushed:int,failed:int,skipped:int,results:list<array>}
+     */
+    public function syncLinkedProductsStock(People $provider, int $limit = 50): array
+    {
+        $limit = max(1, min(100, $limit));
+        $products = $this->entityManager->getRepository(Product::class)->findBy(
+            ['company' => $provider],
+            ['id' => 'DESC'],
+            $limit * 3
+        );
+
+        $results = [];
+        $pushed = 0;
+        $failed = 0;
+        $skipped = 0;
+
+        foreach ($products as $product) {
+            if (!$product instanceof Product) {
+                continue;
+            }
+            if (count($results) >= $limit) {
+                break;
+            }
+            $itemId = $this->resolveRemoteItemIdForProduct($product);
+            if ($itemId === '') {
+                continue;
+            }
+            $qty = $this->resolveLocalAvailableQuantity($product);
+            if ($qty === null) {
+                $skipped++;
+                $results[] = [
+                    'success' => false,
+                    'product_id' => (int) $product->getId(),
+                    'item_id' => $itemId,
+                    'error' => 'missing_quantity',
+                ];
+                continue;
+            }
+            $row = $this->pushItemStock($provider, $itemId, $qty);
+            $row['product_id'] = (int) $product->getId();
+            $results[] = $row;
+            if (!empty($row['success'])) {
+                $pushed++;
+            } else {
+                $failed++;
+            }
+        }
+
+        $this->storeProviderState($provider, [
+            'last_stock_sync_at' => date('Y-m-d H:i:s'),
+            'last_stock_sync_pushed' => $pushed,
+            'last_stock_sync_failed' => $failed,
+        ]);
+
+        return [
+            'success' => $failed === 0,
+            'pushed' => $pushed,
+            'failed' => $failed,
+            'skipped' => $skipped,
+            'results' => $results,
+        ];
+    }
+
+    private function resolveRemoteItemIdForProduct(Product $product): string
+    {
+        $remoteId = trim((string) ($this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            'Product',
+            (int) $product->getId(),
+            'id',
+            'mercadolivre'
+        ) ?? ''));
+        if ($remoteId !== '') {
+            return $remoteId;
+        }
+
+        $code = trim((string) ($this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            'Product',
+            (int) $product->getId(),
+            'code',
+            'mercadolivre'
+        ) ?? ''));
+        return $code;
+    }
+
+    private function resolveLocalAvailableQuantity(Product $product): ?int
+    {
+        if (method_exists($product, 'getDefaultOutInventory')) {
+            try {
+                $inventory = $product->getDefaultOutInventory();
+                if (is_object($inventory)) {
+                    foreach (['getAvailable', 'getAvailableQuantity', 'getQuantity', 'getBalance'] as $method) {
+                        if (method_exists($inventory, $method)) {
+                            $value = $inventory->{$method}();
+                            if (is_numeric($value)) {
+                                return max(0, (int) $value);
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+            }
+        }
+
+        $fromExtra = trim((string) ($this->extraDataService->getExtraDataValue(
+            self::APP_CONTEXT,
+            'Product',
+            (int) $product->getId(),
+            'available_quantity',
+            'mercadolivre'
+        ) ?? ''));
+        if ($fromExtra !== '' && is_numeric($fromExtra)) {
+            return max(0, (int) $fromExtra);
+        }
+
+        return null;
+    }
+
     public function importProducts(People $provider, int $limit = 50, mixed $showcaseId = null): array
     {
         if ($showcaseId === null || trim((string) $showcaseId) === '') {
