@@ -30,6 +30,8 @@ services:
     ControleOnline\Service\N8NService:
         arguments:
             $n8nClient: '@http_client.n8n'
+    ControleOnline\Service\McpMercadoLivreProviderInterface:
+        alias: ControleOnline\Service\Mcp\MercadoLivreMcpProvider
     ControleOnline\Service\FirebaseCloudMessagingService:
         arguments:
             $projectId: '%env(string:FIREBASE_PROJECT_ID)%'
