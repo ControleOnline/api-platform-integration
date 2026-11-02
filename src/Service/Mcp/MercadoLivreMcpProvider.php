@@ -69,6 +69,26 @@ final class MercadoLivreMcpProvider implements McpMercadoLivreProviderInterface
         return $this->mercadoLivreService->mcpGetOrder($this->resolveConnectedCompany($companyId), $orderId);
     }
 
+
+    public function searchOrders(int $companyId, int $offset = 0, int $limit = 50, ?string $status = null): array
+    {
+        return $this->mercadoLivreService->searchOrders(
+            $this->resolveConnectedCompany($companyId),
+            $offset,
+            $limit,
+            $status
+        );
+    }
+
+    public function importOrders(int $companyId, int $limit = 20, ?string $status = null): array
+    {
+        return $this->mercadoLivreService->importRecentOrders(
+            $this->resolveConnectedCompany($companyId),
+            $limit,
+            $status
+        );
+    }
+
     public function importProducts(int $companyId, int $showcaseId, int $limit = 50): array
     {
         return $this->mercadoLivreService->importProducts(
