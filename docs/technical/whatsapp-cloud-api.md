@@ -18,10 +18,16 @@ para os devices `MANAGER` da empresa (tela `/ai`).
 
 ## Configuração
 
-| Variável | Uso |
-| --- | --- |
-| `WHATSAPP_CLOUD_VERIFY_TOKEN` | Token livre informado no app Meta (verificação GET `hub.challenge`) |
-| `WHATSAPP_CLOUD_APP_SECRET` | App Secret do app Meta; valida `X-Hub-Signature-256`. Sem ele, todo POST é recusado |
+Tabela `config` da empresa do domínio da API (ex.: Controle Online em api.controleonline.com);
+variáveis de ambiente são só fallback:
+
+| config_key | env (fallback) | Uso |
+| --- | --- | --- |
+| `whatsapp-cloud-verify-token` | `WHATSAPP_CLOUD_VERIFY_TOKEN` | Token livre informado no app Meta (verificação GET `hub.challenge`) |
+| `whatsapp-cloud-app-secret` | `WHATSAPP_CLOUD_APP_SECRET` | App Secret do app Meta; valida `X-Hub-Signature-256`. Sem ele, todo POST é recusado |
+
+O token de acesso e o `phone_number_id` de cada número ficam em `connections.channel_config`
+(tela Conexões → WhatsApp oficial).
 
 No app Meta: produto WhatsApp → Configuração → Webhook
 `https://api.controleonline.com/webhook/whatsapp-cloud`, campo assinado `messages`.
