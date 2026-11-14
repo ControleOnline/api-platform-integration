@@ -29,6 +29,7 @@ class WhatsAppService
     public function __construct(
         private EntityManagerInterface $manager,
         private TaskInterationService $taskInterationService,
+        private ?CustomerConversationRouter $router = null,
     ) {
     }
 
@@ -141,6 +142,11 @@ class WhatsAppService
         $whatsAppProfile = new WhatsAppProfile();
         $whatsAppProfile->setPhoneNumber($whatsAppMessage->getDestinationNumber());
         $connection = $this->getConnectionFromProfile($whatsAppProfile);
+
+        // Same flow as the official API: AI first (if configured), else connection type.
+        if ($this->router) {
+            return $this->router->receive($whatsAppMessage, $connection);
+        }
         switch ($connection->getType()) {
             case 'support':
                 return $this->taskInterationService->addClientInteration($whatsAppMessage, $connection, 'support');
