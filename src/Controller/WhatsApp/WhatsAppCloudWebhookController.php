@@ -2,6 +2,8 @@
 
 namespace ControleOnline\Controller\WhatsApp;
 
+use ControleOnline\Service\ConfigService;
+use ControleOnline\Service\DomainService;
 use ControleOnline\Service\IntegrationService;
 use ControleOnline\Service\LoggerService;
 use ControleOnline\Service\WhatsAppCloudPayloadParser;
@@ -15,23 +17,29 @@ use Symfony\Component\Routing\Attribute\Route;
  *
  * Public route: authenticity comes from the verify token (GET) and the
  * X-Hub-Signature-256 HMAC of the raw body with the app secret (POST).
+ * Both live in the config table of the API domain's company
+ * (whatsapp-cloud-verify-token, whatsapp-cloud-app-secret); env vars are a fallback.
  * Each inbound message becomes one row in `integration` (queue WhatsAppCloud),
  * deduplicated by wamid because Meta retries deliveries.
  */
 class WhatsAppCloudWebhookController
 {
     public const QUEUE = 'WhatsAppCloud';
+    public const CONFIG_VERIFY_TOKEN = 'whatsapp-cloud-verify-token';
+    public const CONFIG_APP_SECRET = 'whatsapp-cloud-app-secret';
 
     public function __construct(
         private IntegrationService $integrationService,
         private LoggerService $loggerService,
+        private ConfigService $configService,
+        private DomainService $domainService,
     ) {
     }
 
     #[Route('/webhook/whatsapp-cloud', name: 'whatsapp_cloud_webhook_verify', methods: ['GET'])]
     public function verify(Request $request): Response
     {
-        $expected = self::env('WHATSAPP_CLOUD_VERIFY_TOKEN');
+        $expected = $this->secret(self::CONFIG_VERIFY_TOKEN, 'WHATSAPP_CLOUD_VERIFY_TOKEN');
         // PHP converts "hub.mode" query keys to "hub_mode".
         $mode = (string) $request->query->get('hub_mode', '');
         $token = (string) $request->query->get('hub_verify_token', '');
@@ -53,7 +61,7 @@ class WhatsAppCloudWebhookController
         if (!WhatsAppCloudPayloadParser::isValidSignature(
             $raw,
             $request->headers->get('X-Hub-Signature-256'),
-            self::env('WHATSAPP_CLOUD_APP_SECRET'),
+            $this->secret(self::CONFIG_APP_SECRET, 'WHATSAPP_CLOUD_APP_SECRET'),
         )) {
             $logger->warning('WhatsApp Cloud webhook: invalid or missing signature');
 
@@ -82,6 +90,23 @@ class WhatsAppCloudWebhookController
         $logger->info('WhatsApp Cloud webhook accepted', ['queued' => $queued]);
 
         return new JsonResponse(['accepted' => $queued], Response::HTTP_OK);
+    }
+
+    private function secret(string $configKey, string $envKey): string
+    {
+        try {
+            $company = $this->domainService->getPeopleDomain()->getPeople();
+            $value = trim((string) $this->configService->getConfig($company, $configKey));
+            // Tolerate values saved JSON-encoded by the config UI.
+            $value = trim($value, '"');
+            if ($value !== '') {
+                return $value;
+            }
+        } catch (\Throwable) {
+            // No domain/config available: fall back to the environment.
+        }
+
+        return self::env($envKey);
     }
 
     private static function env(string $key): string
