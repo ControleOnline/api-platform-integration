@@ -13,19 +13,14 @@ use Doctrine\ORM\EntityManagerInterface;
 /**
  * Integration queue handler (queueName=WhatsAppCloud) for inbound Meta Cloud API messages.
  *
- * Routing by connections.type of the receiving number:
- * - ia: the AI is the front door. The message joins the customer's open conversation;
- *   while the task is still type "ia" an McpChat job is queued. After a handoff
- *   (relationship = sales/CRM, support = analyst) only humans answer.
- * - support / relationship: legacy human flow.
+ * The receiving number is found by phone_number_id; routing (AI first, then
+ * connection type) lives in CustomerConversationRouter.
  */
 class WhatsAppCloudService
 {
     public function __construct(
         private EntityManagerInterface $manager,
-        private TaskInterationService $taskInterationService,
-        private IntegrationService $integrationService,
-        private ConversationRealtimeNotifier $realtime,
+        private CustomerConversationRouter $router,
     ) {
     }
 
@@ -43,44 +38,8 @@ class WhatsAppCloudService
 
         $this->ensureConnectionPhone($connection, (string) ($data['display_phone'] ?? ''));
         $message = $this->buildMessage($data, $connection);
-        $type = (string) $connection->getType();
 
-        $interaction = match ($type) {
-            'ia' => $this->taskInterationService->addClientConversationInteration($message, $connection, (string) ($data['name'] ?? '')),
-            'support', 'relationship' => $this->taskInterationService->addClientInteration($message, $connection, $type),
-            default => throw new \RuntimeException("Connection type '{$type}' does not receive messages"),
-        };
-
-        $task = $interaction->getTask();
-        $company = $connection->getPeople();
-
-        $this->realtime->notify($company, $task, [
-            'event' => 'conversation_message',
-            'channel' => 'whatsapp',
-            'status' => 'received',
-            'interaction_id' => $interaction->getId(),
-        ]);
-
-        if ($task->getType() === 'ia') {
-            $config = $connection->getChannelConfigArray();
-            $this->integrationService->addIntegration(
-                (string) json_encode([
-                    'action' => 'mcp_chat',
-                    'channel' => 'whatsapp',
-                    'task_id' => $task->getId(),
-                    'interaction_id' => $interaction->getId(),
-                    'company_id' => $company->getId(),
-                    'provider' => $config['ai_provider'] ?? null,
-                    'message' => $interaction->getBody(),
-                ], JSON_UNESCAPED_UNICODE),
-                'McpChat',
-                null,
-                null,
-                $company,
-            );
-        }
-
-        return $interaction;
+        return $this->router->receive($message, $connection, (string) ($data['name'] ?? ''));
     }
 
     /**
