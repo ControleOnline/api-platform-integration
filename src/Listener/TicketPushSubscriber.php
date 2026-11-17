@@ -64,7 +64,7 @@ class TicketPushSubscriber implements EventSubscriberInterface
         }
         $from = $author instanceof People ? ($author->getAlias() ?: $author->getName()) : '';
         $body = trim((string) $interaction->getBody());
-        $body = $body !== '' ? mb_substr($body, 0, 140) : ($interaction->getFile() ? '📎 Anexo' : 'Nova mensagem');
+        $body = $body !== '' ? mb_substr($body, 0, 140) : ($interaction->getFile() ? 'Anexo' : 'Nova mensagem');
 
         $this->dispatch($task, $recipients, $author, trim($from . ' · ' . $this->label($task), ' ·'), $body);
     }

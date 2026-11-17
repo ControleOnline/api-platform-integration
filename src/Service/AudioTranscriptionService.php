@@ -9,7 +9,7 @@ use Doctrine\ORM\EntityManagerInterface;
 /**
  * Voice notes in conversations are transcribed by api-whisper (w.controleonline.com) when it is
  * configured (WHISPER_URL, WHISPER_TOKEN, WHISPER_CALLBACK_TOKEN); otherwise nothing happens.
- * The text comes back on /webhook/transcription and is written on the message ("🎤 ..."), so people
+ * The text comes back on /webhook/transcription and is written on the message ("Transcrição do áudio: ..."), so people
  * and the AI can read what was said.
  */
 class AudioTranscriptionService
@@ -83,8 +83,9 @@ class AudioTranscriptionService
         $rows = $this->manager->getRepository(TaskInteration::class)->findBy(['file' => (int) $m[1]]);
         foreach ($rows as $row) {
             $body = trim((string) $row->getBody());
-            $label = '🎤 ' . ($text !== '' ? $text : '(áudio sem fala reconhecida)');
-            $row->setBody($body === '' || str_starts_with($body, '📎') ? $label : $body . "\n\n" . $label);
+            // Plain text: task_interations.body is not utf8mb4 (an emoji would be stored as "?").
+            $label = 'Transcrição do áudio: ' . ($text !== '' ? $text : '(sem fala reconhecida)');
+            $row->setBody($body === '' || str_starts_with($body, 'Anexo') ? $label : $body . "\n\n" . $label);
         }
         $this->manager->flush();
 
