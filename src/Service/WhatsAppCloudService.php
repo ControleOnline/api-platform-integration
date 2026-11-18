@@ -6,9 +6,11 @@ use ControleOnline\Entity\Connection;
 use ControleOnline\Entity\Integration;
 use ControleOnline\Entity\Phone;
 use ControleOnline\Entity\TaskInteration;
+use ControleOnline\Message\TranscribeAudioMessage;
 use ControleOnline\WhatsApp\Messages\WhatsAppContent;
 use ControleOnline\WhatsApp\Messages\WhatsAppMessage;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * Integration queue handler (queueName=WhatsAppCloud) for inbound Meta Cloud API messages.
@@ -21,6 +23,10 @@ class WhatsAppCloudService
     public function __construct(
         private EntityManagerInterface $manager,
         private CustomerConversationRouter $router,
+        private WhatsAppCloudMediaService $media,
+        private ConversationRealtimeNotifier $realtime,
+        private AudioTranscriptionService $transcription,
+        private MessageBusInterface $bus,
     ) {
     }
 
@@ -39,7 +45,54 @@ class WhatsAppCloudService
         $this->ensureConnectionPhone($connection, (string) ($data['display_phone'] ?? ''));
         $message = $this->buildMessage($data, $connection);
 
-        return $this->router->receive($message, $connection, (string) ($data['name'] ?? ''));
+        $interaction = $this->router->receive($message, $connection, (string) ($data['name'] ?? ''));
+        if ($interaction && !empty($data['media']['id'])) {
+            $this->attachMedia($interaction, $connection, $data);
+        }
+
+        return $interaction;
+    }
+
+    /**
+     * Images, audios, videos and documents become the interaction file (the conversation shows the
+     * player/preview). Audios are sent to api-whisper; the text comes back to /webhook/transcription.
+     * A failed download keeps the "[type]" placeholder so the team still sees that something arrived.
+     */
+    private function attachMedia(TaskInteration $interaction, Connection $connection, array $data): void
+    {
+        try {
+            $file = $this->media->storeInbound($connection, $interaction->getRegisteredBy(), $data['media']);
+        } catch (\Throwable) {
+            $file = null;
+        }
+        if (!$file) {
+            $interaction->setBody((string) ($data['text'] ?? ''));
+            $this->manager->flush();
+
+            return;
+        }
+        $interaction->setFile($file);
+        $this->manager->flush();
+
+        $task = $interaction->getTask();
+        $this->realtime->notify($connection->getPeople(), $task, [
+            'event' => 'conversation_message',
+            'channel' => 'whatsapp',
+            'status' => 'updated',
+            'interaction_id' => $interaction->getId(),
+        ]);
+
+        if ($this->transcription->isEnabled() && $this->transcription->isAudio($file) && !empty($data['api_base'])) {
+            try {
+                $this->bus->dispatch(new TranscribeAudioMessage(
+                    (int) $file->getId(),
+                    (string) ($data['domain'] ?? ''),
+                    rtrim((string) $data['api_base'], '/') . '/webhook/transcription',
+                ));
+            } catch (\Throwable) {
+                // Transcription is optional.
+            }
+        }
     }
 
     /**
@@ -95,7 +148,8 @@ class WhatsAppCloudService
     private function buildMessage(array $data, Connection $connection): WhatsAppMessage
     {
         $content = new WhatsAppContent();
-        $content->setBody((string) ($data['text'] ?? ''));
+        // With media the file is attached afterwards; the body keeps only the caption.
+        $content->setBody(!empty($data['media']['id']) ? (string) ($data['caption'] ?? '') : (string) ($data['text'] ?? ''));
 
         $phone = $connection->getPhone();
         $destination = $phone

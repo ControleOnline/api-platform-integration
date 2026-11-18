@@ -12,7 +12,7 @@ final class WhatsAppCloudPayloadParser
 {
     /**
      * @param array<string, mixed> $payload
-     * @return list<array{wamid: string, phone_number_id: string, display_phone: string, from: string, name: string, type: string, text: string, timestamp: int}>
+     * @return list<array{wamid: string, phone_number_id: string, display_phone: string, from: string, name: string, type: string, text: string, caption: string, media: ?array{id: string, mime: string, filename: string}, timestamp: int}>
      */
     public static function messages(array $payload): array
     {
@@ -45,6 +45,8 @@ final class WhatsAppCloudPayloadParser
                         'name' => $names[$from] ?? '',
                         'type' => $type,
                         'text' => self::text($message, $type),
+                        'caption' => trim((string) ($message[$type]['caption'] ?? '')),
+                        'media' => self::media($message, $type),
                         'timestamp' => (int) ($message['timestamp'] ?? time()),
                     ];
                 }
@@ -65,6 +67,23 @@ final class WhatsAppCloudPayloadParser
         $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $appSecret);
 
         return hash_equals($expected, trim($header));
+    }
+
+    /** Media types downloaded and stored as the interaction file. */
+    public const MEDIA_TYPES = ['image', 'audio', 'video', 'document', 'sticker'];
+
+    /** @return ?array{id: string, mime: string, filename: string} */
+    private static function media(array $message, string $type): ?array
+    {
+        if (!in_array($type, self::MEDIA_TYPES, true) || empty($message[$type]['id'])) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $message[$type]['id'],
+            'mime' => (string) ($message[$type]['mime_type'] ?? ''),
+            'filename' => (string) ($message[$type]['filename'] ?? ''),
+        ];
     }
 
     /** @return array<string, string> */

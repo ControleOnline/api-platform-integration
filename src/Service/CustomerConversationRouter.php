@@ -32,11 +32,15 @@ class CustomerConversationRouter
     public function receive(MessageInterface $message, Connection $connection, string $name = ''): ?TaskInteration
     {
         $company = $connection->getPeople();
-        $aiAvailable = $this->companyHasAi($company);
         $isEmail = method_exists($connection, 'isEmail') && $connection->isEmail();
+        $isOfficial = method_exists($connection, 'isOfficialWhatsApp') && $connection->isOfficialWhatsApp();
+        // Official WhatsApp and e-mail (app-community#1643): the request opens in the connection
+        // context (relationship -> CRM distribution, support -> support rule); the AI only answers
+        // when someone triggers it on the request ("Acionar IA" sets tasks.ai_agent).
+        $aiAvailable = ($isOfficial || $isEmail) ? false : $this->companyHasAi($company);
 
-        // Keep legacy automations for WhatsApp companies without AI.
-        if (!$aiAvailable && !$isEmail && in_array($connection->getType(), ['support', 'relationship'], true)) {
+        // Keep legacy automations for QR WhatsApp companies without AI.
+        if (!$isOfficial && !$aiAvailable && !$isEmail && in_array($connection->getType(), ['support', 'relationship'], true)) {
             $interaction = $this->taskInterationService->addClientInteration($message, $connection, $connection->getType());
         } else {
             $interaction = $this->taskInterationService->receiveCustomerMessage($message, $connection, $name, $aiAvailable);
