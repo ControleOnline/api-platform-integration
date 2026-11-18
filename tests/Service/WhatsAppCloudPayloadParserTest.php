@@ -54,6 +54,22 @@ class WhatsAppCloudPayloadParserTest extends TestCase
         self::assertSame(['[image] nota', '[audio]', 'Suporte'], array_column($out, 'text'));
     }
 
+    public function testMediaMessagesCarryMediaIdAndCaption(): void
+    {
+        $out = WhatsAppCloudPayloadParser::messages($this->payload([
+            ['from' => '5511999998888', 'id' => 'wamid.V', 'type' => 'audio', 'audio' => ['id' => 'MEDIA1', 'mime_type' => 'audio/ogg; codecs=opus', 'voice' => true]],
+            ['from' => '5511999998888', 'id' => 'wamid.D', 'type' => 'document', 'document' => ['id' => 'MEDIA2', 'mime_type' => 'application/pdf', 'filename' => 'nota.pdf', 'caption' => ' segue ']],
+            ['from' => '5511999998888', 'id' => 'wamid.T', 'type' => 'text', 'text' => ['body' => 'oi']],
+        ]));
+
+        self::assertSame(['id' => 'MEDIA1', 'mime' => 'audio/ogg; codecs=opus', 'filename' => ''], $out[0]['media']);
+        self::assertSame('[audio]', $out[0]['text']);
+        self::assertSame('', $out[0]['caption']);
+        self::assertSame('nota.pdf', $out[1]['media']['filename']);
+        self::assertSame('segue', $out[1]['caption']);
+        self::assertNull($out[2]['media']);
+    }
+
     public function testStatusCallbacksAndOtherObjectsAreIgnored(): void
     {
         $statusOnly = $this->payload([], ['statuses' => [['id' => 'wamid.X', 'status' => 'read']]]);
