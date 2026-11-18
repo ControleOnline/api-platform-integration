@@ -1,15 +1,14 @@
 {
-  "version": "1.0.8",
+  "version": "1.0.9",
   "rc": 1,
-  "branch": "rc/1.0.8-rc.1",
-  "baseMaster": "0246d7df7b911f868277062eecfb626661d9ad4d",
-  "baseTag": "v1.0.7",
+  "branch": "rc/1.0.9-rc.1",
+  "baseMaster": "139ee59dec72e3642d1b35683552ad72273a645c",
+  "baseTag": "v1.0.8",
   "tasks": [
-    71,
-    72
+    71
   ],
   "frozen": true,
   "repositories": {
-    "ControleOnline/api-platform-integration": "af03a40ce96d965532924ff760972ee890063d5a"
+    "ControleOnline/api-platform-integration": "8f13f5aaad8fb08dc59144167dc0fd7ca14d79c1"
   }
 }

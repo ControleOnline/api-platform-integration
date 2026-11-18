@@ -73,8 +73,17 @@ class WhatsAppCloudWebhookController
             return new JsonResponse(['error' => 'invalid json'], Response::HTTP_BAD_REQUEST);
         }
 
+        // The worker has no HTTP request: keep the tenant domain and this API host for the audio
+        // transcription callback (/webhook/transcription).
+        $context = ['api_base' => $request->getSchemeAndHttpHost(), 'domain' => ''];
+        try {
+            $context['domain'] = (string) $this->domainService->getDomain();
+        } catch (\Throwable) {
+        }
+
         $queued = 0;
         foreach (WhatsAppCloudPayloadParser::messages($payload) as $message) {
+            $message += $context;
             if ($this->integrationService->findRecentIntegrationIdByWebhookEvent(self::QUEUE, $message['wamid'])) {
                 continue;
             }

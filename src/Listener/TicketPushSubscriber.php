@@ -59,6 +59,12 @@ class TicketPushSubscriber implements EventSubscriberInterface
         }
         $author = $interaction->getRegisteredBy();
         $recipients = [$task->getTaskFor()];
+        // No responsible yet (e.g. a WhatsApp message and no responder configured for the rule):
+        // whoever may answer that context is warned, so the customer is never left unseen.
+        if (!$task->getTaskFor() && $task->getProvider() && $author instanceof People
+            && $this->ticketRules->isCustomerSide($task, $author)) {
+            $recipients = array_merge($recipients, $this->ticketRules->responders($task->getProvider(), (string) $task->getType()));
+        }
         if ($interaction->getVisibility() !== 'private') {
             $recipients[] = $this->requester($task);
         }

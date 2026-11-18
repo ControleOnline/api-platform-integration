@@ -2,7 +2,10 @@
 
 namespace ControleOnline\Service;
 
+use ControleOnline\Entity\File;
 use ControleOnline\Entity\Integration;
+use ControleOnline\Entity\Task;
+use ControleOnline\Entity\TaskInteration;
 use ControleOnline\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use ControleOnline\WhatsApp\Messages\WhatsAppContent;
@@ -30,6 +33,7 @@ class WhatsAppService
         private EntityManagerInterface $manager,
         private TaskInterationService $taskInterationService,
         private ?CustomerConversationRouter $router = null,
+        private ?WhatsAppCloudMediaService $cloudMedia = null,
     ) {
     }
 
@@ -114,7 +118,61 @@ class WhatsAppService
         $whatsAppMessage->setDestinationNumber($message['destination'] ?? '');
         $whatsAppMessage->setMessageContent($messageContent);
 
-        return $this->processMessage($whatsAppMessage);
+        $action = $whatsAppMessage->getAction();
+        if ($action !== 'sendMessage' && $action !== 'sendMedia') {
+            return $this->processMessage($whatsAppMessage);
+        }
+
+        $connection = $this->resolveConnectionForMessage($whatsAppMessage);
+        $isOfficial = $connection && method_exists($connection, 'isOfficialWhatsApp') && $connection->isOfficialWhatsApp();
+        $file = !empty($message['file_id']) ? $this->manager->getRepository(File::class)->find((int) $message['file_id']) : null;
+
+        try {
+            if ($isOfficial && $file instanceof File && $this->cloudMedia) {
+                $result = $this->cloudMedia->sendFile($connection, $whatsAppMessage->getDestinationNumber(), $file, (string) ($message['message'] ?? ''));
+                if (($result['success'] ?? false) && ($result['pending_text'] ?? '') !== '') {
+                    $messageContent->setBody($result['pending_text']);
+                    $result = $this->processMessage($whatsAppMessage);
+                }
+            } else {
+                $result = $this->processMessage($whatsAppMessage);
+            }
+        } catch (\Throwable $e) {
+            $result = ['success' => false, 'message' => $e->getMessage()];
+        }
+
+        if ($isOfficial && is_array($result) && array_key_exists('success', $result) && !$result['success']) {
+            $this->reportFailure($message, $result);
+        }
+
+        return $result;
+    }
+
+    /**
+     * The customer did not get the reply: tell the team with a private note on the request (it also
+     * pushes the responsible person). Meta only accepts free-form replies up to 24h after the
+     * customer's last message (error 131047); after that a pre-approved template is required.
+     */
+    private function reportFailure(array $message, array $result): void
+    {
+        $task = !empty($message['task_id']) ? $this->manager->getRepository(Task::class)->find((int) $message['task_id']) : null;
+        if (!$task instanceof Task) {
+            return;
+        }
+        $code = (int) ($result['code'] ?? ($result['raw']['error']['code'] ?? 0));
+        $detail = (string) ($result['message'] ?? 'erro desconhecido');
+        $text = $code === 131047
+            ? 'Mensagem não entregue no WhatsApp: passaram mais de 24h desde a última mensagem do cliente. Peça para ele escrever de novo (ou use um modelo aprovado pela Meta).'
+            : 'Mensagem não entregue no WhatsApp: ' . $detail;
+
+        $note = new TaskInteration();
+        $note->setTask($task);
+        $note->setType('comment');
+        $note->setVisibility('private');
+        $note->setBody($text);
+        $note->setRegisteredBy($task->getProvider());
+        $this->manager->persist($note);
+        $this->manager->flush();
     }
 
     public function searchConnectionFromPeople(People $people, string $type, $mainConnection = false): ?Connection
