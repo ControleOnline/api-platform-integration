@@ -15,6 +15,7 @@ final class GoogleMarketingScopes
     public const SET_ANALYTICS = 'analytics';
     public const SET_ADS = 'ads';
     public const SET_ADSENSE = 'adsense';
+    public const SET_WEBMASTERS = 'webmasters';
 
     public const CONFIG_KEY_PREFIX = 'GOOGLE_SERVICE_';
 
@@ -30,6 +31,9 @@ final class GoogleMarketingScopes
         ],
         self::SET_ADSENSE => [
             'https://www.googleapis.com/auth/adsense.readonly',
+        ],
+        self::SET_WEBMASTERS => [
+            'https://www.googleapis.com/auth/webmasters.readonly',
         ],
     ];
 

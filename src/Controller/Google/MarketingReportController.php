@@ -12,6 +12,8 @@ use ControleOnline\Service\Google\GoogleAdsRequestException;
 use ControleOnline\Service\Google\GoogleAnalyticsRequestException;
 use ControleOnline\Service\Google\GoogleAnalyticsService;
 use ControleOnline\Service\Google\GoogleMarketingNotConnectedException;
+use ControleOnline\Service\Google\GoogleSearchConsoleRequestException;
+use ControleOnline\Service\Google\GoogleSearchConsoleService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -31,6 +33,7 @@ class MarketingReportController extends AbstractController
         private readonly GoogleAnalyticsService $analyticsService,
         private readonly GoogleAdsReaderService $adsReader,
         private readonly AdSenseService $adsenseService,
+        private readonly GoogleSearchConsoleService $searchConsoleService,
     ) {
     }
 
@@ -121,6 +124,42 @@ class MarketingReportController extends AbstractController
             return new JsonResponse(['error' => 'not_connected', 'scope_set' => $e->scopeSet], Response::HTTP_UNAUTHORIZED);
         } catch (AdSenseRequestException $e) {
             return new JsonResponse(['error' => 'adsense_failed', 'message' => $e->getMessage()], Response::HTTP_BAD_GATEWAY);
+        }
+    }
+
+    #[Route('/marketing/search-console/sites', name: 'marketing_search_console_sites', methods: ['GET'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function searchConsoleSites(Request $request): JsonResponse
+    {
+        $people = $this->resolvePeople($request);
+        if (!$people instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        try {
+            return new JsonResponse(['sites' => $this->searchConsoleService->listSites($people)]);
+        } catch (GoogleMarketingNotConnectedException $e) {
+            return new JsonResponse(['error' => 'not_connected', 'scope_set' => $e->scopeSet], Response::HTTP_UNAUTHORIZED);
+        } catch (GoogleSearchConsoleRequestException $e) {
+            return new JsonResponse(['error' => 'search_console_failed', 'message' => $e->getMessage()], Response::HTTP_BAD_GATEWAY);
+        }
+    }
+
+    #[Route('/marketing/search-console/report', name: 'marketing_search_console_report', methods: ['GET'])]
+    #[SecurityAttribute("is_granted('ROLE_HUMAN')")]
+    public function searchConsoleReport(Request $request): JsonResponse
+    {
+        $people = $this->resolvePeople($request);
+        if (!$people instanceof People) {
+            return new JsonResponse(['error' => 'provider_not_found'], Response::HTTP_BAD_REQUEST);
+        }
+
+        try {
+            return new JsonResponse($this->searchConsoleService->runReport($people, $this->reportFilters($request)));
+        } catch (GoogleMarketingNotConnectedException $e) {
+            return new JsonResponse(['error' => 'not_connected', 'scope_set' => $e->scopeSet], Response::HTTP_UNAUTHORIZED);
+        } catch (GoogleSearchConsoleRequestException $e) {
+            return new JsonResponse(['error' => 'search_console_failed', 'message' => $e->getMessage()], Response::HTTP_BAD_GATEWAY);
         }
     }
 
