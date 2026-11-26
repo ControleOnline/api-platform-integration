@@ -6,7 +6,7 @@ namespace ControleOnline\Service\Google;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Service\PeopleRoleService;
-use Symfony\Component\Cache\Adapter\AdapterInterface;
+use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpClientException;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -25,7 +25,7 @@ final class GoogleAdsReaderService
         private readonly GoogleMarketingClientFactory $clientFactory,
         private readonly GoogleAdsCustomerResolver $customerResolver,
         private readonly PeopleRoleService $peopleRoleService,
-        private readonly AdapterInterface $cache,
+        private readonly CacheItemPoolInterface $cache,
     ) {
     }
 

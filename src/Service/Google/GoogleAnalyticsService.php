@@ -6,7 +6,7 @@ namespace ControleOnline\Service\Google;
 
 use ControleOnline\Entity\People;
 use ControleOnline\Service\ConfigService;
-use Symfony\Component\Cache\Adapter\AdapterInterface;
+use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpClientException;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -28,7 +28,7 @@ final class GoogleAnalyticsService
         private readonly HttpClientInterface $httpClient,
         private readonly GoogleMarketingClientFactory $clientFactory,
         private readonly ConfigService $configService,
-        private readonly AdapterInterface $cache,
+        private readonly CacheItemPoolInterface $cache,
     ) {
     }
 
