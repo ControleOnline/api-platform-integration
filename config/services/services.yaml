@@ -5,7 +5,10 @@ services:
         public: true
     ControleOnline\:
         resource: '../../src/*'
-        exclude: '../../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,EventSubscriber,Tests,Kernel.php}'
+        exclude:
+            - '../../src/{DependencyInjection,Entity,Resource,Migrations,Library,Message,EventSubscriber,Tests,Kernel.php}'
+            # Exceptions carry scalar constructor arguments and are never injected.
+            - '../../src/**/*Exception.php'
     ControleOnline\Repository\:
         resource: '../../src/Repository'
         tags: ['doctrine.repository_service']
